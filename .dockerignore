@@ -1,0 +1,13 @@
+.git
+.env
+data
+logs
+output
+README.md
+AGENTS.md
+CHANGELOG.md
+setup.sh
+rebuild.sh
+promote.sh
+thumbnail.webp
+

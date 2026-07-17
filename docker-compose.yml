@@ -1,0 +1,34 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_NAME:-ballshoot:dev}
+    container_name: ${WEB_CONTAINER_NAME:-ballshoot-dev-web}
+    networks:
+      - edge
+    restart: unless-stopped
+
+  test:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - .:/app:ro
+    network_mode: none
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        test -s index.html
+        test -s coop-bubbles.js
+        test -s support.js
+        grep -q 'coop-bubbles.js' index.html
+        node --check coop-bubbles.js
+        node --check support.js
+    profiles:
+      - test
+
+networks:
+  edge:
+    name: edge
+    external: true
