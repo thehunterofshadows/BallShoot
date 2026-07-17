@@ -65,7 +65,7 @@ const LEVELS = [
   ]},
 ];
 const META = [
-  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:'On-screen \u25c0 \u25b6 + FIRE (click or hold)' },
+  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:'Touch the lower left / right to aim · FIRE to shoot' },
   { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire' },
   { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire' },
   { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire' },
@@ -1143,6 +1143,15 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
 @media (max-width:900px){ .side{display:none} .gear{display:block}
  .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)} }
+@media (hover:none) and (pointer:coarse){
+ .pad{left:0;right:0;bottom:0;height:50%;transform:none;display:block;pointer-events:none}
+ .pad button{pointer-events:auto}
+ .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 24px 24px;border-radius:0;background:linear-gradient(to bottom,transparent 65%,rgba(255,255,255,.24));box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:26px}
+ .pad .padL{left:0;justify-content:flex-start}
+ .pad .padR{right:0;justify-content:flex-end}
+ .pad .padL:active,.pad .padR:active{background:linear-gradient(to bottom,transparent 45%,rgba(43,111,212,.16));color:#2b6fd4}
+ .pad .padF{position:absolute;left:50%;top:0;transform:translate(-50%,calc(-100% - 12px));padding:12px 28px;border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+}
 </style>
 <div class="root">
   <div class="gameCol">
@@ -1178,7 +1187,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <div class="overlay tutorial" style="display:none"><div class="card">
       <h1>Bubble Together</h1>
       <p class="sub">Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field</p>
-      <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> P1: on-screen \u25c0 \u25b6 + FIRE buttons. P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
+      <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> On mobile, hold the lower-left or lower-right half to aim, then tap FIRE above. P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
       <div class="tut"><div class="n">2</div><p><b>Match 3+</b> bubbles of the same color to pop them.</p></div>
       <div class="tut"><div class="n">3</div><p>Bubbles cut off from the ceiling <b>fall</b> \u2014 big drops score big.</p></div>
       <div class="tut"><div class="n">4</div><p><b>Everyone shares the same field</b> \u2014 set up matches for each other for Assists and Team Chains.</p></div>

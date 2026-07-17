@@ -17,6 +17,12 @@ external Automated GitHub Watcher; see that section below.
 - Promotion is human-gated: run `./promote.sh --dry-run`, then only after explicit
   approval run `./promote.sh --confirm`.
 
+## Required handoff
+
+Before handing work back to the user, always commit every change in the working
+tree, including untracked files, and push the current branch. Do not leave any
+local changes or commits unpushed.
+
 ## Project architecture
 
 BallShoot serves the “Bubble Together” cooperative bubble-shooter as a static
@@ -59,4 +65,3 @@ Humans control the lifecycle with issue comments:
 After `/dev`, the watcher implements in the root `dev` checkout, runs
 `docker compose run --rm --no-deps test`, and commits successful work directly to
 `dev`. Promotion to `main` and Prod always requires a human through `promote.sh`.
-
