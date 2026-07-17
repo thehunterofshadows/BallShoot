@@ -99,6 +99,8 @@ class CoopBubbles extends HTMLElement {
   disconnectedCallback() {
     cancelAnimationFrame(this._raf);
     this._unbind && this._unbind();
+    this._resizeObserver && this._resizeObserver.disconnect();
+    this._fullscreenUnbind && this._fullscreenUnbind();
     clearTimeout(this._reconnectTimer);
     if (this.ws) this.ws.close();
   }
@@ -1093,9 +1095,10 @@ class CoopBubbles extends HTMLElement {
     sh.innerHTML = `
 <style>
 :host{display:block;width:100%;height:100%;font-family:'Fredoka',sans-serif;color:#17335c}
+:host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#cfe6ff}
 *{box-sizing:border-box}
-.root{display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);justify-content:center;gap:20px;padding:14px;overflow:hidden}
-.gameCol{position:relative;height:100%;aspect-ratio:640/1080;max-width:100%}
+.root{position:relative;display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);align-items:center;justify-content:center;gap:20px;padding:14px;overflow:hidden}
+.gameCol{position:relative;width:min(100%,calc((100vh - 28px) * 640 / 1080));width:min(100%,calc((100dvh - 28px) * 640 / 1080));height:auto;max-height:100%;aspect-ratio:640/1080;flex:0 1 auto;min-width:0}
 canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px 40px rgba(40,80,140,.18);touch-action:none}
 .pad{position:absolute;left:50%;transform:translateX(-50%);bottom:4px;display:flex;gap:10px;z-index:4}
 .pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none}
@@ -1129,7 +1132,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .tut .n{flex:none;width:30px;height:30px;border-radius:50%;background:#2b6fd4;color:#fff;display:grid;place-items:center;font-weight:700;font-size:15px}
 .tut p{margin:3px 0 0;font-size:15px;line-height:1.35}
 .tut b{color:#2b6fd4}
-.gear{position:absolute;top:10px;right:10px;z-index:4;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);font-size:20px;cursor:pointer;display:none}
+.cornerButton{position:absolute;top:10px;z-index:4;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);color:#2b4a70;font:700 22px/1 Fredoka,sans-serif;cursor:pointer;display:grid;place-items:center;touch-action:manipulation}
+.fullscreenButton{left:10px}.fullscreenButton[hidden]{display:none}.gear{right:10px;display:none;font-size:20px}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
 .statRow .who{font-weight:700;width:34px}
 .statRow .nums{color:#5b7997;font-size:12.5px}
@@ -1139,9 +1143,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .onlinePlayers{display:grid;gap:6px;margin:12px 0}.onlinePlayer{display:flex;align-items:center;gap:9px;padding:8px 10px;background:#f4f9ff;border-radius:10px}
 .statusDot{width:10px;height:10px;border-radius:50%;background:#3ecf72}.statusDot.off{background:#a9b8c8}.hostTag{margin-left:auto;color:#7593b5;font-size:12px}
 .lobbySettings{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.lobbySettings label{display:grid;gap:3px;font-size:12px;color:#7593b5}.lobbySettings select,.lobbySettings input,.lobbySettings textarea{border:2px solid #d7e6f5;border-radius:8px;padding:6px;font:inherit;color:#2b4a70;background:#f8fbff;min-width:0}
-.lobbySettings .full{grid-column:1/-1}.onlineBar{position:absolute;left:10px;right:62px;top:10px;z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
+.lobbySettings .full{grid-column:1/-1}.onlineBar{position:absolute;left:62px;right:62px;top:10px;z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
 .onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
-@media (max-width:900px){ .side{display:none} .gear{display:block}
+@media (max-width:900px){ .root{padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}
+ .gameCol{width:min(100%,calc((100vh - 12px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 640 / 1080));width:min(100%,calc((100dvh - 12px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 640 / 1080))}
+ .side{display:none} .gear{display:grid}
+ .onlineBar{gap:4px}.onlineBar .onlineRoomLabel{display:none}.onlineBar button,.onlineBar span{padding:6px 7px;font-size:11px}
  .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)} }
 @media (hover:none) and (pointer:coarse){
  .pad{left:0;right:0;bottom:0;height:50%;transform:none;display:block;pointer-events:none}
@@ -1156,7 +1163,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="root">
   <div class="gameCol">
     <canvas></canvas>
-    <button class="gear" title="settings">\u2699</button>
+    <button class="cornerButton fullscreenButton" type="button" title="Enter fullscreen" aria-label="Enter fullscreen"><span class="enterIcon" aria-hidden="true">\u26f6</span><span class="exitIcon" aria-hidden="true">\u2715</span></button>
+    <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="pad"><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
     <div class="overlay home"><div class="card">
@@ -1224,6 +1232,34 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.resume').onclick = () => this.togglePause();
     sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{this.state = 'play'; this.resetGame();} };
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
+    const fullscreenButton = sh.querySelector('.fullscreenButton');
+    const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+    const syncFullscreenButton = () => {
+      const active = fullscreenElement() === this;
+      fullscreenButton.classList.toggle('isFullscreen', active);
+      fullscreenButton.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
+      fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
+    };
+    fullscreenButton.onclick = async () => {
+      try {
+        if (fullscreenElement()) {
+          const exit = document.exitFullscreen || document.webkitExitFullscreen;
+          if (exit) await exit.call(document);
+        } else {
+          const enter = this.requestFullscreen || this.webkitRequestFullscreen;
+          if (enter) await enter.call(this);
+        }
+      } catch (_) {}
+      syncFullscreenButton();
+    };
+    document.addEventListener('fullscreenchange', syncFullscreenButton);
+    document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
+    this._fullscreenUnbind = () => {
+      document.removeEventListener('fullscreenchange', syncFullscreenButton);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreenButton);
+    };
+    if (!(this.requestFullscreen || this.webkitRequestFullscreen)) fullscreenButton.hidden = true;
+    syncFullscreenButton();
     const firstHuman = () => this.players.find(q => !q.bot);
     const wireHold = (sel, dir) => { const b = sh.querySelector(sel);
       b.addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
@@ -1241,8 +1277,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.onlinePause').onclick=()=>this.togglePause();
     sh.querySelector('.onlineRestart').onclick=()=>{if(this.isOnlineHost()&&confirm('Restart the match for everyone?'))this.sendOnline('restart');};
     sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>el.addEventListener('change',()=>this.pushLobbySettings()));
-    const ro = new ResizeObserver(() => this.fit());
-    ro.observe(sh.querySelector('.gameCol'));
+    this._resizeObserver = new ResizeObserver(() => this.fit());
+    this._resizeObserver.observe(sh.querySelector('.gameCol'));
     this.fit();
     this.buildSettings();
   }
