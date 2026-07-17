@@ -1153,11 +1153,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 @media (hover:none) and (pointer:coarse){
  .pad{left:0;right:0;bottom:0;height:50%;transform:none;display:block;pointer-events:none}
  .pad button{pointer-events:auto}
- .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 24px 24px;border-radius:0;background:linear-gradient(to bottom,transparent 65%,rgba(255,255,255,.24));box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:26px}
+ .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 24px 24px;border-radius:0;background:transparent;box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:26px}
  .pad .padL{left:0;justify-content:flex-start}
  .pad .padR{right:0;justify-content:flex-end}
- .pad .padL:active,.pad .padR:active{background:linear-gradient(to bottom,transparent 45%,rgba(43,111,212,.16));color:#2b6fd4}
- .pad .padF{position:absolute;left:50%;top:0;transform:translate(-50%,calc(-100% - 12px));padding:12px 28px;border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,.05);color:#2b6fd4}
+ .pad .padF{position:absolute;left:50%;bottom:18px;z-index:2;transform:translateX(-50%);padding:12px 28px;border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
 }
 </style>
 <div class="root">

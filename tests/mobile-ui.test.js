@@ -16,6 +16,11 @@ test('mobile layout uses the dynamic viewport and safe-area insets', () => {
   assert.match(component, /safe-area-inset-bottom/);
 });
 
+test('mobile touch controls keep fire low and use a subtle pressed tint', () => {
+  assert.match(component, /\.pad \.padF\{[^}]*bottom:18px/);
+  assert.match(component, /\.pad \.padL:active,.pad \.padR:active\{background:rgba\(43,111,212,.05\)/);
+});
+
 test('fullscreen control supports entry, exit, and lifecycle cleanup', () => {
   assert.match(component, /class="cornerButton fullscreenButton"/);
   assert.match(component, /this\.requestFullscreen \|\| this\.webkitRequestFullscreen/);
