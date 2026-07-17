@@ -39,6 +39,7 @@ services:
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
       - ./nginx.conf:/app/nginx.conf:ro
+      - ./Dockerfile:/app/Dockerfile:ro
     network_mode: none
     command:
       - /bin/sh
