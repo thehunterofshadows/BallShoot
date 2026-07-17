@@ -9,22 +9,51 @@ services:
       - edge
     restart: unless-stopped
 
+  gameserver:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: runtime
+    image: ${GAME_SERVER_IMAGE:-ballshoot-gameserver:dev}
+    container_name: ${GAME_SERVER_CONTAINER_NAME:-ballshoot-dev-gameserver}
+    network_mode: "service:web"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
   test:
-    image: node:22-alpine
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: test
+    image: ${TEST_IMAGE:-ballshoot-test:dev}
     working_dir: /app
     volumes:
-      - .:/app:ro
+      - ./server:/app/server:ro
+      - ./tests:/app/tests:ro
+      - ./coop-bubbles.js:/app/coop-bubbles.js:ro
+      - ./support.js:/app/support.js:ro
+      - ./index.html:/app/index.html:ro
+      - ./nginx.conf:/app/nginx.conf:ro
     network_mode: none
     command:
       - /bin/sh
       - -ec
       - |
-        test -s index.html
-        test -s coop-bubbles.js
-        test -s support.js
-        grep -q 'coop-bubbles.js' index.html
-        node --check coop-bubbles.js
-        node --check support.js
+        test -s /app/index.html
+        test -s /app/coop-bubbles.js
+        test -s /app/support.js
+        grep -q 'coop-bubbles.js' /app/index.html
+        node --check /app/coop-bubbles.js
+        node --check /app/support.js
+        node --check /app/server/game.js
+        node --check /app/server/lobbies.js
+        node --check /app/server/server.js
+        npm test
     profiles:
       - test
 

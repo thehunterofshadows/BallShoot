@@ -58,6 +58,9 @@ APP_ENV=${app_env}
 COMPOSE_PROJECT_NAME=${project}
 WEB_CONTAINER_NAME=${container}
 IMAGE_NAME=ballshoot:${app_env}
+GAME_SERVER_CONTAINER_NAME=ballshoot-${app_env}-gameserver
+GAME_SERVER_IMAGE=ballshoot-gameserver:${app_env}
+TEST_IMAGE=ballshoot-test:${app_env}
 EOF
 }
 
@@ -86,4 +89,3 @@ BallShoot setup complete.
 Dev:  https://dev-ballshoot.fireorbooty.com  ($REPO_ROOT, branch dev)
 Prod: https://ballshoot.fireorbooty.com      ($PROD_WORKTREE, branch main)
 EOF
-

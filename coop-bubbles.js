@@ -83,17 +83,24 @@ const rnd = (a,b) => a + Math.random() * (b - a);
 class CoopBubbles extends HTMLElement {
   connectedCallback() {
     if (this._init) return; this._init = true;
+    this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
       reload:1.35, missMax:12, rescueDur:4, assist:0.35, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0 };
     this.buildDOM();
     this.resetGame();
-    this.state = 'tutorial';
+    this.state = 'home';
     this.bindInput();
     this._raf = requestAnimationFrame(t => this.frame(t));
+    try {
+      const saved=JSON.parse(localStorage.getItem('bt_online_session')||'null');
+      if(saved&&/^\d{3}$/.test(saved.code)&&saved.token){this.online=true;this._onlineCode=saved.code;this._onlineToken=saved.token;this.reconnectEl.style.display='grid';this.openOnlineSocket(true);}
+    } catch(_) {}
   }
   disconnectedCallback() {
     cancelAnimationFrame(this._raf);
     this._unbind && this._unbind();
+    clearTimeout(this._reconnectTimer);
+    if (this.ws) this.ws.close();
   }
 
   /* ---------- state / setup ---------- */
@@ -239,6 +246,7 @@ class CoopBubbles extends HTMLElement {
 
   /* ---------- shooting / flight ---------- */
   fire(i) {
+    if (this.online) { this.sendOnline('fire'); return; }
     const p = this.players[i];
     if (this.state !== 'play' || p.reload > 0) return;
     const a = clamp(p.angle, -1.22, 1.22);
@@ -545,8 +553,23 @@ class CoopBubbles extends HTMLElement {
   frame(t) {
     this._raf = requestAnimationFrame(tt => this.frame(tt));
     const dt = Math.min(0.033, (t - (this._t || t)) / 1000); this._t = t;
-    if (this.state === 'play') this.update(dt);
+    if (this.state === 'play' && !this.online) this.update(dt);
+    else if (this.online && ['play','paused','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
     this.render();
+  }
+  updateOnlineVisuals(dt) {
+    if (this.state !== 'paused') {
+      this.now += dt;
+      const own=this.players[this.activeP];
+      if(own&&this._onlineHeld){if(this._onlineHeld.l)own.angle=clamp(own.angle-2.4*dt,-1.22,1.22);if(this._onlineHeld.r)own.angle=clamp(own.angle+2.4*dt,-1.22,1.22);}
+      for(const p of this.players)p.reload=Math.max(0,p.reload-dt);
+      for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>this.WW-X0-R)f.vx=-f.vx;}
+      if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
+      const floor=92+LAUNCH_Y-60-R+6;
+      for(let i=this.falling.length-1;i>=0;i--){const f=this.falling[i];f.vy+=1900*dt;f.x+=f.vx*dt;f.y+=f.vy*dt;f.a+=f.spin*dt;if(f.y>floor){f.y=floor;f.fade=(f.fade??1)-2.5*dt;}if((f.fade??1)<=0)this.falling.splice(i,1);}
+      const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX+=(target-this.camX)*Math.min(1,6*dt);}
+    }
+    this.fxTick();
   }
   update(rdt) {
     const ts = this.danger ? 0.55 : 1; // dramatic slow-mo during rescue window
@@ -646,17 +669,27 @@ class CoopBubbles extends HTMLElement {
       this.ensureAudio();
       const k = e.key.toLowerCase();
       if (k === 'p') { this.togglePause(); return; }
+      if (this.online) {
+        if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
+        if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
+        if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
+        return;
+      }
       const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
     };
-    const ku = e => { const am = keymap[e.key.toLowerCase()];
+    const ku = e => { const k=e.key.toLowerCase(); if(this.online){if(['a','arrowleft','j'].includes(k))this.setOnlineHeld('l',false);if(['d','arrowright','l'].includes(k))this.setOnlineHeld('r',false);return;} const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p) p.held[am[1]] = false; } };
     window.addEventListener('keydown', kd);
     window.addEventListener('keyup', ku);
     this._unbind = () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
   }
   togglePause() {
+    if (this.online) {
+      if (!this.onlineRoom || this.onlineRoom.hostId !== this.onlinePlayerId) return;
+      this.sendOnline(this.state === 'paused' ? 'resume' : 'pause'); return;
+    }
     if (this.state === 'play') { this.state = 'paused'; this.pauseEl.style.display = 'grid'; }
     else if (this.state === 'paused') { this.state = 'play'; this.pauseEl.style.display = 'none'; this._t = performance.now(); }
     this.syncButtons();
@@ -1100,6 +1133,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
 .statRow .who{font-weight:700;width:34px}
 .statRow .nums{color:#5b7997;font-size:12.5px}
+.homeActions{display:grid;gap:9px;margin-top:18px}.joinFields{display:grid;grid-template-columns:1fr 110px;gap:8px;margin-top:12px}
+.textInput{width:100%;border:2px solid #d7e6f5;border-radius:11px;padding:10px;font:inherit;color:#17335c;background:#f8fbff}
+.lobbyCard{width:min(540px,92%)}.roomCode{font:700 52px ui-monospace,monospace;letter-spacing:.18em;text-align:center;color:#2b6fd4;margin:6px 0}
+.onlinePlayers{display:grid;gap:6px;margin:12px 0}.onlinePlayer{display:flex;align-items:center;gap:9px;padding:8px 10px;background:#f4f9ff;border-radius:10px}
+.statusDot{width:10px;height:10px;border-radius:50%;background:#3ecf72}.statusDot.off{background:#a9b8c8}.hostTag{margin-left:auto;color:#7593b5;font-size:12px}
+.lobbySettings{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.lobbySettings label{display:grid;gap:3px;font-size:12px;color:#7593b5}.lobbySettings select,.lobbySettings input,.lobbySettings textarea{border:2px solid #d7e6f5;border-radius:8px;padding:6px;font:inherit;color:#2b4a70;background:#f8fbff;min-width:0}
+.lobbySettings .full{grid-column:1/-1}.onlineBar{position:absolute;left:10px;right:62px;top:10px;z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
+.onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
 @media (max-width:900px){ .side{display:none} .gear{display:block}
  .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)} }
 </style>
@@ -1107,8 +1148,34 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   <div class="gameCol">
     <canvas></canvas>
     <button class="gear" title="settings">\u2699</button>
+    <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="pad"><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
-    <div class="overlay tutorial"><div class="card">
+    <div class="overlay home"><div class="card">
+      <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
+      <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
+      <div class="homeActions"><button class="btn primary createOnline">Create online room</button>
+      <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code"></div>
+      <button class="btn ghost localPlay">Local play</button></div><div class="formError"></div>
+    </div></div>
+    <div class="overlay lobby" style="display:none"><div class="card lobbyCard">
+      <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
+      <div class="onlinePlayers"></div>
+      <h3>Host settings</h3><div class="lobbySettings">
+        <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option></select></label>
+        <label>Field<select data-setting="field"><option value="classic">Classic</option><option value="wide">Wide 4×</option></select></label>
+        <label>Level<select data-setting="level"><option value="0">1. The Vault</option><option value="1">2. Chandeliers</option><option value="2">3. The Canyon</option><option value="3">4. Hive Bridge</option><option value="custom">Custom</option></select></label>
+        <label>Aim guide<select data-setting="guide"><option value="1">Full</option><option value="0.5">50%</option><option value="0.25">25%</option></select></label>
+        <label>Reload<input data-setting="reload" type="range" min="0.8" max="2.2" step="0.05"></label>
+        <label>Miss limit<input data-setting="missMax" type="range" min="4" max="20" step="1"></label>
+        <label>Rescue timer<input data-setting="rescueDur" type="range" min="3" max="5" step="0.5"></label>
+        <label>Aim assist<input data-setting="assist" type="range" min="0" max="1" step="0.05"></label>
+        <label>Teammate lines<select data-setting="mateLines"><option value="true">Show</option><option value="false">Hide</option></select></label>
+        <label>Sound<select data-setting="sound"><option value="true">On</option><option value="false">Off</option></select></label>
+        <label class="full customSetting">Custom level<textarea data-setting="customText" rows="4" maxlength="512" spellcheck="false"></textarea></label>
+      </div><div class="formError lobbyError"></div><button class="btn primary lobbyStart">Start match</button><button class="btn ghost lobbyLeave">Leave room</button>
+    </div></div>
+    <div class="overlay reconnect" style="display:none"><div class="card"><h1>Reconnecting…</h1><p class="sub">Your launcher is reserved while we reconnect.</p><button class="btn ghost reconnectLeave">Leave room</button></div></div>
+    <div class="overlay tutorial" style="display:none"><div class="card">
       <h1>Bubble Together</h1>
       <p class="sub">Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field</p>
       <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> P1: on-screen \u25c0 \u25b6 + FIRE buttons. P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
@@ -1134,23 +1201,37 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.canvas = sh.querySelector('canvas');
     this.ctx = this.canvas.getContext('2d');
     this.tutEl = sh.querySelector('.tutorial');
+    this.homeEl = sh.querySelector('.home');
+    this.lobbyEl = sh.querySelector('.lobby');
+    this.reconnectEl = sh.querySelector('.reconnect');
     this.pauseEl = sh.querySelector('.pause');
     this.endEl = sh.querySelector('.end');
     this.sideEl = sh.querySelector('.side');
+    sh.querySelector('.localPlay').onclick = () => { this.online=false; this.state='tutorial'; this.homeEl.style.display='none'; this.tutEl.style.display='grid'; };
+    sh.querySelector('.createOnline').onclick = () => this.beginOnline('create');
+    sh.querySelector('.joinOnline').onclick = () => this.beginOnline('join');
+    sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));
     sh.querySelector('.start').onclick = () => { this.ensureAudio(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
     sh.querySelector('.resume').onclick = () => this.togglePause();
-    sh.querySelector('.again').onclick = () => { this.state = 'play'; this.resetGame(); };
+    sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{this.state = 'play'; this.resetGame();} };
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
     const firstHuman = () => this.players.find(q => !q.bot);
     const wireHold = (sel, dir) => { const b = sh.querySelector(sel);
       b.addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
-        const p = firstHuman(); if (p) { b._p = p; p.held[dir] = true; this.activeP = p.i; } });
-      const off = () => { if (b._p) { b._p.held[dir] = false; b._p = null; } };
+        if(this.online){b._p=true;this.setOnlineHeld(dir,true);return;} const p = firstHuman(); if (p) { b._p = p; p.held[dir] = true; this.activeP = p.i; } });
+      const off = () => { if(this.online){if(b._p)this.setOnlineHeld(dir,false);b._p=null;return;} if (b._p) { b._p.held[dir] = false; b._p = null; } };
       b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
     };
     wireHold('.padL', 'l'); wireHold('.padR', 'r');
     sh.querySelector('.padF').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
-      const p = firstHuman(); if (p) { this.activeP = p.i; this.fire(p.i); } });
+      if(this.online){this.fire();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.fire(p.i); } });
+    sh.querySelector('.lobbyStart').onclick=()=>this.sendOnline('start');
+    sh.querySelector('.lobbyLeave').onclick=()=>this.leaveOnline();
+    sh.querySelector('.reconnectLeave').onclick=()=>this.leaveOnline();
+    sh.querySelector('.onlineLeave').onclick=()=>this.leaveOnline();
+    sh.querySelector('.onlinePause').onclick=()=>this.togglePause();
+    sh.querySelector('.onlineRestart').onclick=()=>{if(this.isOnlineHost()&&confirm('Restart the match for everyone?'))this.sendOnline('restart');};
+    sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>el.addEventListener('change',()=>this.pushLobbySettings()));
     const ro = new ResizeObserver(() => this.fit());
     ro.observe(sh.querySelector('.gameCol'));
     this.fit();
@@ -1171,7 +1252,68 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       `<div class="statRow"><span class="who" style="color:${p.meta.accent}">${p.meta.name}</span>
        <span class="nums">${p.stats.pops} pops \u00b7 ${p.stats.bubbles} bubbles \u00b7 ${p.stats.assists} assists \u00b7 ${p.stats.drops} dropped \u00b7 ${p.stats.rescues} rescues</span></div>`).join('');
     this.endEl.style.display = 'grid';
+    if(this.online){const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
+
+  /* ---------- online rooms ---------- */
+  isOnlineHost(){return !!this.onlineRoom&&this.onlineRoom.hostId===this.onlinePlayerId;}
+  beginOnline(action){
+    const sh=this.shadowRoot,name=sh.querySelector('.playerName').value.trim(),code=sh.querySelector('.roomInput').value;
+    const err=sh.querySelector('.home .formError');err.textContent='';
+    if(!name){err.textContent='Enter a display name.';return;}if(action==='join'&&!/^\d{3}$/.test(code)){err.textContent='Enter a three-digit room code.';return;}
+    this.ensureAudio();this.online=true;this.sideEl.style.display='none';this._pendingOnline={action,name,code};this.openOnlineSocket();
+  }
+  openOnlineSocket(rejoin=false){
+    clearTimeout(this._reconnectTimer);const protocol=location.protocol==='https:'?'wss:':'ws:';const ws=new WebSocket(protocol+'//'+location.host+'/ws');this.ws=ws;
+    ws.onopen=()=>{this.setNetworkState('Live');if(rejoin&&this._onlineToken)this.sendOnline('rejoin',{code:this._onlineCode,token:this._onlineToken});else if(this._pendingOnline)this.sendOnline(this._pendingOnline.action,{name:this._pendingOnline.name,code:this._pendingOnline.code});};
+    ws.onmessage=e=>{let msg;try{msg=JSON.parse(e.data);}catch(_){return;}this.handleOnlineMessage(msg);};
+    ws.onclose=()=>{if(!this.online||this._leaving)return;this._onlineHeld={l:false,r:false};this.setNetworkState('Offline',true);this.reconnectEl.style.display='grid';this._reconnectTimer=setTimeout(()=>this.openOnlineSocket(true),Math.min(10000,500*Math.pow(2,this._reconnectAttempts=(this._reconnectAttempts||0)+1)),);};
+  }
+  sendOnline(type,payload={}){if(this.ws&&this.ws.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify({type,...payload}));}
+  handleOnlineMessage(msg){
+    const sh=this.shadowRoot;
+    if(msg.type==='error'){
+      const target=this.lobbyEl.style.display!=='none'?sh.querySelector('.lobbyError'):sh.querySelector('.home .formError');target.textContent=msg.message;
+      if(['room_gone','bad_token'].includes(msg.code)){this.clearOnlineSession();this.returnHome();}return;
+    }
+    if(msg.type==='joined'){
+      this._reconnectAttempts=0;this.reconnectEl.style.display='none';this.onlinePlayerId=msg.playerId;this.onlineRoom=msg.room;this._onlineCode=msg.room.code;this._onlineToken=msg.token;
+      try{localStorage.setItem('bt_online_session',JSON.stringify({code:this._onlineCode,token:this._onlineToken}));}catch(_){}
+      this.sideEl.style.display='none';this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
+    }
+    if(msg.type==='lobby_state'){this.onlineRoom=msg.room;if(msg.room.phase==='lobby')this.showOnlineLobby();return;}
+    if(msg.type==='host_changed'){if(this.onlineRoom)this.onlineRoom.hostId=msg.hostId;this.syncOnlineControls();return;}
+    if(msg.type==='match_started'){this.onlineRoom=msg.room;this.lobbyEl.style.display='none';this.endEl.style.display='none';this.applyOnlineSnapshot(msg.snapshot);this.shadowRoot.querySelector('.onlineBar').style.display='flex';return;}
+    if(msg.type==='snapshot'){if(msg.phase==='ended'&&this.onlineRoom)this.onlineRoom.phase='ended';this.applyOnlineSnapshot(msg.snapshot);return;}
+    if(msg.type==='phase_changed'){this.state=msg.phase;this.pauseEl.style.display=msg.phase==='paused'?'grid':'none';this.syncOnlineControls();return;}
+    if(msg.type==='left'){this.returnHome();}
+  }
+  showOnlineLobby(){
+    const sh=this.shadowRoot,room=this.onlineRoom;if(!room)return;this.state='lobby';this.homeEl.style.display='none';this.tutEl.style.display='none';this.endEl.style.display='none';this.pauseEl.style.display='none';this.reconnectEl.style.display='none';this.lobbyEl.style.display='grid';sh.querySelector('.onlineBar').style.display='none';
+    sh.querySelector('.roomCode').textContent=room.code;sh.querySelector('.onlinePlayers').innerHTML=room.players.map((p,i)=>`<div class="onlinePlayer"><span class="pDot" style="background:${META[i].accent}"></span><span>${this.escapeHTML(p.name)}</span><span class="statusDot ${p.connected?'':'off'}"></span>${p.id===room.hostId?'<span class="hostTag">HOST</span>':''}</div>`).join('');
+    const host=this.isOnlineHost(),settings=room.settings;sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');});
+    sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
+  }
+  pushLobbySettings(){
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+  }
+  applyOnlineSnapshot(s){
+    const oldState=this.state;this.settings={...this.settings,...s.settings};this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
+    this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
+    this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
+    for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
+    const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
+    this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
+    if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
+  }
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this.sendOnline('input',{seq:++this.onlineSeq,held:this._onlineHeld});}
+  syncOnlineControls(){if(!this.online)return;const host=this.isOnlineHost(),sh=this.shadowRoot;sh.querySelector('.onlinePause').style.display=host?'block':'none';sh.querySelector('.onlineRestart').style.display=host?'block':'none';sh.querySelector('.onlinePause').textContent=this.state==='paused'?'Resume':'Pause';sh.querySelector('.pause .resume').style.display=host?'block':'none';sh.querySelector('.pause .sub').textContent=host?'Press the button to resume for everyone':'Waiting for the host to resume';sh.querySelector('.onlineRoomLabel').textContent='Room '+(this.onlineRoom?.code||'');}
+  setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
+  leaveOnline(){this._leaving=true;this.sendOnline('leave');if(this.ws)this.ws.close();this.clearOnlineSession();this.returnHome();setTimeout(()=>this._leaving=false,0);}
+  clearOnlineSession(){try{localStorage.removeItem('bt_online_session');}catch(_){}this._onlineToken=null;this._onlineCode=null;}
+  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.resetGame();this.state='home';}
+  escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
     const S = this.settings, el = this.sideEl;
     el.innerHTML = `

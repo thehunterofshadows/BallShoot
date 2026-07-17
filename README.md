@@ -1,7 +1,18 @@
 # BallShoot — Bubble Together
 
 A cooperative multiplayer bubble-shooter with shared combos, assists, special
-bubbles, multiple arenas, and optional bot teammates.
+bubbles, multiple arenas, optional local bot teammates, and live cross-device rooms.
+
+## Playing online
+
+Choose **Create online room**, enter a display name, and share the generated
+three-digit code. Two to four people can join from separate devices. The host
+chooses every lobby setting and starts the match; each device then controls one
+launcher against the same server-authoritative field.
+
+Online rooms are deliberately ephemeral. A refresh or short network interruption
+reclaims the same launcher automatically, but rebuilding or restarting the game
+server closes active rooms. Room codes are invitations, not passwords.
 
 ## Automated GitHub Watcher
 
@@ -42,7 +53,14 @@ projects. `rebuild.sh` validates first and refuses to rebuild on failure.
 ## Source layout
 
 - `index.html` — document shell
-- `coop-bubbles.js` — game component, state, simulation, input, and rendering
+- `coop-bubbles.js` — game component, local simulation, online client, input, and rendering
+- `server/game.js` — authoritative online simulation
+- `server/lobbies.js` — room membership, settings, reconnect, and host lifecycle
+- `server/server.js` — HTTP health endpoint and WebSocket protocol adapter
 - `support.js` — generated browser runtime
 - `thumbnail.webp` — original preview image
 
+Nginx serves the browser app and proxies same-origin `/ws` connections to the
+`gameserver` service over their shared network namespace. Only Nginx has an
+address on the external `edge` network; the game server listens on loopback with
+no published ports.

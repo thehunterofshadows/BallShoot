@@ -1,0 +1,269 @@
+'use strict';
+
+const W = 640, H = 1080, R = 28, X0 = 12;
+const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108, DANGER_Y = 846, LAUNCH_Y = 938;
+const KINDS = ['R', 'Y', 'G', 'B'];
+const LEVELS = [
+  ["GGBYRGBYYGB","BRRGBYRGBY","RGGYRGBYRGB","BYRBBYRGBY","RGBYYGBYRGB","BYRGBYRGBY","RGBY...YRGB","BYRG...GBY","RGB.....RGB","BY.......Y"],
+  ["YYRBGYRBBYR","RGGYRBGYRB","GYYBGYRBGYR","RBGRRBGYRB","GYRBBYRBGYR","RBGYRBGYRB","GYRBGYRBGYR","BB.RR...BB","BB.RR....BB"],
+  ["RRYGBRYGGRY","YBBRYGBRYG","BRRGBRYGBRY","YGBYYGBRYG","BRYGGRYGBRY","YGBR...RYG","BRYG...GBRY","YGBR...RYG","BRYG...GBRY","YGB.....YG","BR.......RY"],
+  ["YBGRY......","GRYBGG....","YBGRY.BRYBG","GRYB..YBGR","YBGRR.GRYBG","GRYB..YBGR","YBGRY.RRYBG","GRYB..YGGR","BBGRY.GRRBG","GYYB..YBGR"],
+];
+const key = (r, c) => `${r},${c}`;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+class OnlineGame {
+  constructor(settings, roster, seed) {
+    this.settings = structuredClone(settings);
+    this.roster = roster.map((p, i) => ({ id: p.id, name: p.name, i }));
+    this.random = mulberry32(seed);
+    this.tickId = 0;
+    this.state = 'play';
+    this.reset();
+  }
+
+  rnd(a, b) { return a + this.random() * (b - a); }
+  reset() {
+    const S = this.settings;
+    this.WW = S.field === 'wide' ? W * 4 : W;
+    this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
+    this.grid = new Map(); this.parityFlip = 0;
+    this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
+    const rows = this.levelRows();
+    const offs = S.field === 'wide' ? [1, 12, 23, 34] : [0];
+    for (const off of offs) rows.forEach((row, r) => {
+      for (let i = 0; i < row.length; i++) if (row[i] !== '.') {
+        const c = i + off;
+        this.grid.set(key(r, c), { r, c, kind: row[i], special: null, placedBy: -1 });
+      }
+    });
+    this.removeFloaters();
+    this.flights = []; this.batch = []; this.resolveAt = 0;
+    this.score = 0; this.dispScore = 0; this.missMeter = 0; this.danger = null;
+    this.now = 0; this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0;
+    this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
+    this.events = []; this.eventId = 0; this.paused = false;
+    this.players = this.roster.map((member, i) => ({
+      ...member, x: this.WW * (i + 0.5) / this.roster.length,
+      angle: this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
+      held: { l: false, r: false }, connected: true,
+      stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0 },
+    }));
+    for (const p of this.players) { p.cur = this.genBubble(); p.next = this.genBubble(); }
+    this.updateLowest();
+    this.emit('round_started', { seed: this.tickId });
+  }
+
+  levelRows() {
+    if (this.settings.level === 'custom') {
+      const rows = String(this.settings.customText || '').split('\n')
+        .map(s => s.trim().toUpperCase().replace(/[^RGYB.]/g, '.')).filter(Boolean).slice(0, 12)
+        .map((s, r) => (s + '.'.repeat((r % 2) ? 10 : 11)).slice(0, (r % 2) ? 10 : 11));
+      if (rows.some(s => /[RGYB]/.test(s))) return rows;
+    }
+    return LEVELS[Number(this.settings.level) || 0] || LEVELS[0];
+  }
+  par(r) { return (r + this.parityFlip) & 1; }
+  colsIn(r) { return this.par(r) ? this.cols - 1 : this.cols; }
+  cellX(r, c) { return X0 + R + c * 2 * R + this.par(r) * R; }
+  cellY(r) { return this.gridTop + R + r * ROWH; }
+  neighbors(r, c) {
+    const p = this.par(r), a = c - 1 + p, b = c + p;
+    return [[r,c-1],[r,c+1],[r-1,a],[r-1,b],[r+1,a],[r+1,b]];
+  }
+  validCell(r, c) {
+    if (c < 0 || c >= this.colsIn(r) || r < 0 || this.grid.has(key(r,c))) return false;
+    return r === 0 || this.neighbors(r,c).some(([rr,cc]) => this.grid.has(key(rr,cc)));
+  }
+  updateLowest() {
+    this.lowestY = 0;
+    this.grid.forEach(b => { this.lowestY = Math.max(this.lowestY, this.cellY(b.r)); });
+  }
+  removeFloaters() {
+    const safe = new Set(), stack = [];
+    this.grid.forEach((b, k) => { if (b.r === 0) { safe.add(k); stack.push(b); } });
+    while (stack.length) {
+      const b = stack.pop();
+      for (const [r,c] of this.neighbors(b.r,b.c)) {
+        const k = key(r,c), n = this.grid.get(k);
+        if (n && !safe.has(k)) { safe.add(k); stack.push(n); }
+      }
+    }
+    const dropped = [];
+    this.grid.forEach((b, k) => { if (!safe.has(k)) { dropped.push(b); this.grid.delete(k); } });
+    return dropped;
+  }
+  availKinds() {
+    const s = new Set();
+    this.grid.forEach(b => { if (!b.special) s.add(b.kind); });
+    this.flights.forEach(b => { if (!b.special) s.add(b.kind); });
+    return s.size ? [...s] : ['R'];
+  }
+  genBubble() {
+    this.shotCount++;
+    if (this.shotCount > 6 && this.shotCount % 11 === 0)
+      return { kind: 'R', special: (this.specialFlip++ % 2) ? 'bomb' : 'rainbow' };
+    const kinds = this.availKinds();
+    return { kind: kinds[(this.random() * kinds.length) | 0], special: null };
+  }
+  refreshQueues() {
+    const kinds = this.availKinds(), available = new Set(kinds);
+    for (const p of this.players) for (const slot of ['cur','next']) {
+      const b = p[slot];
+      if (b && !b.special && !available.has(b.kind)) b.kind = kinds[(this.random() * kinds.length) | 0];
+    }
+  }
+  snapCell(x, y) {
+    const rr = Math.max(0, Math.round((y - this.gridTop - R) / ROWH));
+    let best = null, distance = Infinity;
+    for (let r = Math.max(0, rr - 5); r <= rr + 5; r++) for (let c = 0; c < this.colsIn(r); c++) {
+      if (!this.validCell(r,c)) continue;
+      const d = (this.cellX(r,c)-x) ** 2 + (this.cellY(r)-y) ** 2;
+      if (d < distance) { distance = d; best = { r, c }; }
+    }
+    return best;
+  }
+  hitGrid(x, y) {
+    const rr = Math.round((y - this.gridTop - R) / ROWH), lim = (2 * R * 0.88) ** 2;
+    for (let r = Math.max(0, rr - 1); r <= rr + 1; r++) for (let c = 0; c < this.colsIn(r); c++) {
+      if (this.grid.has(key(r,c)) && (this.cellX(r,c)-x) ** 2 + (this.cellY(r)-y) ** 2 < lim) return true;
+    }
+    return false;
+  }
+  matchGroup(r, c, kind) {
+    const seen = new Set([key(r,c)]), stack = [[r,c]];
+    while (stack.length) {
+      const [rr,cc] = stack.pop();
+      for (const [nr,nc] of this.neighbors(rr,cc)) {
+        const k = key(nr,nc), b = this.grid.get(k);
+        if (!seen.has(k) && b && (b.kind === kind || b.special === 'rainbow')) { seen.add(k); stack.push([nr,nc]); }
+      }
+    }
+    return seen;
+  }
+  hypoSize(r, c, kind) { return this.matchGroup(r, c, kind).size; }
+
+  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) p.held = { l:false, r:false }; } }
+  input(id, held) {
+    const p = this.players.find(q => q.id === id);
+    if (p && p.connected && this.state === 'play') p.held = { l: !!held.l, r: !!held.r };
+  }
+  fire(id) {
+    const p = this.players.find(q => q.id === id);
+    if (!p || !p.connected || this.state !== 'play' || this.paused || p.reload > 0) return false;
+    const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
+    this.flights.push({ p: p.i, x: p.x, y: LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
+      kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
+    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++;
+    this.emit('launch', { player: p.i, x: p.x, angle: a });
+    return true;
+  }
+  emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
+
+  update(dt) {
+    if (this.state !== 'play' || this.paused) return;
+    dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
+    this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*dt, 80*dt);
+    for (const p of this.players) {
+      p.reload = Math.max(0, p.reload - dt);
+      if (!p.connected) continue;
+      if (p.held.l) p.angle = clamp(p.angle - 2.4*dt, -1.22, 1.22);
+      if (p.held.r) p.angle = clamp(p.angle + 2.4*dt, -1.22, 1.22);
+    }
+    this.stepFlights(dt);
+    if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
+    if (this.chain.t > 0 && (this.chain.t -= dt) <= 0) this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
+    const danger = this.anyDangerCells();
+    if (danger && !this.danger) { this.danger = { t:this.settings.rescueDur, max:this.settings.rescueDur }; this.emit('warn'); }
+    else if (!danger && this.danger) this.danger = null;
+    if (this.danger && (this.danger.t -= dt) <= 0) return this.end(false);
+    if (this.settings.mode === 'endless') {
+      this.rowTimer += dt;
+      if (this.rowTimer > Math.max(10, 24 - this.now/30) && !this.resolveAt) { this.rowTimer = 0; this.addRow(); }
+      if (!this.grid.size) { this.addRow(); this.addRow(); }
+    }
+    this.dispScore += (this.score - this.dispScore) * Math.min(1, 10*dt);
+  }
+  stepFlights(dt) {
+    for (let i = this.flights.length - 1; i >= 0; i--) {
+      const f = this.flights[i]; f.trail.push({x:f.x,y:f.y}); if (f.trail.length > 16) f.trail.shift();
+      let dist = Math.hypot(f.vx,f.vy)*dt, landed = false;
+      while (dist > 0 && !landed) {
+        const step = Math.min(dist, R*.45); dist -= step; const m = step/Math.hypot(f.vx,f.vy);
+        f.x += f.vx*m; f.y += f.vy*m;
+        if (f.x < X0+R) { f.x = 2*(X0+R)-f.x; f.vx = -f.vx; this.emit('bounce',{x:f.x,y:f.y}); }
+        if (f.x > this.WW-X0-R) { f.x = 2*(this.WW-X0-R)-f.x; f.vx = -f.vx; this.emit('bounce',{x:f.x,y:f.y}); }
+        landed = f.y <= this.gridTop+R || (f.y < this.lowestY+2.2*R && this.hitGrid(f.x,f.y));
+      }
+      if (landed) { this.flights.splice(i,1); this.land(f); }
+      else if (f.y > H+60) this.flights.splice(i,1);
+    }
+  }
+  land(f) {
+    let cell = this.snapCell(f.x,f.y); if (!cell) return;
+    if (!f.special && this.settings.assist > 0 && this.hypoSize(cell.r,cell.c,f.kind) < 3) {
+      for (const [r,c] of this.neighbors(cell.r,cell.c)) if (this.validCell(r,c) &&
+        Math.hypot(this.cellX(r,c)-f.x,this.cellY(r)-f.y) < 2.7*R && this.hypoSize(r,c,f.kind) >= 3 && this.random() < this.settings.assist) { cell={r,c}; break; }
+    }
+    const b = { ...cell, kind:f.kind, special:f.special, placedBy:f.p };
+    this.grid.set(key(cell.r,cell.c),b); this.batch.push(b); this.resolveAt ||= this.now+.2; this.updateLowest();
+    this.emit('attach',{player:f.p,r:cell.r,c:cell.c});
+  }
+  resolveBatch() {
+    const landed=this.batch; this.batch=[]; this.resolveAt=0; const results=[];
+    for (const b of landed) {
+      if (!this.grid.has(key(b.r,b.c))) { results.push({shooter:b.placedBy,gone:true}); continue; }
+      if (b.special==='bomb') {
+        const bx=this.cellX(b.r,b.c), by=this.cellY(b.r), popped=new Set([key(b.r,b.c)]);
+        this.grid.forEach((g,k)=>{ if(Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
+        results.push({shooter:b.placedBy,popped,bomb:true});
+      } else {
+        let kind=b.kind;
+        if(b.special==='rainbow'){
+          let best=null,size=0; for(const [r,c] of this.neighbors(b.r,b.c)){const n=this.grid.get(key(r,c)); if(n&&!n.special){const s=this.matchGroup(b.r,b.c,n.kind).size;if(s>size){size=s;best=n.kind;}}}
+          if(!best){results.push({shooter:b.placedBy});continue;} kind=best;
+        }
+        const group=this.matchGroup(b.r,b.c,kind); results.push({shooter:b.placedBy,popped:group.size>=3?group:null});
+      }
+    }
+    const all=new Set(), owners=new Set(), clearers=[];
+    for(const result of results) if(result.popped){let fresh=0; result.popped.forEach(k=>{if(!all.has(k)&&this.grid.has(k)){const b=this.grid.get(k);if(b.placedBy>=0&&b.placedBy!==result.shooter)owners.add(b.placedBy);all.add(k);fresh++;}});if(fresh)clearers.push(result.shooter);}
+    const popped=[]; all.forEach(k=>{const b=this.grid.get(k);if(b){popped.push(b);this.grid.delete(k);}});
+    const dropped=this.removeFloaters(); this.updateLowest();
+    if(popped.length){clearers.forEach(i=>this.registerClear(i));const pts=popped.length*10*this.chain.mult;this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
+    const misses=results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
+    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.gridTopTarget+=ROWH;this.emit('ceiling');}}
+    if(dropped.length){const pts=dropped.length*30*this.chain.mult+(dropped.length>=5?200:0);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
+    if(this.danger&&!this.anyDangerCells()){this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue');}
+    this.refreshQueues();
+    if(this.settings.mode==='clear'&&!this.grid.size)this.end(true);
+  }
+  registerClear(i){const c=this.chain;if(c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
+  anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>DANGER_Y)hit=true;});return hit;}
+  addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;for(let c=0;c<this.colsIn(0);c++)if(this.random()<.85)this.grid.set(key(0,c),{r:0,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
+  end(won){if(this.state!=='play')return;this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
+  setPaused(value){if(this.state==='play'){this.paused=!!value;this.emit(this.paused?'paused':'resumed');}}
+
+  snapshot() {
+    return {
+      tick:this.tickId, state:this.paused?'paused':this.state, now:this.now, settings:this.settings,
+      WW:this.WW, cols:this.cols, parityFlip:this.parityFlip, gridTop:this.gridTop, gridTopTarget:this.gridTopTarget,
+      lowestY:this.lowestY, grid:[...this.grid.values()], flights:this.flights,
+      players:this.players.map(p=>({...p,held:undefined})), score:this.score, dispScore:this.dispScore,
+      missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
+      events:this.events.slice(-32), eventId:this.eventId,
+    };
+  }
+}
+
+module.exports = { OnlineGame, LEVELS, clamp };
