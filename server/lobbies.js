@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { OnlineGame } = require('./game');
+const { BattleGame } = require('./battle');
 
 const DEFAULT_SETTINGS = Object.freeze({
   reload:1.35, missMax:12, rescueDur:4, assist:.35, mateLines:true, sound:true,
@@ -14,7 +15,7 @@ const cleanName = value => String(value || '').trim().replace(/\s+/g, ' ').slice
 
 function validateSettings(input) {
   const s = { ...DEFAULT_SETTINGS, ...(input || {}) };
-  if (!['clear','endless'].includes(s.mode)) throw fail('bad_settings','Invalid game mode.');
+  if (!['clear','endless','battle'].includes(s.mode)) throw fail('bad_settings','Invalid game mode.');
   if (!['classic','wide'].includes(s.field)) throw fail('bad_settings','Invalid field width.');
   if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level <= 3)) throw fail('bad_settings','Invalid level.');
   const number = (name,min,max) => { s[name]=Number(s[name]); if(!Number.isFinite(s[name])||s[name]<min||s[name]>max)throw fail('bad_settings',`Invalid ${name}.`); };
@@ -48,7 +49,7 @@ function create(name, ws, address='unknown') {
 function join(code, name, ws, address='unknown') {
   rateLimit(address,'join',30,60_000); code=String(code||''); if(!/^\d{3}$/.test(code))throw fail('bad_code','Enter a three-digit room code.');
   const room=rooms.get(code); if(!room)throw fail('bad_code','Room not found.'); if(room.phase!=='lobby')throw fail('match_started','That match has already started.');
-  if(room.players.length>=4)throw fail('room_full','That room is full.'); name=cleanName(name); if(!name)throw fail('bad_name','Enter a display name.');
+  const capacity=room.settings.mode==='battle'?8:4;if(room.players.length>=capacity)throw fail('room_full','That room is full.'); name=cleanName(name); if(!name)throw fail('bad_name','Enter a display name.');
   if(room.players.some(p=>p.name.toLowerCase()===name.toLowerCase()))throw fail('name_taken','That name is already in use.');
   const p=player(name,ws); room.players.push(p); room.emptyAt=null; broadcastState(room); return {room,p};
 }
@@ -61,29 +62,33 @@ function rejoin(code, token, ws) {
 function updateSettings(room,p,settings,revision) {
   if(room.hostId!==p.id)throw fail('not_host','Only the host can change settings.'); if(room.phase!=='lobby')throw fail('settings_locked','Settings are locked during a match.');
   if(Number(revision)!==room.revision)throw fail('stale_revision','Lobby settings changed; try again.');
-  room.settings=validateSettings(settings);room.revision++;broadcastState(room);
+  const next=validateSettings(settings);if(next.mode!=='battle'&&room.players.length>4)throw fail('too_many_players','Co-op modes support at most four players.');
+  if(next.mode==='battle')next.field='classic';room.settings=next;room.revision++;broadcastState(room);
 }
+function makeGame(room){const seed=crypto.randomBytes(4).readUInt32LE();return room.settings.mode==='battle'?new BattleGame(room.settings,room.players,seed):new OnlineGame(room.settings,room.players,seed);}
+function sendPlayer(p,type,payload={}){if(p.connected&&p.ws?.readyState===1)p.ws.send(JSON.stringify({type,...payload}));}
+function broadcastMatchStarted(room){for(const p of room.players)sendPlayer(p,'match_started',{room:publicRoom(room),snapshot:room.game.snapshotFor(p.id,true)});}
 function start(room,p) {
   if(room.hostId!==p.id)throw fail('not_host','Only the host can start.'); if(room.phase!=='lobby')throw fail('bad_phase','Match is already running.');
   const connected=room.players.filter(q=>q.connected); if(connected.length<2)throw fail('not_enough_players','At least two connected players are required.');
-  room.players=connected; room.phase='playing'; room.game=new OnlineGame(room.settings,room.players,crypto.randomBytes(4).readUInt32LE());
-  broadcast(room,'match_started',{room:publicRoom(room),snapshot:room.game.snapshot()});
+  room.players=connected; room.phase='playing'; room.game=makeGame(room);room.snapshotSeq=0;
+  broadcastMatchStarted(room);
 }
 function requireHost(room,p){if(room.hostId!==p.id)throw fail('not_host','Only the host can control the match.');if(room.phase!=='playing')throw fail('bad_phase','No match is running.');}
-function pause(room,p,value){requireHost(room,p);room.game.setPaused(value);broadcast(room,'phase_changed',{phase:value?'paused':'playing'});}
-function restart(room,p){requireHost(room,p);room.game=new OnlineGame(room.settings,room.players,crypto.randomBytes(4).readUInt32LE());broadcast(room,'match_started',{room:publicRoom(room),snapshot:room.game.snapshot()});}
+function pause(room,p,value){requireHost(room,p);room.game.setPaused(value);broadcast(room,'phase_changed',{phase:value?'paused':'play'});}
+function restart(room,p){requireHost(room,p);room.game=makeGame(room);room.snapshotSeq=0;broadcastMatchStarted(room);}
 function returnToLobby(room,p){if(room.hostId!==p.id)throw fail('not_host','Only the host can return to the lobby.');if(!['playing','ended'].includes(room.phase))throw fail('bad_phase','Cannot return now.');room.players=room.players.filter(q=>q.connected);room.game=null;room.phase='lobby';room.revision++;broadcastState(room);}
 function broadcastState(room){broadcast(room,'lobby_state',{room:publicRoom(room)});}
 function transferHost(room,departed){if(room.hostId!==departed.id)return;const next=room.players.filter(q=>q.connected&&q!==departed).sort((a,b)=>a.joinedAt-b.joinedAt)[0];if(next){room.hostId=next.id;broadcast(room,'host_changed',{hostId:next.id});broadcastState(room);}}
-function disconnect(room,p,explicit=false){if(!room||!p)return;p.connected=false;p.ws=null;p.disconnectedAt=Date.now();room.game?.setConnected(p.id,false);
+function disconnect(room,p,explicit=false){if(!room||!p)return;p.connected=false;p.ws=null;p.disconnectedAt=Date.now();if(explicit&&room.settings.mode==='battle')room.game?.forfeit(p.id);else room.game?.setConnected(p.id,false);
   if(explicit){transferHost(room,p);if(room.phase==='lobby')room.players=room.players.filter(q=>q!==p);}
   else if(room.hostId===p.id)p.hostTimer=setTimeout(()=>{p.hostTimer=null;if(!p.connected)transferHost(room,p);},10_000);
   if(!room.players.some(q=>q.connected))room.emptyAt=Date.now();broadcastState(room);
 }
 function findBySocket(ws){for(const room of rooms.values()){const p=room.players.find(q=>q.ws===ws);if(p)return{room,p};}return{};}
 function sweep(now=Date.now()){for(const [code,room] of rooms){if(room.emptyAt&&now-room.emptyAt>300_000){rooms.delete(code);continue;}if(room.phase==='lobby'){for(const p of [...room.players])if(!p.connected&&p.disconnectedAt&&now-p.disconnectedAt>60_000){transferHost(room,p);room.players.splice(room.players.indexOf(p),1);}if(!room.players.length)rooms.delete(code);}}for(const[k,hits]of limits)if(!hits.some(t=>now-t<60_000))limits.delete(k);}
-function tick(dt){for(const room of rooms.values())if(room.phase==='playing'&&room.game){room.game.update(dt);if(room.game.state==='won'||room.game.state==='lost')room.phase='ended';}}
-function snapshots(){for(const room of rooms.values())if(room.game&&['playing','ended'].includes(room.phase))broadcast(room,'snapshot',{snapshot:room.game.snapshot(),phase:room.phase});}
+function tick(dt){for(const room of rooms.values())if(room.phase==='playing'&&room.game){room.game.update(dt);if(['won','lost','ended'].includes(room.game.state))room.phase='ended';}}
+function snapshots(){for(const room of rooms.values())if(room.game&&['playing','ended'].includes(room.phase)){const overview=room.settings.mode==='battle'&&++room.snapshotSeq%4===0;for(const p of room.players)sendPlayer(p,'snapshot',{snapshot:room.game.snapshotFor(p.id,overview),phase:room.phase});}}
 function clear(){for(const room of rooms.values())for(const p of room.players)if(p.hostTimer)clearTimeout(p.hostTimer);rooms.clear();limits.clear();}
 
 module.exports={DEFAULT_SETTINGS,rooms,create,join,rejoin,updateSettings,start,pause,restart,returnToLobby,disconnect,findBySocket,sweep,tick,snapshots,broadcastState,publicRoom,clear,fail};

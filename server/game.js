@@ -23,10 +23,12 @@ function mulberry32(seed) {
 }
 
 class OnlineGame {
-  constructor(settings, roster, seed) {
+  constructor(settings, roster, seed, hooks = {}) {
     this.settings = structuredClone(settings);
     this.roster = roster.map((p, i) => ({ id: p.id, name: p.name, i }));
     this.random = mulberry32(seed);
+    this.hooks = hooks;
+    this.battle = this.settings.mode === 'battle';
     this.tickId = 0;
     this.state = 'play';
     this.reset();
@@ -35,7 +37,7 @@ class OnlineGame {
   rnd(a, b) { return a + this.random() * (b - a); }
   reset() {
     const S = this.settings;
-    this.WW = S.field === 'wide' ? W * 4 : W;
+    this.WW = !this.battle && S.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
     this.grid = new Map(); this.parityFlip = 0;
     this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
@@ -57,7 +59,7 @@ class OnlineGame {
       ...member, x: this.WW * (i + 0.5) / this.roster.length,
       angle: this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
       held: { l: false, r: false }, connected: true,
-      stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0 },
+      stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 },
     }));
     for (const p of this.players) { p.cur = this.genBubble(); p.next = this.genBubble(); }
     this.updateLowest();
@@ -160,7 +162,7 @@ class OnlineGame {
   }
   fire(id) {
     const p = this.players.find(q => q.id === id);
-    if (!p || !p.connected || this.state !== 'play' || this.paused || p.reload > 0) return false;
+    if (!p || !p.connected || this.state !== 'play' || this.paused || this.inputLocked || p.reload > 0) return false;
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
@@ -176,7 +178,7 @@ class OnlineGame {
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*dt, 80*dt);
     for (const p of this.players) {
       p.reload = Math.max(0, p.reload - dt);
-      if (!p.connected) continue;
+      if (!p.connected || this.inputLocked) continue;
       if (p.held.l) p.angle = clamp(p.angle - 2.4*dt, -1.22, 1.22);
       if (p.held.r) p.angle = clamp(p.angle + 2.4*dt, -1.22, 1.22);
     }
@@ -240,13 +242,31 @@ class OnlineGame {
     for(const result of results) if(result.popped){let fresh=0; result.popped.forEach(k=>{if(!all.has(k)&&this.grid.has(k)){const b=this.grid.get(k);if(b.placedBy>=0&&b.placedBy!==result.shooter)owners.add(b.placedBy);all.add(k);fresh++;}});if(fresh)clearers.push(result.shooter);}
     const popped=[]; all.forEach(k=>{const b=this.grid.get(k);if(b){popped.push(b);this.grid.delete(k);}});
     const dropped=this.removeFloaters(); this.updateLowest();
-    if(popped.length){clearers.forEach(i=>this.registerClear(i));const pts=popped.length*10*this.chain.mult;this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
+    if(popped.length){if(!this.battle)clearers.forEach(i=>this.registerClear(i));const pts=popped.length*10*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
     const misses=results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
     if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.gridTopTarget+=ROWH;this.emit('ceiling');}}
-    if(dropped.length){const pts=dropped.length*30*this.chain.mult+(dropped.length>=5?200:0);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
+    if(dropped.length){const pts=dropped.length*30*(this.battle?1:this.chain.mult)+(dropped.length>=5?200:0);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
     if(this.danger&&!this.anyDangerCells()){this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue');}
     this.refreshQueues();
+    const total=popped.length+dropped.length;
+    if(this.battle&&total>=6){const amount=clamp(2+Math.round(total*.7),3,14);this.emit('attack_ready',{amount});this.hooks.onAttack?.(amount);}
+    if(this.battle&&!this.grid.size)this.refillBattleBoard();
     if(this.settings.mode==='clear'&&!this.grid.size)this.end(true);
+  }
+  refillBattleBoard(){
+    this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;
+    const rows=this.levelRows();for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++)if(rows[r][c]!=='.')this.grid.set(key(r,c),{r,c,kind:rows[r][c],special:null,placedBy:-1});
+    this.removeFloaters();this.updateLowest();this.refreshQueues();this.emit('field_refilled',{points:1000});
+  }
+  addGarbage(amount,fromId){
+    let added=0;
+    for(let g=0;g<amount;g++){
+      const candidates=[],maxR=Math.floor((DANGER_Y-this.gridTop)/ROWH);
+      for(let r=0;r<=maxR;r++)for(let c=0;c<this.colsIn(r);c++)if(this.validCell(r,c))candidates.push({r,c,j:this.cellY(r)+this.rnd(0,ROWH*2.2)});
+      if(!candidates.length)break;candidates.sort((a,b)=>b.j-a.j);const cell=candidates[(this.random()*Math.min(4,candidates.length))|0];
+      this.grid.set(key(cell.r,cell.c),{r:cell.r,c:cell.c,kind:KINDS[(this.random()*KINDS.length)|0],special:null,placedBy:-1});added++;
+    }
+    this.updateLowest();this.refreshQueues();this.emit('garbage',{fromId,amount:added});return added;
   }
   registerClear(i){const c=this.chain;if(c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
   anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>DANGER_Y)hit=true;});return hit;}
@@ -264,6 +284,7 @@ class OnlineGame {
       events:this.events.slice(-32), eventId:this.eventId,
     };
   }
+  snapshotFor(){return this.snapshot();}
 }
 
 module.exports = { OnlineGame, LEVELS, clamp };

@@ -11,6 +11,7 @@ function client(url){
   const opened=new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
   return {ws,opened,send(value){ws.send(JSON.stringify(value));},next(type){const i=queue.findIndex(m=>m.type===type);if(i>=0)return Promise.resolve(queue.splice(i,1)[0]);return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(`Timed out waiting for ${type}`)),2500);waiters.push({type,resolve:m=>{clearTimeout(timer);resolve(m);}});});}};
 }
+async function nextWhere(c,type,predicate){for(let i=0;i<8;i++){const value=await c.next(type);if(predicate(value))return value;}throw new Error(`No matching ${type} message`);}
 
 test('two websocket clients create, join, start, input, and receive one authoritative match', async () => {
   const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const port=app.server.address().port,url=`ws://127.0.0.1:${port}/ws`;
@@ -20,5 +21,20 @@ test('two websocket clients create, join, start, input, and receive one authorit
   await a.next('lobby_state');a.send({type:'start'});const [as,bs]=await Promise.all([a.next('match_started'),b.next('match_started')]);
   assert.equal(as.snapshot.tick,bs.snapshot.tick);b.send({type:'input',seq:1,held:{r:true}});b.send({type:'fire'});
   const [snapA,snapB]=await Promise.all([a.next('snapshot'),b.next('snapshot')]);assert.equal(snapA.snapshot.tick,snapB.snapshot.tick);assert.deepEqual(snapA.snapshot.grid,snapB.snapshot.grid);
+  a.ws.terminate();b.ws.terminate();app.wss.close();await new Promise(resolve=>app.server.close(resolve));
+});
+
+test('battle rooms start with personalized snapshots and server-validated targeting', async () => {
+  const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const port=app.server.address().port,url=`ws://127.0.0.1:${port}/ws`;
+  const a=client(url),b=client(url);await Promise.all([a.opened,b.opened]);
+  a.send({type:'create',name:'Alpha'});const aj=await a.next('joined');
+  b.send({type:'join',code:aj.room.code,name:'Bravo'});await b.next('joined');
+  a.send({type:'update_settings',revision:0,settings:{...aj.room.settings,mode:'battle'}});
+  await nextWhere(a,'lobby_state',m=>m.room.settings.mode==='battle');a.send({type:'start'});
+  const [as,bs]=await Promise.all([a.next('match_started'),b.next('match_started')]);
+  assert.equal(as.snapshot.kind,'battle');assert.equal(bs.snapshot.kind,'battle');
+  assert.equal(as.snapshot.self.players[0].id,as.snapshot.boards.find(p=>p.name==='Alpha').id);
+  assert.equal(bs.snapshot.self.players[0].id,bs.snapshot.boards.find(p=>p.name==='Bravo').id);
+  a.send({type:'target',targetId:bs.snapshot.self.players[0].id});const error=await a.next('error');assert.equal(error.code,'no_attack');
   a.ws.terminate();b.ws.terminate();app.wss.close();await new Promise(resolve=>app.server.close(resolve));
 });

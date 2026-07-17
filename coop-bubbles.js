@@ -1,8 +1,7 @@
-/* Bubble Together — cooperative multiplayer bubble-shooter prototype.
-   Architecture: central authoritative state (grid, flights, queues, timers, meters)
-   updated in update(); rendering fully separate in render(). Each player is an
-   independent input stream (pointer / key-pair / bot controller) feeding fire()/aim —
-   ready to be replaced by WebSocket streams later. */
+/* Bubble Together — cooperative and competitive multiplayer bubble shooter.
+   Architecture: local authoritative state is updated separately from rendering;
+   online rooms consume server-authoritative snapshots. Each player remains an
+   independent pointer, key-pair, bot, or WebSocket input stream. */
 (() => {
 if (customElements.get('coop-bubbles')) return;
 
@@ -69,12 +68,17 @@ const META = [
   { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire' },
   { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire' },
   { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire' },
+  { name:'P5', accent:'#5fb7ff', trail:'solid', icon:'tri',    ctrl:'battle royale · bot or online' },
+  { name:'P6', accent:'#9ad34d', trail:'dots',  icon:'square', ctrl:'battle royale · bot or online' },
+  { name:'P7', accent:'#ff8a75', trail:'rings', icon:'ring',   ctrl:'battle royale · bot or online' },
+  { name:'P8', accent:'#d4b45f', trail:'spark', icon:'star',   ctrl:'battle royale · bot or online' },
 ];
 const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   launch:[540,.07,'triangle',-120], bounce:[300,.05,'sine',60], attach:[220,.06,'sine',0],
   pop:[660,.12,'triangle',240], bigpop:[520,.22,'triangle',380], drop:[160,.35,'sawtooth',-90],
   chain:[880,.14,'triangle',220], warn:[240,.3,'square',-60], rescue:[720,.4,'triangle',300],
   win:[620,.6,'triangle',400], lose:[220,.7,'sawtooth',-140], swap:[430,.08,'sine',120], ceiling:[190,.3,'square',-50],
+  attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
 };
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
@@ -107,6 +111,8 @@ class CoopBubbles extends HTMLElement {
 
   /* ---------- state / setup ---------- */
   resetGame() {
+    if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
+    this.battle = null;
     this.WW = this.settings.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
     this.grid = new Map(); this.parityFlip = 0;
@@ -555,6 +561,12 @@ class CoopBubbles extends HTMLElement {
   frame(t) {
     this._raf = requestAnimationFrame(tt => this.frame(tt));
     const dt = Math.min(0.033, (t - (this._t || t)) / 1000); this._t = t;
+    if (this.battle && this.settings.mode === 'battle') {
+      if (!this.online && this.state === 'play') this.battleUpdate(dt);
+      else if (this.online && ['play','paused','spectating','won','lost'].includes(this.state)) this.updateOnlineBattleVisuals(dt);
+      this.battleRender();
+      return;
+    }
     if (this.state === 'play' && !this.online) this.update(dt);
     else if (this.online && ['play','paused','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
     this.render();
@@ -572,6 +584,17 @@ class CoopBubbles extends HTMLElement {
       const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX+=(target-this.camX)*Math.min(1,6*dt);}
     }
     this.fxTick();
+  }
+  updateOnlineBattleVisuals(dt) {
+    const bt=this.battle;if(!bt)return;
+    if(this.state!=='paused'){
+      this.now+=dt;if(bt.targeting)bt.targeting.t=Math.max(0,bt.targeting.t-dt);
+      const b=bt.human;if(b){this.bindBoard(b);const p=b.player;
+        if(this.state==='play'&&!bt.targeting&&this._onlineHeld){if(this._onlineHeld.l)p.angle=clamp(p.angle-2.4*dt,-1.22,1.22);if(this._onlineHeld.r)p.angle=clamp(p.angle+2.4*dt,-1.22,1.22);}
+        p.reload=Math.max(0,(p.reload||0)-dt);for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>W-X0-R)f.vx=-f.vx;}
+        if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);this.fxTick();this.unbindBoard(b);}
+    }
+    const want=!!bt.targeting||bt.spectate;bt.zoom=clamp(bt.zoom+(want?6:-6)*dt,0,1);
   }
   update(rdt) {
     const ts = this.danger ? 0.55 : 1; // dramatic slow-mo during rescue window
@@ -643,6 +666,7 @@ class CoopBubbles extends HTMLElement {
 
   /* ---------- audio hooks ---------- */
   sfx(name) {
+    if (this._sfxMute) return;
     this.sfxLog.push({ name, t: this.now });
     if (!this.settings.sound || !this._ac) return;
     const def = SFX[name]; if (!def) return;
@@ -662,6 +686,18 @@ class CoopBubbles extends HTMLElement {
   /* ---------- input ---------- */
   bindInput() {
     this.canvas.addEventListener('pointerdown', () => this.ensureAudio());
+    const canvasPt = e => { const r = this.canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+    this.canvas.addEventListener('pointermove', e => {
+      if (!this.battleTargetActive()) return;
+      this.battle.targeting.hover = this.battleSlotAt(canvasPt(e));
+    });
+    this.canvas.addEventListener('pointerdown', e => {
+      if (!this.battleTargetActive()) return;
+      const s = this.battleSlotAt(canvasPt(e)), tg = this.battle.targeting;
+      if (s >= 0) { const t = this.battle.boards[s];
+        if (t.alive && s !== tg.by) this.chooseBattleTarget(t); }
+    });
     const keymap = { // player input streams by key
       a:[1,'l'], d:[1,'r'], arrowleft:[2,'l'], arrowright:[2,'r'], j:[3,'l'], l:[3,'r'],
     };
@@ -671,6 +707,26 @@ class CoopBubbles extends HTMLElement {
       this.ensureAudio();
       const k = e.key.toLowerCase();
       if (k === 'p') { this.togglePause(); return; }
+      if (this.battle && this.settings.mode === 'battle') {
+        const bt = this.battle, tg = bt.targeting;
+        if (tg && tg.by === bt.human.i) {
+          const num = parseInt(k, 10);
+          if (num >= 1 && num <= bt.boards.length) { const t = bt.boards[num - 1];
+            if (t.alive && t.i !== tg.by) this.chooseBattleTarget(t); e.preventDefault(); }
+          return;
+        }
+        if (this.online) {
+          if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
+          if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
+          if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
+          return;
+        }
+        const hp = bt.human.player;
+        if (['a','arrowleft','j'].includes(k)) { hp.held.l = true; e.preventDefault(); }
+        if (['d','arrowright','l'].includes(k)) { hp.held.r = true; e.preventDefault(); }
+        if (['w',' ','arrowup','enter','k'].includes(k)) { this.battleFire(); e.preventDefault(); }
+        return;
+      }
       if (this.online) {
         if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
@@ -681,7 +737,9 @@ class CoopBubbles extends HTMLElement {
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
     };
-    const ku = e => { const k=e.key.toLowerCase(); if(this.online){if(['a','arrowleft','j'].includes(k))this.setOnlineHeld('l',false);if(['d','arrowright','l'].includes(k))this.setOnlineHeld('r',false);return;} const am = keymap[k];
+    const ku = e => { const k=e.key.toLowerCase();
+      if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
+      if(this.online){if(['a','arrowleft','j'].includes(k))this.setOnlineHeld('l',false);if(['d','arrowright','l'].includes(k))this.setOnlineHeld('r',false);return;} const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p) p.held[am[1]] = false; } };
     window.addEventListener('keydown', kd);
     window.addEventListener('keyup', ku);
@@ -1043,6 +1101,7 @@ class CoopBubbles extends HTMLElement {
     }
   }
   drawHUD(ctx) {
+    if (this.battle && this.settings.mode === 'battle' && !this.online) return this.drawBattleStrip(ctx);
     ctx.textAlign = 'left';
     const mw = 170, mx = W - X0 - 10 - mw, my = 34;
     ctx.save(); ctx.shadowColor = 'rgba(40,80,140,0.18)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
@@ -1087,6 +1146,468 @@ class CoopBubbles extends HTMLElement {
       ctx.fillStyle = 'rgba(255,255,255,0.8)';
       ctx.fillRect(mx + mw * i / this.settings.missMax, my + 2, 1.5, 10);
     }
+  }
+
+  /* ---------- battle royale mode ---------- */
+  resetBattle() {
+    this.WW = W; this.cols = COLS; this.camX = 0;
+    const n = clamp(this.settings.players, 2, 8);
+    this.battle = { boards: [], phase: 'play', targeting: null, zoom: 0, order: [], winner: -1, spectate: false, view: 0 };
+    for (let i = 0; i < n; i++) this.battle.boards.push(this.makeBattleBoard(i, i !== 0));
+    this.battle.human = this.battle.boards[0];
+    this.flights = []; this.falling = []; this.pops = []; this.sparks = []; this.ripples = []; this.callouts = []; this.popups = []; this.sfxLog = [];
+    this.batch = []; this.resolveAt = 0; this.danger = null; this.shake = 0; this.now = 0; this.dispScore = 0;
+    this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
+    if (this.state !== 'tutorial') this.state = 'play';
+    this.hideOverlays();
+  }
+  makeBattleBoard(i, bot) {
+    const b = { i, meta: META[i], alive: true, grid: new Map(), parityFlip: 0,
+      gridTop: GRIDTOP0, gridTopTarget: GRIDTOP0, lowestY: 0,
+      flights: [], falling: [], pops: [], sparks: [], ripples: [], callouts: [], popups: [],
+      batch: [], resolveAt: 0, shotCount: 0, specialFlip: 0,
+      score: 0, dispScore: 0, missMeter: 0, danger: null,
+      attackFlash: -9, chargeFlash: -9, attackPend: null, _dead: false };
+    const rows = this.levelRows();
+    rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
+      if (row[c] !== '.') b.grid.set(key(r, c), { r, c, kind: row[c], special: null, placedBy: -1 }); });
+    b.player = { i: 0, meta: META[i], x: W / 2, angle: rnd(-0.3, 0.3), cur: null, next: null,
+      reload: 0, bot, think: rnd(0.6, 1.8), plan: null, held: {},
+      stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 } };
+    b.playersArr = [b.player];
+    this.bindBoard(b);
+    const safe = new Set(), st = [];
+    this.grid.forEach((g, kk) => { if (g.r === 0) { safe.add(kk); st.push(g); } });
+    while (st.length) { const g = st.pop();
+      for (const [nr, nc] of this.neighbors(g.r, g.c)) { const kk = key(nr, nc), nb = this.grid.get(kk);
+        if (nb && !safe.has(kk)) { safe.add(kk); st.push(nb); } } }
+    [...this.grid.keys()].forEach(kk => { if (!safe.has(kk)) this.grid.delete(kk); });
+    b.player.cur = this.genBubble(); b.player.next = this.genBubble();
+    this.updateLowest();
+    this.unbindBoard(b);
+    return b;
+  }
+  bindBoard(b) {
+    this._boundBoard = b;
+    this.grid = b.grid; this.parityFlip = b.parityFlip;
+    this.gridTop = b.gridTop; this.gridTopTarget = b.gridTopTarget; this.lowestY = b.lowestY;
+    this.flights = b.flights; this.falling = b.falling; this.pops = b.pops; this.sparks = b.sparks;
+    this.ripples = b.ripples; this.callouts = b.callouts; this.popups = b.popups;
+    this.batch = b.batch; this.resolveAt = b.resolveAt; this.shotCount = b.shotCount; this.specialFlip = b.specialFlip;
+    this.players = b.playersArr; this.activeP = 0;
+    this.score = b.score; this.dispScore = b.dispScore; this.missMeter = b.missMeter; this.danger = b.danger;
+    this.camX = 0; this.WW = W; this.cols = COLS;
+  }
+  unbindBoard(b) {
+    b.grid = this.grid; b.parityFlip = this.parityFlip;
+    b.gridTop = this.gridTop; b.gridTopTarget = this.gridTopTarget; b.lowestY = this.lowestY;
+    b.flights = this.flights; b.falling = this.falling; b.pops = this.pops; b.sparks = this.sparks;
+    b.ripples = this.ripples; b.callouts = this.callouts; b.popups = this.popups;
+    b.batch = this.batch; b.resolveAt = this.resolveAt; b.shotCount = this.shotCount; b.specialFlip = this.specialFlip;
+    b.score = this.score; b.dispScore = this.dispScore; b.missMeter = this.missMeter; b.danger = this.danger;
+    this._boundBoard = null;
+  }
+  battleFire() {
+    const bt = this.battle;
+    if (!bt || this.state !== 'play') return;
+    if (bt.targeting && bt.targeting.by === bt.human.i) return;
+    const b = bt.human; if (!b.alive) return;
+    this.bindBoard(b); this.fire(0); this.unbindBoard(b);
+  }
+  battleTargetActive() {
+    const bt = this.battle;
+    return !!(bt && this.settings.mode === 'battle' && this.state === 'play' && bt.targeting && bt.targeting.by === bt.human.i && bt.zoom > 0.5);
+  }
+  chooseBattleTarget(board) {
+    const bt=this.battle,tg=bt&&bt.targeting;if(!tg||!board?.alive||board.i===tg.by)return;
+    if(this.online)this.sendOnline('target',{targetId:board.id});else this.deliverAttack(tg.by,board.i,tg.amount);
+  }
+  battleUpdate(rdt) {
+    const bt = this.battle;
+    this.now += rdt;
+    const tg = bt.targeting;
+    if (tg) {
+      tg.t -= rdt;
+      if (tg.t <= 0) {
+        const opts = bt.boards.filter(q => q.alive && q.i !== tg.by);
+        if (opts.length) this.deliverAttack(tg.by, opts[(Math.random() * opts.length) | 0].i, tg.amount);
+        else bt.targeting = null;
+      }
+    }
+    const wantZoom = (bt.targeting && bt.targeting.by === bt.human.i) || bt.spectate;
+    bt.zoom = clamp(bt.zoom + (wantZoom ? 6 : -6) * rdt, 0, 1);
+    for (const b of bt.boards) {
+      if (!b.alive) { this.stepLoose(b, rdt); continue; }
+      this._sfxMute = b.i !== bt.view;
+      this.bindBoard(b);
+      this.boardTick(b, rdt, bt.targeting);
+      this.unbindBoard(b);
+      this._sfxMute = false;
+    }
+    for (const b of bt.boards) if (b._dead) { b._dead = false; this.eliminate(b); }
+    for (const b of bt.boards) if (b.attackPend && b.alive) {
+      b.attackPend.t -= rdt;
+      if (b.attackPend.t <= 0) {
+        const amt = b.attackPend.amount; b.attackPend = null;
+        const opts = bt.boards.filter(q => q.alive && q.i !== b.i);
+        if (opts.length) {
+          opts.sort((u, v) => v.score - u.score);
+          const pick = Math.random() < 0.6 ? opts[0] : opts[(Math.random() * opts.length) | 0];
+          this.deliverAttack(b.i, pick.i, amt);
+        }
+      }
+    }
+    this.shake = Math.max(0, this.shake - 40 * rdt);
+    if (bt.phase === 'play') {
+      const alive = bt.boards.filter(q => q.alive);
+      if (alive.length <= 1) this.endBattle(alive[0] || null);
+    }
+  }
+  boardTick(b, rdt, tg) {
+    const p = b.player;
+    p.reload = Math.max(0, p.reload - rdt);
+    this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80 * rdt, 80 * rdt);
+    const locked = tg && tg.by === b.i && !p.bot;
+    if (p.bot) this.botUpdate(p, rdt);
+    else if (!locked) {
+      const spd = 2.4 * rdt;
+      if (p.held.l) p.angle = clamp(p.angle - spd, -1.22, 1.22);
+      if (p.held.r) p.angle = clamp(p.angle + spd, -1.22, 1.22);
+    }
+    this.stepFlights(rdt);
+    if (this.resolveAt && this.now >= this.resolveAt) this.battleResolve(b);
+    const FLOOR = 92 + LAUNCH_Y - 60 - R + 6;
+    for (let i = this.falling.length - 1; i >= 0; i--) {
+      const f = this.falling[i];
+      f.vy += 1900 * rdt; f.x += f.vx * rdt; f.y += f.vy * rdt; f.a += f.spin * rdt;
+      if (f.y > FLOOR && f.vy > 0) {
+        f.b = (f.b || 0) + 1; f.y = FLOOR; f.vy *= -0.45; f.vx *= 0.75; f.spin *= 0.6;
+        for (let s = 0; s < 4; s++) this.sparks.push({ x: f.x + rnd(-8, 8), y: FLOOR + R * 0.7,
+          vx: rnd(-140, 140), vy: rnd(-260, -60), g: 1500, t: this.now, life: 0.5,
+          color: PAL[f.kind] || '#fff', sz: rnd(2.5, 5) });
+      }
+      if (f.b >= 2) f.fade = (f.fade !== undefined ? f.fade : 1) - 3 * rdt;
+      if ((f.fade !== undefined && f.fade <= 0) || f.y > H + 60) this.falling.splice(i, 1);
+    }
+    for (let i = this.sparks.length - 1; i >= 0; i--) {
+      const s = this.sparks[i];
+      s.vy += (s.g || 0) * rdt; s.x += s.vx * rdt; s.y += s.vy * rdt;
+      if (this.now - s.t > s.life) this.sparks.splice(i, 1);
+    }
+    this.dispScore += (this.score - this.dispScore) * Math.min(1, 10 * rdt);
+    const inD = this.anyDangerCells();
+    if (inD && !this.danger) { this.danger = { t: this.settings.rescueDur, max: this.settings.rescueDur }; this.callout('DANGER! CLEAR THE LINE!', '#ff5b6b'); this.sfx('warn'); }
+    else if (!inD && this.danger) this.danger = null;
+    if (this.danger) { this.danger.t -= rdt; if (this.danger.t <= 0) b._dead = true; }
+    this.fxTick();
+  }
+  stepLoose(b, dt) {
+    for (let i = b.falling.length - 1; i >= 0; i--) { const f = b.falling[i];
+      f.vy += 1900 * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.a += f.spin * dt;
+      if (f.y > H + 60) b.falling.splice(i, 1); }
+    b.pops = b.pops.filter(p => this.now - p.t < 0.62);
+    b.callouts = b.callouts.filter(c => this.now - c.t < 1.5);
+    b.popups = b.popups.filter(p => this.now - p.t < 1.1);
+    b.sparks = b.sparks.filter(s => this.now - s.t < s.life);
+    b.ripples = b.ripples.filter(r => this.now - r.t < 0.45);
+  }
+  battleResolve(b) {
+    const landed = this.batch; this.batch = []; this.resolveAt = 0;
+    const results = [];
+    for (const l of landed) {
+      if (!this.grid.get(key(l.r, l.c))) { results.push({ popped: null, gone: true }); continue; }
+      if (l.special === 'bomb') {
+        const bx = this.cellX(l.r, l.c), by = this.cellY(l.r), blast = new Set([key(l.r, l.c)]);
+        this.grid.forEach((g, kk) => { if (Math.hypot(this.cellX(g.r, g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(kk); });
+        results.push({ popped: blast, bomb: true });
+      } else {
+        let kind = l.kind;
+        if (l.special === 'rainbow') {
+          let best = null, bs = 0;
+          for (const [nr, nc] of this.neighbors(l.r, l.c)) { const nb = this.grid.get(key(nr, nc));
+            if (nb && !nb.special) { const sz = this.matchGroup(l.r, l.c, nb.kind).size; if (sz > bs) { bs = sz; best = nb.kind; } } }
+          if (best) kind = best; else { results.push({ popped: null }); continue; }
+        }
+        const g = this.matchGroup(l.r, l.c, kind);
+        results.push({ popped: g.size >= 3 ? g : null });
+      }
+    }
+    const allPopped = new Set(); let popN = 0;
+    for (const r of results) if (r.popped) r.popped.forEach(kk => { if (!allPopped.has(kk) && this.grid.has(kk)) { allPopped.add(kk); popN++; } });
+    allPopped.forEach(kk => {
+      const g = this.grid.get(kk); this.grid.delete(kk);
+      this.pops.push({ x: this.cellX(g.r, g.c), y: this.cellY(g.r), kind: g.kind, special: g.special, t: this.now,
+        parts: Array.from({ length: 6 }, () => ({ a: rnd(0, 6.28), sp: rnd(100, 320), sz: rnd(3, 6.5) })) });
+    });
+    const dropped = this.supportCheck();
+    this.updateLowest();
+    if (popN > 0) {
+      const pts = popN * 10;
+      this.score += pts; this.addPopup(this.centerOf(allPopped), '+' + pts, '#17335c');
+      b.player.stats.pops++; b.player.stats.bubbles += popN;
+      this.missMeter = Math.max(0, this.missMeter - 1);
+      this.sfx(popN >= 6 ? 'bigpop' : 'pop');
+      if (results.some(r => r.bomb && r.popped)) this.callout('KABOOM!', '#ff8a3c');
+    }
+    let misses = 0;
+    for (const r of results) if (!r.popped && !r.gone && !r.bomb) misses++;
+    if (misses) { this.missMeter += misses;
+      if (this.missMeter >= this.settings.missMax) { const pre = this.shake; this.ceilingDescend(); if (b.i !== this.battle.view) this.shake = pre; } }
+    if (dropped.n > 0) {
+      const pts = dropped.n * 30 + (dropped.n >= 5 ? 200 : 0);
+      this.score += pts; b.player.stats.drops += dropped.n;
+      this.addPopup({ x: dropped.x, y: dropped.y }, '+' + pts, '#ff8a3c');
+      this.missMeter = Math.max(0, this.missMeter - 3);
+      if (b.i === this.battle.view) this.shake = Math.min(14, 4 + dropped.n * 1.2);
+      this.sfx('drop');
+    }
+    this.refreshQueues();
+    const total = popN + (dropped.n || 0);
+    if (total >= 6 && this.battle.phase === 'play') {
+      const amount = clamp(2 + Math.round(total * 0.7), 3, 14);
+      b.chargeFlash = this.now;
+      if (b.player.bot) b.attackPend = { amount: (b.attackPend ? b.attackPend.amount : 0) + amount, t: rnd(0.7, 1.4) };
+      else {
+        const tg = this.battle.targeting;
+        if (tg && tg.by === b.i) { tg.amount += amount; tg.t = tg.max; }
+        else { this.battle.targeting = { by: b.i, amount, t: 6, max: 6, hover: -1 }; this.sfx('attackReady'); this.callout('BIG CLEAR! PICK A TARGET!', '#ff8a3c'); }
+      }
+    }
+    if (this.grid.size === 0) {
+      this.score += 1000; this.callout('FIELD CLEAR! +1000', '#3ecf72');
+      this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
+      const rows = this.levelRows();
+      rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
+        if (row[c] !== '.') this.grid.set(key(r, c), { r, c, kind: row[c], special: null, placedBy: -1,
+          snapFrom: { x: this.cellX(r, c), y: this.cellY(r) - 500 }, snapT: this.now + r * 0.04 }); });
+      this.updateLowest(); this.refreshQueues();
+    }
+  }
+  deliverAttack(fromI, toI, amount) {
+    const bt = this.battle; if (!bt) return;
+    if (bt.targeting && bt.targeting.by === fromI) bt.targeting = null;
+    const from = bt.boards[fromI], to = bt.boards[toI];
+    if (!from || !to || !to.alive || fromI === toI) return;
+    from.player.stats.attacks = (from.player.stats.attacks || 0) + 1;
+    this.sfx('target');
+    this.dumpGarbage(to, amount, fromI);
+  }
+  dumpGarbage(board, n, fromI) {
+    this.bindBoard(board);
+    let added = 0;
+    for (let g = 0; g < n; g++) {
+      const cand = [];
+      const maxR = Math.floor((DANGER_Y - this.gridTop) / ROWH);
+      for (let r = 0; r <= maxR; r++) { const cn = this.colsIn(r);
+        for (let c = 0; c < cn; c++) if (this.validCell(r, c)) cand.push({ r, c, jy: this.cellY(r) + rnd(0, ROWH * 2.2) }); }
+      if (!cand.length) break;
+      cand.sort((u, v) => v.jy - u.jy);
+      const cell = cand[(Math.random() * Math.min(4, cand.length)) | 0];
+      const kind = KINDS[(Math.random() * KINDS.length) | 0];
+      this.grid.set(key(cell.r, cell.c), { r: cell.r, c: cell.c, kind, special: null, placedBy: -1,
+        snapFrom: { x: this.cellX(cell.r, cell.c) + rnd(-40, 40), y: -60 - rnd(0, 160) }, snapT: this.now + g * 0.06 });
+      added++;
+    }
+    this.updateLowest(); this.refreshQueues();
+    this.callout(META[fromI].name + ' DUMPED ' + added + '!', '#ff5b6b');
+    this.unbindBoard(board);
+    board.attackFlash = this.now;
+    if (board.i === this.battle.view) { this.shake = Math.min(14, 5 + added); this.sfx('junk'); }
+  }
+  eliminate(b) {
+    const bt = this.battle;
+    if (!b.alive) return;
+    b.alive = false; b.danger = null; b.attackPend = null;
+    bt.order.push(b.i);
+    if (bt.targeting && bt.targeting.by === b.i) bt.targeting = null;
+    this.bindBoard(b);
+    this.grid.forEach(g => this.falling.push({ x: this.cellX(g.r, g.c), y: this.cellY(g.r),
+      vx: rnd(-140, 140), vy: rnd(-260, -20), kind: g.kind, special: g.special, spin: rnd(-3, 3), a: 0 }));
+    this.grid.clear();
+    this.unbindBoard(b);
+    if (b.i === bt.human.i) { bt.spectate = true; this.shake = 14; this.sfx('lose'); }
+    else { bt.human.callouts.push({ text: b.meta.name + ' IS OUT!', color: '#7593b5', t: this.now }); this.sfx('drop'); }
+  }
+  endBattle(winner) {
+    const bt = this.battle; if (bt.phase === 'over') return;
+    bt.phase = 'over';
+    if (winner) bt.order.push(winner.i);
+    bt.winner = winner ? winner.i : -1;
+    bt.targeting = null;
+    this.state = winner && winner.i === bt.human.i ? 'won' : 'lost';
+    this.sfx(this.state === 'won' ? 'win' : 'lose');
+    this.showBattleEnd();
+  }
+  showBattleEnd() {
+    const sh = this.shadowRoot, bt = this.battle;
+    const places = [...bt.order].reverse();
+    const hp = places.indexOf(bt.human.i) + 1;
+    const t = sh.querySelector('.endTitle');
+    t.textContent = this.state === 'won' ? '\ud83c\udfc6 Last one floating!' : 'Popped! You placed #' + hp;
+    t.style.color = this.state === 'won' ? '#2b6fd4' : '#ff5b6b';
+    sh.querySelector('.endSub').textContent = 'Battle royale \u00b7 ' + bt.boards.length + ' players';
+    sh.querySelector('.endStats').innerHTML = places.map((pi, idx) => {
+      const b = bt.boards[pi], st = b.player.stats;
+      return `<div class="statRow"><span class="who" style="color:${b.meta.accent}">#${idx + 1}</span>
+        <b style="width:90px">${this.escapeHTML(b.name||b.meta.name)}${pi === bt.human.i ? ' \u2b50' : ''}</b>
+        <span class="nums">${Math.round(b.score).toLocaleString()} pts \u00b7 ${st.attacks || 0} attacks \u00b7 ${st.bubbles} popped</span></div>`;
+    }).join('');
+    const again = sh.querySelector('.again'); again.textContent = 'Battle again'; again.disabled = false;
+    this.endEl.style.display = 'grid';
+  }
+  battleSlots() {
+    const n = this.battle.boards.length;
+    const cols = n <= 4 ? 2 : n <= 6 ? 3 : 4;
+    const rows = Math.ceil(n / cols);
+    const areaY = 190, areaW = W - 52, areaH = H - 300;
+    const gapX = 16, gapY = 46;
+    let cw = (areaW - (cols - 1) * gapX) / cols, ch = cw * H / W;
+    const totH = rows * ch + (rows - 1) * gapY;
+    if (totH > areaH) { const k = areaH / totH; cw *= k; ch *= k; }
+    const gw = cols * cw + (cols - 1) * gapX, gh = rows * ch + (rows - 1) * gapY;
+    const ox = (W - gw) / 2, oy = areaY + (areaH - gh) / 2;
+    return this.battle.boards.map((b, i) => {
+      const r = (i / cols) | 0, c = i % cols;
+      const lastRowN = n - (rows - 1) * cols;
+      const rowOff = (r === rows - 1 && lastRowN < cols) ? (cols - lastRowN) * (cw + gapX) / 2 : 0;
+      return { x: ox + rowOff + c * (cw + gapX), y: oy + r * (ch + gapY), w: cw, h: ch };
+    });
+  }
+  battleSlotAt(pt) {
+    const slots = this.battleSlots();
+    for (let i = 0; i < slots.length; i++) { const s = slots[i];
+      if (pt.x >= s.x && pt.x <= s.x + s.w && pt.y >= s.y && pt.y <= s.y + s.h + 34) return i; }
+    return -1;
+  }
+  battleRender() {
+    const ctx = this.ctx; if (!ctx) return;
+    const bt = this.battle, vb = bt.boards[bt.view];
+    this.bindBoard(vb);
+    this.render();
+    this.unbindBoard(vb);
+    if (bt.zoom > 0.01) this.drawBattleZoom(ctx, bt.zoom);
+  }
+  drawBattleStrip(ctx) {
+    const bt = this.battle, n = bt.boards.length;
+    const x0 = 64, x1 = W - 12, gap = 5;
+    const w = (x1 - x0 - (n - 1) * gap) / n, y = 8, h = 66;
+    ctx.save();
+    bt.boards.forEach((b, idx) => {
+      const x = x0 + idx * (w + gap), cx = x + w / 2;
+      ctx.globalAlpha = b.alive ? 1 : 0.55;
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      this.rrect(ctx, x, y, w, h, 10); ctx.fill();
+      ctx.fillStyle = b.meta.accent; ctx.fillRect(x + 4, y + 4, w - 8, 4);
+      const af = this.now - b.attackFlash, cf = this.now - b.chargeFlash;
+      if (b.alive && af >= 0 && af < 0.8) { ctx.globalAlpha = 1 - af / 0.8; ctx.lineWidth = 3; ctx.strokeStyle = '#ff5b6b'; this.rrect(ctx, x, y, w, h, 10); ctx.stroke(); ctx.globalAlpha = 1; }
+      else if (b.alive && cf >= 0 && cf < 0.8) { ctx.globalAlpha = 1 - cf / 0.8; ctx.lineWidth = 3; ctx.strokeStyle = '#ff8a3c'; this.rrect(ctx, x, y, w, h, 10); ctx.stroke(); ctx.globalAlpha = 1; }
+      else if (b.alive && b.danger) { ctx.globalAlpha = 0.5 + Math.sin(this.now * 9) * 0.4; ctx.lineWidth = 3; ctx.strokeStyle = '#ff5b6b'; this.rrect(ctx, x, y, w, h, 10); ctx.stroke(); ctx.globalAlpha = 1; }
+      ctx.textAlign = 'center';
+      ctx.font = '600 12px Fredoka, sans-serif';
+      ctx.fillStyle = idx === bt.view ? '#2b6fd4' : '#7593b5';
+      const rawName=b.name||b.meta.name,label=rawName.slice(0,n>4?6:12)+(idx===bt.view?' \u00b7 YOU':'')+(b.connected===false?' \u00b7 OFF':'');
+      ctx.fillText(label, cx, y + 24);
+      ctx.font = '700 17px Fredoka, sans-serif'; ctx.fillStyle = '#17335c';
+      ctx.fillText(b.alive ? Math.round(b.dispScore).toLocaleString() : 'OUT', cx, y + 45);
+      if (b.alive) {
+        const frac = clamp(b.missMeter / this.settings.missMax, 0, 1);
+        ctx.fillStyle = '#e3eefa'; this.rrect(ctx, x + 6, y + h - 12, w - 12, 5, 2.5); ctx.fill();
+        if (frac > 0) { ctx.fillStyle = frac > 0.7 ? '#ff5b6b' : frac > 0.4 ? '#ffb054' : '#8fb6dd';
+          this.rrect(ctx, x + 6, y + h - 12, Math.max(4, (w - 12) * frac), 5, 2.5); ctx.fill(); }
+      }
+      ctx.globalAlpha = 1;
+    });
+    ctx.restore();
+  }
+  drawBattleZoom(ctx, z) {
+    const bt = this.battle, tg = bt.targeting;
+    ctx.save();
+    ctx.fillStyle = 'rgba(16,36,70,' + (0.62 * z).toFixed(3) + ')';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = z;
+    ctx.textAlign = 'center';
+    if (tg && tg.by === bt.human.i) {
+      ctx.font = '700 44px Fredoka, sans-serif';
+      ctx.lineWidth = 8; ctx.strokeStyle = '#fff';
+      ctx.strokeText('CHOOSE YOUR TARGET!', W / 2, 120);
+      ctx.fillStyle = '#ff8a3c'; ctx.fillText('CHOOSE YOUR TARGET!', W / 2, 120);
+      ctx.font = '600 21px Fredoka, sans-serif'; ctx.fillStyle = '#fff';
+      ctx.fillText('dump ' + tg.amount + ' junk bubbles \u00b7 tap a board or press its number', W / 2, 152);
+      const k = clamp(tg.t / tg.max, 0, 1);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)'; this.rrect(ctx, W / 2 - 120, 164, 240, 8, 4); ctx.fill();
+      ctx.fillStyle = '#ff8a3c'; this.rrect(ctx, W / 2 - 120, 164, Math.max(8, 240 * k), 8, 4); ctx.fill();
+    } else {
+      ctx.font = '700 40px Fredoka, sans-serif'; ctx.lineWidth = 8; ctx.strokeStyle = '#fff';
+      ctx.strokeText('SPECTATING', W / 2, 120);
+      ctx.fillStyle = '#9db8d4'; ctx.fillText('SPECTATING', W / 2, 120);
+    }
+    const slots = this.battleSlots();
+    bt.boards.forEach((b, i) => {
+      const s = slots[i];
+      const mine = tg && tg.by === bt.human.i;
+      const hov = mine && tg.hover === i && b.alive && i !== tg.by;
+      const cx = s.x + s.w / 2, cy = s.y + s.h / 2, sc = 0.85 + 0.15 * z;
+      ctx.save(); ctx.translate(cx, cy); ctx.scale(sc, sc); ctx.translate(-cx, -cy);
+      this.renderMini(ctx, b, s, hov, tg);
+      ctx.restore();
+      ctx.textAlign = 'center';
+      ctx.font = '700 17px Fredoka, sans-serif';
+      ctx.fillStyle = b.alive ? '#fff' : 'rgba(255,255,255,0.45)';
+      ctx.fillText((b.name||b.meta.name) + (i === bt.human.i ? ' (YOU)' : '') + ' \u00b7 ' + Math.round(b.score).toLocaleString(), s.x + s.w / 2, s.y + s.h + 24);
+      if (mine && b.alive && i !== tg.by) {
+        ctx.fillStyle = hov ? '#ff8a3c' : 'rgba(255,255,255,0.92)';
+        ctx.beginPath(); ctx.arc(s.x + 16, s.y + 16, 14, 0, 7); ctx.fill();
+        ctx.fillStyle = hov ? '#fff' : '#17335c'; ctx.font = '700 16px Fredoka, sans-serif';
+        ctx.fillText(String(i + 1), s.x + 16, s.y + 22);
+      }
+    });
+    ctx.restore();
+  }
+  renderMini(ctx, b, s, hov, tg) {
+    const k = s.w / W;
+    this.bindBoard(b);
+    ctx.save(); ctx.translate(s.x, s.y); ctx.scale(k, k);
+    ctx.fillStyle = b.alive ? '#f2f8ff' : '#dfe7f0';
+    this.rrect(ctx, 0, 0, W, H, 36); ctx.fill();
+    const selectable = tg && tg.by === this.battle.human.i && b.alive && b.i !== tg.by;
+    ctx.lineWidth = hov ? 16 : 8;
+    ctx.strokeStyle = hov ? '#ff8a3c' : selectable ? b.meta.accent : 'rgba(120,150,190,0.5)';
+    ctx.stroke();
+    ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.gridTop - 40));
+    this.grid.forEach(g => {
+      const x = this.cellX(g.r, g.c), y = this.cellY(g.r);
+      ctx.fillStyle = g.special ? '#5b6f93' : PAL[g.kind];
+      ctx.beginPath(); ctx.arc(x, y, R - 2, 0, 7); ctx.fill();
+      ctx.strokeStyle = g.special ? '#2c3a52' : PALD[g.kind]; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x, y, R - 3, 0, 7); ctx.stroke();
+    });
+    for (const f of this.flights) { ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); }
+    for (const f of this.falling) { ctx.globalAlpha = 0.7; ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.setLineDash([18, 14]); ctx.lineWidth = 5; ctx.strokeStyle = b.danger ? '#ff5b6b' : 'rgba(255,91,107,0.5)';
+    ctx.beginPath(); ctx.moveTo(18, DANGER_Y); ctx.lineTo(W - 18, DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
+    const p = b.player;
+    ctx.save(); ctx.translate(p.x, LAUNCH_Y - 44); ctx.rotate(clamp(p.angle, -1.22, 1.22));
+    ctx.fillStyle = b.meta.accent; this.rrect(ctx, -14, -70, 28, 52, 12); ctx.fill(); ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 34, 0, 7); ctx.fill();
+    ctx.lineWidth = 7; ctx.strokeStyle = b.meta.accent; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 34, 0, 7); ctx.stroke();
+    if (p.cur) { ctx.fillStyle = p.cur.special ? '#5b6f93' : PAL[p.cur.kind]; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 22, 0, 7); ctx.fill(); }
+    if (b.danger && b.alive) { ctx.fillStyle = 'rgba(255,91,107,' + (0.12 + Math.sin(this.now * 8) * 0.08).toFixed(3) + ')'; this.rrect(ctx, 0, 0, W, H, 36); ctx.fill(); }
+    if (!b.alive) {
+      ctx.fillStyle = 'rgba(60,80,110,0.55)'; this.rrect(ctx, 0, 0, W, H, 36); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '700 130px Fredoka, sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('OUT', W / 2, H / 2 + 40);
+    }
+    const af = this.now - b.attackFlash;
+    if (b.alive && af >= 0 && af < 0.7) { ctx.globalAlpha = 1 - af / 0.7; ctx.lineWidth = 22; ctx.strokeStyle = '#ff5b6b'; this.rrect(ctx, 8, 8, W - 16, H - 16, 30); ctx.stroke(); ctx.globalAlpha = 1; }
+    ctx.restore();
+    this.unbindBoard(b);
+  }
+  showTutorial() {
+    const sh = this.shadowRoot, isB = this.settings.mode === 'battle';
+    sh.querySelector('.tutSub').textContent = isB ? 'Battle royale \u00b7 2\u20138 players \u00b7 own field, shared chaos' : 'Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field';
+    sh.querySelector('.coopSteps').style.display = isB ? 'none' : '';
+    sh.querySelector('.battleSteps').style.display = isB ? '' : 'none';
+    this.tutEl.style.display = 'grid'; this.state = 'tutorial';
   }
 
   /* ---------- DOM / UI ---------- */
@@ -1178,7 +1699,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
       <div class="onlinePlayers"></div>
       <h3>Host settings</h3><div class="lobbySettings">
-        <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option></select></label>
+        <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option><option value="battle">Battle Royale (2\u20138)</option></select></label>
         <label>Field<select data-setting="field"><option value="classic">Classic</option><option value="wide">Wide 4×</option></select></label>
         <label>Level<select data-setting="level"><option value="0">1. The Vault</option><option value="1">2. Chandeliers</option><option value="2">3. The Canyon</option><option value="3">4. Hive Bridge</option><option value="custom">Custom</option></select></label>
         <label>Aim guide<select data-setting="guide"><option value="1">Full</option><option value="0.5">50%</option><option value="0.25">25%</option></select></label>
@@ -1194,13 +1715,23 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <div class="overlay reconnect" style="display:none"><div class="card"><h1>Reconnecting…</h1><p class="sub">Your launcher is reserved while we reconnect.</p><button class="btn ghost reconnectLeave">Leave room</button></div></div>
     <div class="overlay tutorial" style="display:none"><div class="card">
       <h1>Bubble Together</h1>
-      <p class="sub">Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field</p>
+      <p class="sub tutSub">Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field</p>
+      <div class="coopSteps">
       <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> On mobile, hold the lower-left or lower-right half to aim, then tap FIRE above. P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
       <div class="tut"><div class="n">2</div><p><b>Match 3+</b> bubbles of the same color to pop them.</p></div>
       <div class="tut"><div class="n">3</div><p>Bubbles cut off from the ceiling <b>fall</b> \u2014 big drops score big.</p></div>
       <div class="tut"><div class="n">4</div><p><b>Everyone shares the same field</b> \u2014 set up matches for each other for Assists and Team Chains.</p></div>
       <div class="tut"><div class="n">5</div><p>Flying shots <b>pass through</b> each other \u2014 fire whenever you're ready.</p></div>
       <div class="tut"><div class="n">6</div><p>If bubbles cross the <b>danger line</b>, clear them before the rescue timer hits zero!</p></div>
+      </div>
+      <div class="battleSteps" style="display:none">
+      <div class="tut"><div class="n">1</div><p><b>Your own field.</b> Same aim &amp; fire controls \u2014 but every player gets a private board.</p></div>
+      <div class="tut"><div class="n">2</div><p><b>Match 3+</b> to pop \u00b7 cut supports to drop whole chunks.</p></div>
+      <div class="tut"><div class="n">3</div><p>Clear <b>6+ bubbles at once</b> to charge an <b>ATTACK</b> \u2014 the arena zooms out live.</p></div>
+      <div class="tut"><div class="n">4</div><p><b>Pick your victim.</b> Tap a rival's board (or press their number) to dump junk bubbles on them.</p></div>
+      <div class="tut"><div class="n">5</div><p>Junk rains onto their pile. Past the <b>danger line</b> = eliminated.</p></div>
+      <div class="tut"><div class="n">6</div><p><b>Last one floating wins.</b> Up to 8 players per arena.</p></div>
+      </div>
       <button class="btn primary start">Start playing</button>
     </div></div>
     <div class="overlay pause" style="display:none"><div class="card" style="text-align:center">
@@ -1224,11 +1755,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.pauseEl = sh.querySelector('.pause');
     this.endEl = sh.querySelector('.end');
     this.sideEl = sh.querySelector('.side');
-    sh.querySelector('.localPlay').onclick = () => { this.online=false; this.state='tutorial'; this.homeEl.style.display='none'; this.tutEl.style.display='grid'; };
+    sh.querySelector('.localPlay').onclick = () => { this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
     sh.querySelector('.createOnline').onclick = () => this.beginOnline('create');
     sh.querySelector('.joinOnline').onclick = () => this.beginOnline('join');
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));
-    sh.querySelector('.start').onclick = () => { this.ensureAudio(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
+    sh.querySelector('.start').onclick = () => { this.ensureAudio(); if (this.settings.mode === 'battle' && !this.battle) this.resetGame(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
     sh.querySelector('.resume').onclick = () => this.togglePause();
     sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{this.state = 'play'; this.resetGame();} };
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
@@ -1263,12 +1794,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const firstHuman = () => this.players.find(q => !q.bot);
     const wireHold = (sel, dir) => { const b = sh.querySelector(sel);
       b.addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
+        if(this.battle&&this.settings.mode==='battle'&&!this.online){b._p=true;this.battle.human.player.held[dir]=true;return;}
         if(this.online){b._p=true;this.setOnlineHeld(dir,true);return;} const p = firstHuman(); if (p) { b._p = p; p.held[dir] = true; this.activeP = p.i; } });
-      const off = () => { if(this.online){if(b._p)this.setOnlineHeld(dir,false);b._p=null;return;} if (b._p) { b._p.held[dir] = false; b._p = null; } };
+      const off = () => { if(this.battle&&this.settings.mode==='battle'&&!this.online){if(b._p)this.battle.human.player.held[dir]=false;b._p=null;return;} if(this.online){if(b._p)this.setOnlineHeld(dir,false);b._p=null;return;} if (b._p) { b._p.held[dir] = false; b._p = null; } };
       b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
     };
     wireHold('.padL', 'l'); wireHold('.padR', 'r');
     sh.querySelector('.padF').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
+      if(this.battle&&this.settings.mode==='battle'&&!this.online){this.battleFire();return;}
       if(this.online){this.fire();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.fire(p.i); } });
     sh.querySelector('.lobbyStart').onclick=()=>this.sendOnline('start');
     sh.querySelector('.lobbyLeave').onclick=()=>this.leaveOnline();
@@ -1296,6 +1829,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.endStats').innerHTML = this.players.map(p =>
       `<div class="statRow"><span class="who" style="color:${p.meta.accent}">${p.meta.name}</span>
        <span class="nums">${p.stats.pops} pops \u00b7 ${p.stats.bubbles} bubbles \u00b7 ${p.stats.assists} assists \u00b7 ${p.stats.drops} dropped \u00b7 ${p.stats.rescues} rescues</span></div>`).join('');
+    const againBtn = sh.querySelector('.again'); if (!this.online) { againBtn.textContent = 'Play again'; againBtn.disabled = false; }
     this.endEl.style.display = 'grid';
     if(this.online){const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
@@ -1336,13 +1870,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   showOnlineLobby(){
     const sh=this.shadowRoot,room=this.onlineRoom;if(!room)return;this.state='lobby';this.homeEl.style.display='none';this.tutEl.style.display='none';this.endEl.style.display='none';this.pauseEl.style.display='none';this.reconnectEl.style.display='none';this.lobbyEl.style.display='grid';sh.querySelector('.onlineBar').style.display='none';
     sh.querySelector('.roomCode').textContent=room.code;sh.querySelector('.onlinePlayers').innerHTML=room.players.map((p,i)=>`<div class="onlinePlayer"><span class="pDot" style="background:${META[i].accent}"></span><span>${this.escapeHTML(p.name)}</span><span class="statusDot ${p.connected?'':'off'}"></span>${p.id===room.hostId?'<span class="hostTag">HOST</span>':''}</div>`).join('');
-    const host=this.isOnlineHost(),settings=room.settings;sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');});
+    const host=this.isOnlineHost(),settings=room.settings,battle=settings.mode==='battle';sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');if(['field','mateLines'].includes(k))el.closest('label').style.display=battle?'none':'';});
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
     if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   applyOnlineSnapshot(s){
+    if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
     this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
@@ -1351,7 +1886,37 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  battleBoardFromSnapshot(summary,data,old={}){
+    const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:{},stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
+    const rawGrid=data&&Array.isArray(data.grid)?data.grid:(old.grid?[...old.grid.values()]:[]);
+    return {i:seat,id:summary.id,name:summary.name,meta:META[seat],connected:summary.connected,alive:summary.alive,place:summary.place,
+      grid:new Map(rawGrid.map(b=>[key(b.r,b.c),b])),parityFlip:data?.parityFlip||0,
+      gridTop:data?.gridTop??old.gridTop??GRIDTOP0,gridTopTarget:data?.gridTopTarget??old.gridTopTarget??GRIDTOP0,lowestY:data?.lowestY??old.lowestY??0,
+      flights:data?.flights||old.flights||[],falling:old.falling||[],pops:old.pops||[],sparks:old.sparks||[],ripples:old.ripples||[],callouts:old.callouts||[],popups:old.popups||[],
+      batch:[],resolveAt:0,shotCount:0,specialFlip:0,score:summary.score||0,dispScore:summary.dispScore??summary.score??0,missMeter:summary.missMeter||0,danger:summary.danger,
+      attackFlash:old.attackFlash??-9,chargeFlash:old.chargeFlash??-9,attackPend:null,_dead:false,player,playersArr:[player]};
+  }
+  applyOnlineBattleSnapshot(s){
+    if(s.tick===0){this._lastOnlineBattleEvent=0;this._lastBattleOverviewEvent={};this._battlePreviews=new Map();}
+    const oldState=this.state,oldBattle=this.battle,oldById=new Map((oldBattle?.boards||[]).map(b=>[b.id,b]));
+    this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
+    this._battlePreviews=this._battlePreviews||new Map();if(s.overview)for(const preview of s.overview)this._battlePreviews.set(preview.id,preview);
+    const summaries=[...(s.boards||[])].sort((a,b)=>a.seat-b.seat),boards=summaries.map(summary=>{
+      const data=summary.id===this.onlinePlayerId?s.self:this._battlePreviews.get(summary.id),old=oldById.get(summary.id)||{};
+      const board=this.battleBoardFromSnapshot(summary,data,old),last=this._lastBattleOverviewEvent?.[summary.id]||0;
+      for(const event of data?.events||[])if(event.id>last){if(event.kind==='garbage')board.attackFlash=this.now;if(event.kind==='attack_ready')board.chargeFlash=this.now;}
+      return board;
+    });
+    this._lastBattleOverviewEvent=this._lastBattleOverviewEvent||{};for(const preview of s.overview||[])this._lastBattleOverviewEvent[preview.id]=preview.eventId||this._lastBattleOverviewEvent[preview.id]||0;
+    const human=boards.find(b=>b.id===this.onlinePlayerId)||boards[0],byId=new Map(boards.map(b=>[b.id,b]));
+    this.battle={boards,human,view:human?.i||0,phase:(s.state==='won'||s.state==='lost')?'over':'play',spectate:s.state==='spectating',zoom:oldBattle?.zoom||0,
+      targeting:s.pendingTarget&&human?{by:human.i,amount:s.pendingTarget.amount,t:s.pendingTarget.remaining,max:6,hover:oldBattle?.targeting?.hover??-1}:null,
+      order:(s.order||[]).map(id=>byId.get(id)?.i).filter(i=>i!==undefined),winner:byId.get(s.winnerId)?.i??-1};
+    if(human&&s.self){this.bindBoard(human);for(const event of s.self.events||[])if(event.id>(this._lastOnlineBattleEvent||0)){this._lastOnlineBattleEvent=event.id;this.applyOnlineEvent(event);}this.unbindBoard(human);}
+    this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
+    if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
+  }
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this.sendOnline('input',{seq:++this.onlineSeq,held:this._onlineHeld});}
   syncOnlineControls(){if(!this.online)return;const host=this.isOnlineHost(),sh=this.shadowRoot;sh.querySelector('.onlinePause').style.display=host?'block':'none';sh.querySelector('.onlineRestart').style.display=host?'block':'none';sh.querySelector('.onlinePause').textContent=this.state==='paused'?'Resume':'Pause';sh.querySelector('.pause .resume').style.display=host?'block':'none';sh.querySelector('.pause .sub').textContent=host?'Press the button to resume for everyone':'Waiting for the host to resume';sh.querySelector('.onlineRoomLabel').textContent='Room '+(this.onlineRoom?.code||'');}
   setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
@@ -1363,12 +1928,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const S = this.settings, el = this.sideEl;
     el.innerHTML = `
 <h2>Bubble Together</h2>
-<div style="color:#7593b5;font-size:13px">co-op prototype settings</div>
+<div style="color:#7593b5;font-size:13px">game settings</div>
 <h3>Mode</h3><div class="seg modeSeg">
-  <button data-m="clear">Co-op Clear</button><button data-m="endless">Endless</button></div>
-<h3>Field</h3><div class="seg fldSeg">
+  <button data-m="clear">Co-op Clear</button><button data-m="endless">Endless</button><button data-m="battle">Battle</button></div>
+<div class="battleNote" style="display:none;color:#9db8d4;font-size:12px;margin-top:4px">battle royale: private boards \u00b7 big clears let you dump junk on a rival \u00b7 you vs. bots locally, humans online</div>
+<div class="fieldWrap"><h3>Field</h3><div class="seg fldSeg">
   <button data-f="classic">Classic</button><button data-f="wide">Wide 4\u00d7</button></div>
-<div style="color:#9db8d4;font-size:12px;margin-top:2px">wide: the camera pans as you aim</div>
+<div style="color:#9db8d4;font-size:12px;margin-top:2px">wide: the camera pans as you aim</div></div>
 <h3>Level</h3>
 <div class="seg lvlSeg">${LEVELS.map((L, i) => `<button data-lv="${i}">${i + 1}. ${L.name}</button>`).join('')}<button data-lv="custom">Custom</button></div>
 <details><summary>Custom level editor</summary>
@@ -1377,7 +1943,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   <button class="btn ghost playCustom">Save &amp; play custom</button>
 </details>
 <h3>Players</h3>
-<div class="seg cntSeg"><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button></div>
+<div class="seg cntSeg"><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button><button data-n="5">5</button><button data-n="6">6</button><button data-n="7">7</button><button data-n="8">8</button></div>
 <div class="pList"></div>
 <div class="row"><span>Bot difficulty</span><div class="seg botSeg">
   <button data-b="relaxed">Relaxed</button><button data-b="normal">Normal</button><button data-b="skilled">Skilled</button></div></div>
@@ -1388,13 +1954,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Aim assist</span><input type="range" class="aa" min="0" max="1" step="0.05"><span class="val aav"></span></div>
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full</button><button data-g="0.5">50%</button><button data-g="0.25">25%</button></div></div>
-<div class="row"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
+<div class="row tlRow"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
 <div class="row"><span>Sound</span><div class="seg sndSeg"><button data-v="1">On</button><button data-v="0">Off</button></div></div>
 <button class="btn ghost pauseBtn">Pause (P)</button>
 <button class="btn ghost resetBtn">Reset stage</button>
 <button class="btn ghost howBtn">How to play</button>
 <h3>Controls</h3>
-<ul class="ctrlList">${META.map(m => `<li><b style="color:${m.accent}">${m.name}</b> \u2014 ${m.ctrl}</li>`).join('')}</ul>`;
+<ul class="ctrlList">${META.slice(0,4).map(m => `<li><b style="color:${m.accent}">${m.name}</b> \u2014 ${m.ctrl}</li>`).join('')}</ul>`;
     const segWire = (sel, get, set) => el.querySelectorAll(sel + ' button').forEach(b => {
       b.onclick = () => { set(b); syncAll(); };
     });
@@ -1414,7 +1980,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelector('.mm').value = S.missMax; el.querySelector('.mmv').textContent = S.missMax;
       el.querySelector('.rc').value = S.rescueDur; el.querySelector('.rcv').textContent = S.rescueDur.toFixed(1) + 's';
       el.querySelector('.aa').value = S.assist; el.querySelector('.aav').textContent = Math.round(S.assist * 100) + '%';
+      const isB = S.mode === 'battle';
+      el.querySelector('.fieldWrap').style.display = isB ? 'none' : '';
+      el.querySelector('.tlRow').style.display = isB ? 'none' : '';
+      el.querySelector('.battleNote').style.display = isB ? '' : 'none';
+      el.querySelectorAll('.cntSeg button').forEach(b => { b.style.display = (+b.dataset.n > 4 && !isB) ? 'none' : ''; });
       const pl = el.querySelector('.pList');
+      pl.style.display = isB ? 'none' : '';
       pl.innerHTML = '';
       for (let i = 0; i < S.players; i++) {
         const row = document.createElement('div'); row.className = 'pRow';
@@ -1431,7 +2003,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       }
       this.syncButtons();
     };
-    segWire('.modeSeg', null, b => { S.mode = b.dataset.m; this.resetGame(); });
+    segWire('.modeSeg', null, b => { S.mode = b.dataset.m;
+      if (S.mode === 'battle') { if (S.players < 4) S.players = 8; else if (S.players === 4) S.players = 8; }
+      else if (S.players > 4) S.players = 4;
+      this.resetGame(); });
     segWire('.fldSeg', null, b => { S.field = b.dataset.f; this.resetGame(); });
     el.querySelectorAll('.lvlSeg button').forEach(b => b.onclick = () => {
       S.level = b.dataset.lv === 'custom' ? 'custom' : +b.dataset.lv;
@@ -1444,7 +2019,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { localStorage.setItem('bt_custom_level', ta.value); } catch(e) {}
       S.level = 'custom'; this.resetGame(); syncAll();
     };
-    segWire('.cntSeg', null, b => { S.players = +b.dataset.n; S.missMax = 4 + 2 * S.players; this.spawnPlayers(); });
+    segWire('.cntSeg', null, b => { S.players = +b.dataset.n; if (S.mode === 'battle') { this.resetGame(); } else { S.missMax = 4 + 2 * S.players; this.spawnPlayers(); } });
     segWire('.botSeg', null, b => { S.botSkill = b.dataset.b; });
     segWire('.tlSeg', null, b => { S.mateLines = +b.dataset.v === 1; });
     segWire('.glSeg', null, b => { S.guide = +b.dataset.g; });
@@ -1457,7 +2032,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     slider('.aa', 0, v => S.assist = v);
     el.querySelector('.pauseBtn').onclick = () => this.togglePause();
     el.querySelector('.resetBtn').onclick = () => { this.state = 'play'; this.resetGame(); };
-    el.querySelector('.howBtn').onclick = () => { this.tutEl.style.display = 'grid'; this.state = 'tutorial'; };
+    el.querySelector('.howBtn').onclick = () => this.showTutorial();
     this._syncSettings = syncAll;
     syncAll();
   }

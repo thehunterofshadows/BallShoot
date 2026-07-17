@@ -35,3 +35,22 @@ test('room capacity is four and duplicate names are rejected', () => {
   assert.throws(()=>rooms.join(host.room.code,'Five',socket(),'five'),e=>e.code==='room_full');
   const other=rooms.create('Ada',socket(),'six');assert.throws(()=>rooms.join(other.room.code,'ada',socket(),'seven'),e=>e.code==='name_taken');
 });
+
+test('battle rooms allow eight players and cannot switch oversized rooms back to co-op', () => {
+  const host=rooms.create('One',socket(),'one');
+  rooms.updateSettings(host.room,host.p,{...host.room.settings,mode:'battle',field:'wide'},0);
+  assert.equal(host.room.settings.field,'classic');
+  for(let i=2;i<=8;i++)rooms.join(host.room.code,String(i),socket(),String(i));
+  assert.equal(host.room.players.length,8);
+  assert.throws(()=>rooms.join(host.room.code,'Nine',socket(),'nine'),e=>e.code==='room_full');
+  assert.throws(()=>rooms.updateSettings(host.room,host.p,{...host.room.settings,mode:'clear'},1),e=>e.code==='too_many_players');
+});
+
+test('unexpected battle disconnects idle but explicit leaves forfeit', () => {
+  const host=rooms.create('Host',socket(),'one'),guest=rooms.join(host.room.code,'Guest',socket(),'two');
+  rooms.updateSettings(host.room,host.p,{...host.room.settings,mode:'battle'},0);rooms.start(host.room,host.p);
+  rooms.disconnect(host.room,guest.p,false);assert.equal(host.room.game.board(guest.p.id).alive,true);
+  rooms.rejoin(host.room.code,guest.p.token,socket());assert.equal(host.room.game.board(guest.p.id).connected,true);
+  rooms.disconnect(host.room,guest.p,true);assert.equal(host.room.game.board(guest.p.id).alive,false);
+  rooms.tick(1/60);assert.equal(host.room.phase,'ended');
+});

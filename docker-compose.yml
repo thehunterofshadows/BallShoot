@@ -52,6 +52,7 @@ services:
         node --check /app/coop-bubbles.js
         node --check /app/support.js
         node --check /app/server/game.js
+        node --check /app/server/battle.js
         node --check /app/server/lobbies.js
         node --check /app/server/server.js
         npm test

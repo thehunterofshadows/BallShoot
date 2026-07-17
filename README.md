@@ -1,14 +1,21 @@
 # BallShoot — Bubble Together
 
-A cooperative multiplayer bubble-shooter with shared combos, assists, special
-bubbles, multiple arenas, optional local bot teammates, and live cross-device rooms.
+A cooperative and competitive multiplayer bubble-shooter with shared combos,
+private battle boards, special bubbles, optional local bots, and live cross-device rooms.
 
 ## Playing online
 
 Choose **Create online room**, enter a display name, and share the generated
-three-digit code. Two to four people can join from separate devices. The host
-chooses every lobby setting and starts the match; each device then controls one
-launcher against the same server-authoritative field.
+three-digit code. Co-op rooms support two to four people; Battle rooms support
+two to eight. The host chooses every lobby setting and starts the match. Co-op
+players share one server-authoritative field, while Battle gives each person a
+private field.
+
+In Battle, clearing six or more bubbles charges a junk attack. Pick a living
+opponent within six seconds or the server chooses one automatically. Empty fields
+refill with a score bonus, eliminated players spectate, and the last player alive
+wins. Unexpected disconnects leave a board alive and idle for reconnection;
+choosing **Leave** forfeits that board immediately.
 
 Online rooms are deliberately ephemeral. A refresh or short network interruption
 reclaims the same launcher automatically, but rebuilding or restarting the game
@@ -54,7 +61,8 @@ projects. `rebuild.sh` validates first and refuses to rebuild on failure.
 
 - `index.html` — document shell
 - `coop-bubbles.js` — game component, local simulation, online client, input, and rendering
-- `server/game.js` — authoritative online simulation
+- `server/game.js` — authoritative bubble-board simulation
+- `server/battle.js` — private-board battle orchestration, attacks, and placements
 - `server/lobbies.js` — room membership, settings, reconnect, and host lifecycle
 - `server/server.js` — HTTP health endpoint and WebSocket protocol adapter
 - `support.js` — generated browser runtime
