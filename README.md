@@ -11,6 +11,10 @@ two to eight. The host chooses every lobby setting and starts the match. Co-op
 players share one server-authoritative field, while Battle gives each person a
 private field.
 
+Every few shots the field pushes down a row, and the ceiling comes with it. The
+threshold tightens as colours disappear from the board, so endgames accelerate on
+their own. Hosts tune it with the **Shot pressure** slider; `0` turns it off.
+
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields
 refill with a score bonus, eliminated players spectate, and the last player alive

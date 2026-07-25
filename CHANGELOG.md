@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added Puzzle Bobble style shot pressure: every few shots the whole field slides
+  down one row and the wall stagger alternates, with the shot threshold tightening
+  as colours leave the board. Tunable per room (`Shot pressure`, 0 disables) and
+  active in Clear, Endless, and Battle for both local and online play.
+- Fixed opponent Battle previews rendering with the wrong row stagger after a
+  ceiling drop.
 - Added local Battle mode against up to seven bots with private fields, junk
   attacks, target selection, elimination, spectating, and placements.
 - Added server-authoritative online Battle rooms for two to eight named players,

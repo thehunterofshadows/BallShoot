@@ -74,10 +74,10 @@ class BattleGame {
   }
   summary(board) {
     const g=board.game,p=g.players[0];return {id:board.id,name:board.name,seat:board.seat,connected:board.connected,alive:board.alive,place:board.place,
-      score:g.score,dispScore:g.dispScore,missMeter:g.missMeter,danger:g.danger,stats:p.stats};
+      score:g.score,dispScore:g.dispScore,missMeter:g.missMeter,pressure:g.pressure,perDrop:g.shotsPerDrop(),danger:g.danger,stats:p.stats};
   }
   preview(board) {
-    const g=board.game,p=g.players[0];return {...this.summary(board),gridTop:g.gridTop,grid:[...g.grid.values()].map(({r,c,kind,special})=>({r,c,kind,special})),
+    const g=board.game,p=g.players[0];return {...this.summary(board),gridTop:g.gridTop,parityFlip:g.parityFlip,anchorRow:g.anchorRow,grid:[...g.grid.values()].map(({r,c,kind,special})=>({r,c,kind,special})),
       flights:g.flights.map(({x,y,kind,special})=>({x,y,kind,special})),player:{x:p.x,angle:p.angle,cur:p.cur},events:g.events.slice(-8),eventId:g.eventId};
   }
   stateFor(id) {

@@ -89,7 +89,7 @@ class CoopBubbles extends HTMLElement {
     if (this._init) return; this._init = true;
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
-      reload:1.35, missMax:12, rescueDur:4, assist:0.35, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0 };
+      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0 };
     this.buildDOM();
     this.resetGame();
     this.state = 'home';
@@ -115,7 +115,7 @@ class CoopBubbles extends HTMLElement {
     this.battle = null;
     this.WW = this.settings.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
-    this.grid = new Map(); this.parityFlip = 0;
+    this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
     this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
     const rows = this.levelRows();
     const offs = this.settings.field === 'wide' ? [1, 12, 23, 34] : [0];
@@ -133,7 +133,7 @@ class CoopBubbles extends HTMLElement {
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
     this.sparks = []; this.ripples = []; this.dispScore = 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
-    this.score = 0; this.missMeter = 0; this.danger = null; this.shake = 0; this.now = 0;
+    this.score = 0; this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0; this.now = 0;
     this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
     this.rowTimer = 0; this.lowestY = 0;
     this.spawnPlayers();
@@ -197,13 +197,14 @@ class CoopBubbles extends HTMLElement {
   colsIn(r) { return this.par(r) ? this.cols - 1 : this.cols; }
   cellX(r,c) { return X0 + R + c * 2 * R + this.par(r) * R; }
   cellY(r) { return this.gridTop + R + r * ROWH; }
+  ceilingY() { return this.gridTop + this.anchorRow * ROWH; } // top of the pack, descends with it
   neighbors(r,c) {
     const p = this.par(r), a = c - 1 + p, b = c + p;
     return [[r,c-1],[r,c+1],[r-1,a],[r-1,b],[r+1,a],[r+1,b]];
   }
   validCell(r,c) {
-    if (c < 0 || c >= this.colsIn(r) || r < 0 || this.grid.has(key(r,c))) return false;
-    if (r === 0) return true;
+    if (c < 0 || c >= this.colsIn(r) || r < this.anchorRow || this.grid.has(key(r,c))) return false;
+    if (r === this.anchorRow) return true;
     return this.neighbors(r,c).some(([nr,nc]) => this.grid.has(key(nr,nc)));
   }
   updateLowest() {
@@ -211,10 +212,10 @@ class CoopBubbles extends HTMLElement {
     this.lowestY = m;
   }
   snapCell(x,y) {
-    const rr = Math.max(0, Math.round((y - this.gridTop - R) / ROWH));
+    const rr = Math.max(this.anchorRow, Math.round((y - this.gridTop - R) / ROWH));
     for (const span of [2, 5]) {
       let best = null, bd = 1e18;
-      for (let r = Math.max(0, rr - span); r <= rr + span; r++) {
+      for (let r = Math.max(this.anchorRow, rr - span); r <= rr + span; r++) {
         const n = this.colsIn(r);
         for (let c = 0; c < n; c++) {
           if (!this.validCell(r,c)) continue;
@@ -262,7 +263,7 @@ class CoopBubbles extends HTMLElement {
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
     p.cur = p.next; p.next = this.genBubble();
-    p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now;
+    p.reload = this.settings.reload; p.stats.shots++; this.pressure++; p.recoilT = this.now;
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
       vx: Math.sin(a) * rnd(60, 180) + rnd(-40, 40), vy: -Math.cos(a) * rnd(60, 180) + rnd(-40, 40),
       g: 0, t: this.now, life: 0.35, color: 'rgba(255,255,255,0.85)', sz: rnd(4, 8), soft: true });
@@ -277,14 +278,14 @@ class CoopBubbles extends HTMLElement {
       if (x < X0 + R) { x = 2 * (X0 + R) - x; vx = -vx; bounces++; bpts.push({x:X0+R, y}); }
       if (x > this.WW - X0 - R) { x = 2 * (this.WW - X0 - R) - x; vx = -vx; bounces++; bpts.push({x:this.WW-X0-R, y}); }
       if ((i & 1) === 0) pts.push({x,y});
-      if (y <= this.gridTop + R) return { pts, bpts, bounces, cell: this.snapCell(x,y) };
+      if (y <= this.ceilingY() + R) return { pts, bpts, bounces, cell: this.snapCell(x,y) };
       if (y < this.lowestY + 2.2 * R && this.hitGrid(x,y)) return { pts, bpts, bounces, cell: this.snapCell(x,y) };
     }
     return { pts, bpts, bounces, cell: null };
   }
   hitGrid(x,y) {
     const rr = Math.round((y - this.gridTop - R) / ROWH), lim = (2 * R * 0.88) ** 2;
-    for (let r = Math.max(0, rr - 1); r <= rr + 1; r++) {
+    for (let r = Math.max(this.anchorRow, rr - 1); r <= rr + 1; r++) {
       const n = this.colsIn(r);
       for (let c = 0; c < n; c++) {
         if (!this.grid.has(key(r,c))) continue;
@@ -306,7 +307,7 @@ class CoopBubbles extends HTMLElement {
         f.x += f.vx * m; f.y += f.vy * m;
         if (f.x < X0 + R) { f.x = 2*(X0+R) - f.x; f.vx = -f.vx; if (f.bounceCd <= 0) { this.sfx('bounce'); f.bounceCd = .1; } }
         if (f.x > this.WW - X0 - R) { f.x = 2*(this.WW-X0-R) - f.x; f.vx = -f.vx; if (f.bounceCd <= 0) { this.sfx('bounce'); f.bounceCd = .1; } }
-        if (f.y <= this.gridTop + R || (f.y < this.lowestY + 2.2*R && this.hitGrid(f.x, f.y))) landed = true;
+        if (f.y <= this.ceilingY() + R || (f.y < this.lowestY + 2.2*R && this.hitGrid(f.x, f.y))) landed = true;
       }
       if (landed) { this.flights.splice(fi, 1); this.land(f); }
       else if (f.y > H + 60) this.flights.splice(fi, 1);
@@ -423,7 +424,7 @@ class CoopBubbles extends HTMLElement {
   }
   supportCheck() {
     const safe = new Set(), st = [];
-    this.grid.forEach((b,k) => { if (b.r === 0) { safe.add(k); st.push(b); } });
+    this.grid.forEach((b,k) => { if (b.r === this.anchorRow) { safe.add(k); st.push(b); } });
     while (st.length) {
       const b = st.pop();
       for (const [nr,nc] of this.neighbors(b.r,b.c)) {
@@ -467,17 +468,37 @@ class CoopBubbles extends HTMLElement {
     keys.forEach(k => { const [r,c] = k.split(',').map(Number); sx += this.cellX(r,c); sy += this.cellY(r); n++; });
     return n ? { x: sx/n, y: sy/n } : { x: W/2, y: 300 };
   }
+  /* Puzzle Bobble ceiling descent: the whole pack slides down one row and the
+     wall stagger alternates. Bumping r and parityFlip together leaves par(r) —
+     and therefore cellX — invariant, so nothing drifts sideways. Dropping
+     gridTop by ROWH in the same instant cancels the jump, and the existing
+     gridTop -> gridTopTarget easing plays the slide out over ~0.6s. */
+  descendRow() {
+    const ng = new Map();
+    this.grid.forEach(b => { b.r += 1; ng.set(key(b.r,b.c), b); });
+    this.grid = ng; this.parityFlip ^= 1;
+    this.anchorRow += 1; this.gridTop -= ROWH;
+    this.updateLowest(); this.refreshQueues();
+  }
+  shotsPerDrop() { // shots between drops, tightening as colours leave the field
+    const base = this.settings.pressureShots;
+    return base ? Math.max(3, base - (KINDS.length - this.availKinds().length)) : 0;
+  }
+  pressureDescend() {
+    this.pressure = 0; this.descendRow();
+    this.callout('ROW PUSH!', '#ff5b6b'); this.sfx('ceiling'); this.shake = 8;
+  }
   ceilingDescend() {
-    this.missMeter = 0; this.gridTopTarget += ROWH;
+    this.missMeter = 0; this.descendRow();
     this.callout('CEILING DROPS!', '#ff5b6b'); this.sfx('ceiling'); this.shake = 8;
   }
   addRow() { // endless survival: push a new row in at the top
     const ng = new Map();
     this.grid.forEach(b => { b.r += 1; ng.set(key(b.r,b.c), b); });
     this.grid = ng; this.parityFlip ^= 1;
-    const n = this.colsIn(0), av = KINDS;
+    const a = this.anchorRow, n = this.colsIn(a), av = KINDS;
     for (let c = 0; c < n; c++) if (Math.random() < 0.85)
-      this.grid.set(key(0,c), { r:0, c, kind: av[(Math.random()*av.length)|0], special: null, placedBy: -1 });
+      this.grid.set(key(a,c), { r:a, c, kind: av[(Math.random()*av.length)|0], special: null, placedBy: -1 });
     this.updateLowest(); this.refreshQueues(); this.sfx('ceiling');
   }
   anyDangerCells() {
@@ -617,6 +638,8 @@ class CoopBubbles extends HTMLElement {
     this.camX += (camT - this.camX) * Math.min(1, 6 * rdt);
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
+    const perDrop = this.shotsPerDrop();
+    if (perDrop && this.pressure >= perDrop && !this.resolveAt) this.pressureDescend();
     // falling bubbles (bounce once on the floor edge, splash, fade)
     const FLOOR = 92 + LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
@@ -794,7 +817,7 @@ class CoopBubbles extends HTMLElement {
     ctx.fillStyle = sg; ctx.fillRect(this.WW - X0 - 26, 92, 32, LAUNCH_Y - 60);
     ctx.strokeStyle = 'rgba(90,140,190,0.10)'; ctx.lineWidth = 1.4;
     const maxR = Math.ceil((DANGER_Y - this.gridTop) / ROWH);
-    for (let r = 0; r <= maxR; r++) {
+    for (let r = this.anchorRow; r <= maxR; r++) {
       const n = this.colsIn(r);
       for (let c = 0; c < n; c++) {
         const gx = this.cellX(r,c); if (gx < vwL || gx > vwR) continue;
@@ -802,19 +825,20 @@ class CoopBubbles extends HTMLElement {
       }
     }
     ctx.restore();
-    // ceiling
-    const cg = ctx.createLinearGradient(0, 60, 0, this.gridTop);
+    // ceiling (rides down with the pack as rows are pushed in)
+    const cy = this.ceilingY();
+    const cg = ctx.createLinearGradient(0, 60, 0, cy);
     cg.addColorStop(0, '#9fc4e8'); cg.addColorStop(1, '#b9d7f2');
-    ctx.fillStyle = cg; ctx.fillRect(X0 - 6, 60, this.WW - 2*(X0-6), this.gridTop - 60);
+    ctx.fillStyle = cg; ctx.fillRect(X0 - 6, 60, this.WW - 2*(X0-6), cy - 60);
     ctx.strokeStyle = '#8fb6dd'; ctx.lineWidth = 2;
     const hx0 = Math.floor(Math.max(X0, this.camX) / 26) * 26;
     for (let x = hx0; x < Math.min(this.WW - X0, this.camX + W); x += 26) {
-      ctx.beginPath(); ctx.moveTo(x, this.gridTop - 3); ctx.lineTo(x + 12, this.gridTop - 16); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, cy - 3); ctx.lineTo(x + 12, cy - 16); ctx.stroke();
     }
-    ctx.fillStyle = '#7ba7d1'; ctx.fillRect(X0 - 6, this.gridTop - 4, this.WW - 2*(X0-6), 4);
-    const tg = ctx.createLinearGradient(0, this.gridTop, 0, this.gridTop + 22);
+    ctx.fillStyle = '#7ba7d1'; ctx.fillRect(X0 - 6, cy - 4, this.WW - 2*(X0-6), 4);
+    const tg = ctx.createLinearGradient(0, cy, 0, cy + 22);
     tg.addColorStop(0, 'rgba(60,100,150,0.16)'); tg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = tg; ctx.fillRect(X0 - 6, this.gridTop, this.WW - 2*(X0-6), 22);
+    ctx.fillStyle = tg; ctx.fillRect(X0 - 6, cy, this.WW - 2*(X0-6), 22);
     // attached bubbles
     this.grid.forEach(b => {
       let x = this.cellX(b.r,b.c), y = this.cellY(b.r);
@@ -1146,6 +1170,20 @@ class CoopBubbles extends HTMLElement {
       ctx.fillStyle = 'rgba(255,255,255,0.8)';
       ctx.fillRect(mx + mw * i / this.settings.missMax, my + 2, 1.5, 10);
     }
+    // shots until the next row push
+    const left = this.dropCountdown();
+    if (left !== null) {
+      ctx.font = '700 13px Fredoka, sans-serif';
+      ctx.fillStyle = left <= 1 ? '#ff5b6b' : left <= 3 ? '#ffb054' : '#7593b5';
+      ctx.fillText('ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - X0 - 14, my + 30);
+    }
+  }
+  // shots remaining before the field pushes down; null when the mechanic is off.
+  // Online snapshots sync both the grid and the settings, so the threshold
+  // recomputes identically here without trusting a separate wire field.
+  dropCountdown() {
+    const perDrop = this.shotsPerDrop();
+    return perDrop ? Math.max(0, perDrop - (this.pressure || 0)) : null;
   }
 
   /* ---------- battle royale mode ---------- */
@@ -1162,11 +1200,11 @@ class CoopBubbles extends HTMLElement {
     this.hideOverlays();
   }
   makeBattleBoard(i, bot) {
-    const b = { i, meta: META[i], alive: true, grid: new Map(), parityFlip: 0,
+    const b = { i, meta: META[i], alive: true, grid: new Map(), parityFlip: 0, anchorRow: 0,
       gridTop: GRIDTOP0, gridTopTarget: GRIDTOP0, lowestY: 0,
       flights: [], falling: [], pops: [], sparks: [], ripples: [], callouts: [], popups: [],
       batch: [], resolveAt: 0, shotCount: 0, specialFlip: 0,
-      score: 0, dispScore: 0, missMeter: 0, danger: null,
+      score: 0, dispScore: 0, missMeter: 0, pressure: 0, danger: null,
       attackFlash: -9, chargeFlash: -9, attackPend: null, _dead: false };
     const rows = this.levelRows();
     rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
@@ -1189,22 +1227,24 @@ class CoopBubbles extends HTMLElement {
   }
   bindBoard(b) {
     this._boundBoard = b;
-    this.grid = b.grid; this.parityFlip = b.parityFlip;
+    this.grid = b.grid; this.parityFlip = b.parityFlip; this.anchorRow = b.anchorRow;
     this.gridTop = b.gridTop; this.gridTopTarget = b.gridTopTarget; this.lowestY = b.lowestY;
     this.flights = b.flights; this.falling = b.falling; this.pops = b.pops; this.sparks = b.sparks;
     this.ripples = b.ripples; this.callouts = b.callouts; this.popups = b.popups;
     this.batch = b.batch; this.resolveAt = b.resolveAt; this.shotCount = b.shotCount; this.specialFlip = b.specialFlip;
     this.players = b.playersArr; this.activeP = 0;
     this.score = b.score; this.dispScore = b.dispScore; this.missMeter = b.missMeter; this.danger = b.danger;
+    this.pressure = b.pressure;
     this.camX = 0; this.WW = W; this.cols = COLS;
   }
   unbindBoard(b) {
-    b.grid = this.grid; b.parityFlip = this.parityFlip;
+    b.grid = this.grid; b.parityFlip = this.parityFlip; b.anchorRow = this.anchorRow;
     b.gridTop = this.gridTop; b.gridTopTarget = this.gridTopTarget; b.lowestY = this.lowestY;
     b.flights = this.flights; b.falling = this.falling; b.pops = this.pops; b.sparks = this.sparks;
     b.ripples = this.ripples; b.callouts = this.callouts; b.popups = this.popups;
     b.batch = this.batch; b.resolveAt = this.resolveAt; b.shotCount = this.shotCount; b.specialFlip = this.specialFlip;
     b.score = this.score; b.dispScore = this.dispScore; b.missMeter = this.missMeter; b.danger = this.danger;
+    b.pressure = this.pressure; b.perDrop = this.shotsPerDrop();
     this._boundBoard = null;
   }
   battleFire() {
@@ -1276,6 +1316,11 @@ class CoopBubbles extends HTMLElement {
     }
     this.stepFlights(rdt);
     if (this.resolveAt && this.now >= this.resolveAt) this.battleResolve(b);
+    const perDrop = this.shotsPerDrop();
+    if (perDrop && this.pressure >= perDrop && !this.resolveAt) {
+      const pre = this.shake; this.pressureDescend();
+      if (b.i !== this.battle.view) this.shake = pre; // only the watched board shakes the screen
+    }
     const FLOOR = 92 + LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
       const f = this.falling[i];
@@ -1376,6 +1421,7 @@ class CoopBubbles extends HTMLElement {
     if (this.grid.size === 0) {
       this.score += 1000; this.callout('FIELD CLEAR! +1000', '#3ecf72');
       this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
+      this.parityFlip = 0; this.anchorRow = 0; this.pressure = 0;
       const rows = this.levelRows();
       rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
         if (row[c] !== '.') this.grid.set(key(r, c), { r, c, kind: row[c], special: null, placedBy: -1,
@@ -1398,7 +1444,7 @@ class CoopBubbles extends HTMLElement {
     for (let g = 0; g < n; g++) {
       const cand = [];
       const maxR = Math.floor((DANGER_Y - this.gridTop) / ROWH);
-      for (let r = 0; r <= maxR; r++) { const cn = this.colsIn(r);
+      for (let r = this.anchorRow; r <= maxR; r++) { const cn = this.colsIn(r);
         for (let c = 0; c < cn; c++) if (this.validCell(r, c)) cand.push({ r, c, jy: this.cellY(r) + rnd(0, ROWH * 2.2) }); }
       if (!cand.length) break;
       cand.sort((u, v) => v.jy - u.jy);
@@ -1514,6 +1560,12 @@ class CoopBubbles extends HTMLElement {
         ctx.fillStyle = '#e3eefa'; this.rrect(ctx, x + 6, y + h - 12, w - 12, 5, 2.5); ctx.fill();
         if (frac > 0) { ctx.fillStyle = frac > 0.7 ? '#ff5b6b' : frac > 0.4 ? '#ffb054' : '#8fb6dd';
           this.rrect(ctx, x + 6, y + h - 12, Math.max(4, (w - 12) * frac), 5, 2.5); ctx.fill(); }
+        if (b.perDrop) { // shots banked toward this board's next row push
+          const pf = clamp((b.pressure || 0) / b.perDrop, 0, 1);
+          ctx.fillStyle = '#e3eefa'; this.rrect(ctx, x + 6, y + h - 5, w - 12, 3, 1.5); ctx.fill();
+          if (pf > 0) { ctx.fillStyle = pf > 0.8 ? '#ff5b6b' : '#b48ade';
+            this.rrect(ctx, x + 6, y + h - 5, Math.max(3, (w - 12) * pf), 3, 1.5); ctx.fill(); }
+        }
       }
       ctx.globalAlpha = 1;
     });
@@ -1573,7 +1625,7 @@ class CoopBubbles extends HTMLElement {
     ctx.lineWidth = hov ? 16 : 8;
     ctx.strokeStyle = hov ? '#ff8a3c' : selectable ? b.meta.accent : 'rgba(120,150,190,0.5)';
     ctx.stroke();
-    ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.gridTop - 40));
+    ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.ceilingY() - 40));
     this.grid.forEach(g => {
       const x = this.cellX(g.r, g.c), y = this.cellY(g.r);
       ctx.fillStyle = g.special ? '#5b6f93' : PAL[g.kind];
@@ -1705,6 +1757,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <label>Aim guide<select data-setting="guide"><option value="1">Full</option><option value="0.5">50%</option><option value="0.25">25%</option></select></label>
         <label>Reload<input data-setting="reload" type="range" min="0.8" max="2.2" step="0.05"></label>
         <label>Miss limit<input data-setting="missMax" type="range" min="4" max="20" step="1"></label>
+        <label>Shot pressure<input data-setting="pressureShots" type="range" min="0" max="20" step="1"></label>
         <label>Rescue timer<input data-setting="rescueDur" type="range" min="3" max="5" step="0.5"></label>
         <label>Aim assist<input data-setting="assist" type="range" min="0" max="1" step="0.05"></label>
         <label>Teammate lines<select data-setting="mateLines"><option value="true">Show</option><option value="false">Hide</option></select></label>
@@ -1874,12 +1927,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
-    const oldState=this.state;this.settings={...this.settings,...s.settings};this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
+    const oldState=this.state;this.settings={...this.settings,...s.settings};this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
+    this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
@@ -1890,10 +1943,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:{},stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
     const rawGrid=data&&Array.isArray(data.grid)?data.grid:(old.grid?[...old.grid.values()]:[]);
     return {i:seat,id:summary.id,name:summary.name,meta:META[seat],connected:summary.connected,alive:summary.alive,place:summary.place,
-      grid:new Map(rawGrid.map(b=>[key(b.r,b.c),b])),parityFlip:data?.parityFlip||0,
+      grid:new Map(rawGrid.map(b=>[key(b.r,b.c),b])),parityFlip:data?.parityFlip??old.parityFlip??0,anchorRow:data?.anchorRow??old.anchorRow??0,
       gridTop:data?.gridTop??old.gridTop??GRIDTOP0,gridTopTarget:data?.gridTopTarget??old.gridTopTarget??GRIDTOP0,lowestY:data?.lowestY??old.lowestY??0,
       flights:data?.flights||old.flights||[],falling:old.falling||[],pops:old.pops||[],sparks:old.sparks||[],ripples:old.ripples||[],callouts:old.callouts||[],popups:old.popups||[],
-      batch:[],resolveAt:0,shotCount:0,specialFlip:0,score:summary.score||0,dispScore:summary.dispScore??summary.score??0,missMeter:summary.missMeter||0,danger:summary.danger,
+      batch:[],resolveAt:0,shotCount:0,specialFlip:0,score:summary.score||0,dispScore:summary.dispScore??summary.score??0,missMeter:summary.missMeter||0,
+      pressure:summary.pressure||0,perDrop:summary.perDrop||0,danger:summary.danger,
       attackFlash:old.attackFlash??-9,chargeFlash:old.chargeFlash??-9,attackPend:null,_dead:false,player,playersArr:[player]};
   }
   applyOnlineBattleSnapshot(s){
@@ -1950,6 +2004,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <h3>Tuning</h3>
 <div class="row"><span>Reload</span><input type="range" class="rl" min="0.8" max="2.2" step="0.05"><span class="val rlv"></span></div>
 <div class="row"><span>Miss limit</span><input type="range" class="mm" min="4" max="20" step="1"><span class="val mmv"></span></div>
+<div class="row"><span>Shot pressure</span><input type="range" class="sp" min="0" max="20" step="1"><span class="val spv"></span></div>
 <div class="row"><span>Rescue timer</span><input type="range" class="rc" min="3" max="5" step="0.5"><span class="val rcv"></span></div>
 <div class="row"><span>Aim assist</span><input type="range" class="aa" min="0" max="1" step="0.05"><span class="val aav"></span></div>
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
@@ -1978,6 +2033,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       });
       el.querySelector('.rl').value = S.reload; el.querySelector('.rlv').textContent = S.reload.toFixed(2) + 's';
       el.querySelector('.mm').value = S.missMax; el.querySelector('.mmv').textContent = S.missMax;
+      el.querySelector('.sp').value = S.pressureShots;
+      el.querySelector('.spv').textContent = S.pressureShots ? S.pressureShots + ' shots' : 'off';
       el.querySelector('.rc').value = S.rescueDur; el.querySelector('.rcv').textContent = S.rescueDur.toFixed(1) + 's';
       el.querySelector('.aa').value = S.assist; el.querySelector('.aav').textContent = Math.round(S.assist * 100) + '%';
       const isB = S.mode === 'battle';
@@ -2028,6 +2085,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       s.oninput = () => { set(parseFloat(s.value)); syncAll(); }; };
     slider('.rl', 0, v => S.reload = v);
     slider('.mm', 0, v => S.missMax = v);
+    slider('.sp', 0, v => S.pressureShots = v);
     slider('.rc', 0, v => S.rescueDur = v);
     slider('.aa', 0, v => S.assist = v);
     el.querySelector('.pauseBtn').onclick = () => this.togglePause();

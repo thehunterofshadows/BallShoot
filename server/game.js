@@ -39,7 +39,7 @@ class OnlineGame {
     const S = this.settings;
     this.WW = !this.battle && S.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
-    this.grid = new Map(); this.parityFlip = 0;
+    this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
     this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
     const rows = this.levelRows();
     const offs = S.field === 'wide' ? [1, 12, 23, 34] : [0];
@@ -52,7 +52,7 @@ class OnlineGame {
     this.removeFloaters();
     this.flights = []; this.batch = []; this.resolveAt = 0;
     this.score = 0; this.dispScore = 0; this.missMeter = 0; this.danger = null;
-    this.now = 0; this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0;
+    this.now = 0; this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
     this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
     this.events = []; this.eventId = 0; this.paused = false;
     this.players = this.roster.map((member, i) => ({
@@ -79,13 +79,14 @@ class OnlineGame {
   colsIn(r) { return this.par(r) ? this.cols - 1 : this.cols; }
   cellX(r, c) { return X0 + R + c * 2 * R + this.par(r) * R; }
   cellY(r) { return this.gridTop + R + r * ROWH; }
+  ceilingY() { return this.gridTop + this.anchorRow * ROWH; }
   neighbors(r, c) {
     const p = this.par(r), a = c - 1 + p, b = c + p;
     return [[r,c-1],[r,c+1],[r-1,a],[r-1,b],[r+1,a],[r+1,b]];
   }
   validCell(r, c) {
-    if (c < 0 || c >= this.colsIn(r) || r < 0 || this.grid.has(key(r,c))) return false;
-    return r === 0 || this.neighbors(r,c).some(([rr,cc]) => this.grid.has(key(rr,cc)));
+    if (c < 0 || c >= this.colsIn(r) || r < this.anchorRow || this.grid.has(key(r,c))) return false;
+    return r === this.anchorRow || this.neighbors(r,c).some(([rr,cc]) => this.grid.has(key(rr,cc)));
   }
   updateLowest() {
     this.lowestY = 0;
@@ -93,7 +94,7 @@ class OnlineGame {
   }
   removeFloaters() {
     const safe = new Set(), stack = [];
-    this.grid.forEach((b, k) => { if (b.r === 0) { safe.add(k); stack.push(b); } });
+    this.grid.forEach((b, k) => { if (b.r === this.anchorRow) { safe.add(k); stack.push(b); } });
     while (stack.length) {
       const b = stack.pop();
       for (const [r,c] of this.neighbors(b.r,b.c)) {
@@ -126,9 +127,9 @@ class OnlineGame {
     }
   }
   snapCell(x, y) {
-    const rr = Math.max(0, Math.round((y - this.gridTop - R) / ROWH));
+    const rr = Math.max(this.anchorRow, Math.round((y - this.gridTop - R) / ROWH));
     let best = null, distance = Infinity;
-    for (let r = Math.max(0, rr - 5); r <= rr + 5; r++) for (let c = 0; c < this.colsIn(r); c++) {
+    for (let r = Math.max(this.anchorRow, rr - 5); r <= rr + 5; r++) for (let c = 0; c < this.colsIn(r); c++) {
       if (!this.validCell(r,c)) continue;
       const d = (this.cellX(r,c)-x) ** 2 + (this.cellY(r)-y) ** 2;
       if (d < distance) { distance = d; best = { r, c }; }
@@ -137,7 +138,7 @@ class OnlineGame {
   }
   hitGrid(x, y) {
     const rr = Math.round((y - this.gridTop - R) / ROWH), lim = (2 * R * 0.88) ** 2;
-    for (let r = Math.max(0, rr - 1); r <= rr + 1; r++) for (let c = 0; c < this.colsIn(r); c++) {
+    for (let r = Math.max(this.anchorRow, rr - 1); r <= rr + 1; r++) for (let c = 0; c < this.colsIn(r); c++) {
       if (this.grid.has(key(r,c)) && (this.cellX(r,c)-x) ** 2 + (this.cellY(r)-y) ** 2 < lim) return true;
     }
     return false;
@@ -166,7 +167,7 @@ class OnlineGame {
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
-    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++;
+    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a });
     return true;
   }
@@ -184,6 +185,10 @@ class OnlineGame {
     }
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
+    const perDrop = this.shotsPerDrop();
+    if (perDrop && this.pressure >= perDrop && !this.resolveAt) {
+      this.pressure = 0; this.descendRow(); this.emit('ceiling');
+    }
     if (this.chain.t > 0 && (this.chain.t -= dt) <= 0) this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
     const danger = this.anyDangerCells();
     if (danger && !this.danger) { this.danger = { t:this.settings.rescueDur, max:this.settings.rescueDur }; this.emit('warn'); }
@@ -205,7 +210,7 @@ class OnlineGame {
         f.x += f.vx*m; f.y += f.vy*m;
         if (f.x < X0+R) { f.x = 2*(X0+R)-f.x; f.vx = -f.vx; this.emit('bounce',{x:f.x,y:f.y}); }
         if (f.x > this.WW-X0-R) { f.x = 2*(this.WW-X0-R)-f.x; f.vx = -f.vx; this.emit('bounce',{x:f.x,y:f.y}); }
-        landed = f.y <= this.gridTop+R || (f.y < this.lowestY+2.2*R && this.hitGrid(f.x,f.y));
+        landed = f.y <= this.ceilingY()+R || (f.y < this.lowestY+2.2*R && this.hitGrid(f.x,f.y));
       }
       if (landed) { this.flights.splice(i,1); this.land(f); }
       else if (f.y > H+60) this.flights.splice(i,1);
@@ -244,7 +249,7 @@ class OnlineGame {
     const dropped=this.removeFloaters(); this.updateLowest();
     if(popped.length){if(!this.battle)clearers.forEach(i=>this.registerClear(i));const pts=popped.length*10*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
     const misses=results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
-    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.gridTopTarget+=ROWH;this.emit('ceiling');}}
+    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
     if(dropped.length){const pts=dropped.length*30*(this.battle?1:this.chain.mult)+(dropped.length>=5?200:0);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
     if(this.danger&&!this.anyDangerCells()){this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue');}
     this.refreshQueues();
@@ -254,7 +259,7 @@ class OnlineGame {
     if(this.settings.mode==='clear'&&!this.grid.size)this.end(true);
   }
   refillBattleBoard(){
-    this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;
+    this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;this.anchorRow=0;this.pressure=0;
     const rows=this.levelRows();for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++)if(rows[r][c]!=='.')this.grid.set(key(r,c),{r,c,kind:rows[r][c],special:null,placedBy:-1});
     this.removeFloaters();this.updateLowest();this.refreshQueues();this.emit('field_refilled',{points:1000});
   }
@@ -262,7 +267,7 @@ class OnlineGame {
     let added=0;
     for(let g=0;g<amount;g++){
       const candidates=[],maxR=Math.floor((DANGER_Y-this.gridTop)/ROWH);
-      for(let r=0;r<=maxR;r++)for(let c=0;c<this.colsIn(r);c++)if(this.validCell(r,c))candidates.push({r,c,j:this.cellY(r)+this.rnd(0,ROWH*2.2)});
+      for(let r=this.anchorRow;r<=maxR;r++)for(let c=0;c<this.colsIn(r);c++)if(this.validCell(r,c))candidates.push({r,c,j:this.cellY(r)+this.rnd(0,ROWH*2.2)});
       if(!candidates.length)break;candidates.sort((a,b)=>b.j-a.j);const cell=candidates[(this.random()*Math.min(4,candidates.length))|0];
       this.grid.set(key(cell.r,cell.c),{r:cell.r,c:cell.c,kind:KINDS[(this.random()*KINDS.length)|0],special:null,placedBy:-1});added++;
     }
@@ -270,14 +275,29 @@ class OnlineGame {
   }
   registerClear(i){const c=this.chain;if(c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
   anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>DANGER_Y)hit=true;});return hit;}
-  addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;for(let c=0;c<this.colsIn(0);c++)if(this.random()<.85)this.grid.set(key(0,c),{r:0,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
+  // Puzzle Bobble ceiling descent: the whole pack slides down one row and the
+  // wall stagger alternates. Bumping r and parityFlip together leaves par(r) —
+  // and therefore cellX — invariant, so nothing shifts sideways. Dropping
+  // gridTop by ROWH at the same instant cancels the jump, and the existing
+  // gridTop -> gridTopTarget easing plays the slide out over ~0.6s.
+  descendRow(){
+    const ng=new Map();this.grid.forEach(b=>{b.r++;ng.set(key(b.r,b.c),b);});this.grid=ng;
+    this.parityFlip^=1;this.anchorRow++;this.gridTop-=ROWH;
+    this.updateLowest();this.refreshQueues();
+  }
+  shotsPerDrop(){
+    const base=this.settings.pressureShots;
+    return base?Math.max(3,base-(KINDS.length-this.availKinds().length)):0;
+  }
+  addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;const a=this.anchorRow;for(let c=0;c<this.colsIn(a);c++)if(this.random()<.85)this.grid.set(key(a,c),{r:a,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
   end(won){if(this.state!=='play')return;this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
   setPaused(value){if(this.state==='play'){this.paused=!!value;this.emit(this.paused?'paused':'resumed');}}
 
   snapshot() {
     return {
       tick:this.tickId, state:this.paused?'paused':this.state, now:this.now, settings:this.settings,
-      WW:this.WW, cols:this.cols, parityFlip:this.parityFlip, gridTop:this.gridTop, gridTopTarget:this.gridTopTarget,
+      WW:this.WW, cols:this.cols, parityFlip:this.parityFlip, anchorRow:this.anchorRow,
+      gridTop:this.gridTop, gridTopTarget:this.gridTopTarget, pressure:this.pressure, perDrop:this.shotsPerDrop(),
       lowestY:this.lowestY, grid:[...this.grid.values()], flights:this.flights,
       players:this.players.map(p=>({...p,held:undefined})), score:this.score, dispScore:this.dispScore,
       missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
