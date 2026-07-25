@@ -72,10 +72,10 @@ const LEVELS = [
   ]},
 ];
 const META = [
-  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:'Touch the lower left / right to aim · FIRE to shoot' },
-  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire' },
-  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire' },
-  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire' },
+  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:'Touch the lower left / right to aim · FIRE to shoot · ⇄ swap' },
+  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · S swap' },
+  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire · ↓ swap' },
+  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire · I swap' },
   { name:'P5', accent:'#5fb7ff', trail:'solid', icon:'tri',    ctrl:'battle royale · bot or online' },
   { name:'P6', accent:'#9ad34d', trail:'dots',  icon:'square', ctrl:'battle royale · bot or online' },
   { name:'P7', accent:'#ff8a75', trail:'rings', icon:'ring',   ctrl:'battle royale · bot or online' },
@@ -135,9 +135,12 @@ class CoopBubbles extends HTMLElement {
     Object.assign(this, g);
     return true;
   }
-  resetGame() {
+  /* `carry` is set only by the Clear-mode level chain (see clearLevel), and mirrors
+     OnlineGame.reset: score, stats and the clock survive, the miss meter does not. */
+  resetGame(carry = null) {
     if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
     this.battle = null;
+    if (!carry) { this._runStartLevel = this.settings.level; this._pendingLevel = null; }
     this.WW = this.settings.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
     this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
@@ -156,19 +159,21 @@ class CoopBubbles extends HTMLElement {
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
-    this.sparks = []; this.ripples = []; this.dispScore = 0;
+    this.sparks = []; this.ripples = []; this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
-    this.score = 0; this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0; this.now = 0;
+    this.score = carry ? carry.score : 0;
+    this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
+    if (!carry) this.now = 0;
     this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
     this.rowTimer = 0; this.lowestY = 0;
-    this.spawnPlayers();
+    this.spawnPlayers(carry);
     const pf0 = this.players[this.activeP] || this.players[0];
     this.camX = clamp(pf0.x - W / 2, 0, Math.max(0, this.WW - W));
     this.updateLowest();
     if (this.state !== 'tutorial') this.state = 'play';
     this.hideOverlays();
   }
-  spawnPlayers() {
+  spawnPlayers(carry = null) {
     const n = this.settings.players, keep = this.players || [];
     this.players = [];
     for (let i = 0; i < n; i++) {
@@ -177,7 +182,7 @@ class CoopBubbles extends HTMLElement {
       this.players.push({ i, meta: META[i], x, angle: old ? old.angle : rnd(-0.3,0.3),
         cur: this.genBubble(), next: this.genBubble(), reload: 0,
         bot: !this.settings.human[i], think: rnd(0.4,1.2), plan: null, held: {},
-        stats: { shots:0, pops:0, bubbles:0, assists:0, drops:0, rescues:0 } });
+        stats: (carry && old) ? old.stats : { shots:0, pops:0, bubbles:0, assists:0, drops:0, rescues:0 } });
     }
     this.activeP = this.players.findIndex(p => !p.bot); if (this.activeP < 0) this.activeP = 0;
   }
@@ -294,6 +299,23 @@ class CoopBubbles extends HTMLElement {
       g: 0, t: this.now, life: 0.35, color: 'rgba(255,255,255,0.85)', sz: rnd(4, 8), soft: true });
     this.sfx('launch');
   }
+  /* Exchange the loaded bubble with the on-deck one. Mirrors OnlineGame.swap: gated on
+     the same reload timer as fire(), so it is never a free re-roll mid-cooldown. */
+  swapBubble(i) {
+    if (this.online) { this.sendOnline('swap'); return; }
+    const p = this.players[i === undefined ? this.activeP : i];
+    if (!p || this.state !== 'play' || p.reload > 0 || !p.cur || !p.next) return;
+    const held = p.cur; p.cur = p.next; p.next = held;
+    p.cur.swapT = this.now; p.next.swapT = this.now;
+    this.sfx('swap');
+  }
+  battleSwap() {
+    const bt = this.battle;
+    if (!bt || this.state !== 'play') return;
+    if (bt.targeting && bt.targeting.by === bt.human.i) return;
+    const b = bt.human; if (!b.alive) return;
+    this.bindBoard(b); this.swapBubble(0); this.unbindBoard(b);
+  }
   simulate(x0, angle) { // shared by aim guides + bots
     let x = x0, y = this.LAUNCH_Y - 44, bounces = 0;
     const st = 7, dx = Math.sin(angle) * st, dy = -Math.cos(angle) * st;
@@ -408,7 +430,7 @@ class CoopBubbles extends HTMLElement {
     if (popN > 0) {
       clearers.forEach(s => this.registerClear(s));
       const mult = this.chain.mult;
-      const pts = popN * 10 * mult;
+      const pts = this.popPoints(popN) * mult;
       this.score += pts; this.addPopup(this.centerOf(allPopped, this.pops), '+' + pts, '#17335c');
       clearers.forEach(s => { const p = this.players[s]; if (p) { p.stats.pops++; p.stats.bubbles += popN; } });
       owners.forEach(o => { const p = this.players[o]; if (p) p.stats.assists++; });
@@ -427,7 +449,7 @@ class CoopBubbles extends HTMLElement {
     }
     // drops
     if (dropped.n > 0) {
-      const pts = dropped.n * 30 * this.chain.mult + (dropped.n >= 5 ? 200 : 0);
+      const pts = this.dropPoints(dropped.n, dropped.comps) * this.chain.mult;
       this.score += pts;
       clearers.forEach(s => { const p = this.players[s]; if (p) p.stats.drops += dropped.n; });
       this.addPopup({ x: dropped.x, y: dropped.y }, '+' + pts, '#ff8a3c');
@@ -445,7 +467,49 @@ class CoopBubbles extends HTMLElement {
     }
     this.refreshQueues();
     // victory (coop clear)
-    if (this.settings.mode === 'clear' && this.grid.size === 0 && this.state === 'play') this.endGame(true);
+    if (this.settings.mode === 'clear' && this.grid.size === 0 && this.state === 'play') this.clearLevel();
+  }
+  /* ---------- clear-mode level chain (mirrors OnlineGame.clearLevel) ---------- */
+  levelIndex() { return this.settings.level === 'custom' ? -1 : (Number(this.settings.level) || 0); }
+  nextLevelIndex() {
+    const i = this.levelIndex();
+    return i >= 0 && i + 1 < LEVELS.length ? i + 1 : -1;
+  }
+  levelBonus() {
+    let shots = 0, pops = 0;
+    for (const p of this.players) { shots += p.stats.shots; pops += p.stats.pops; }
+    const accuracy = shots ? pops / shots : 0;
+    const headroom = Math.max(0, this.settings.missMax - this.missMeter) / Math.max(1, this.settings.missMax);
+    return Math.round(accuracy * 1500) + Math.round(headroom * 500);
+  }
+  clearLevel() {
+    const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
+    this.score += bonus;
+    if (from >= 0) this.recordProgress(from);
+    if (next < 0) return this.endGame(true);
+    this.state = 'levelup'; this.sfx('win');
+    const sh = this.shadowRoot;
+    sh.querySelector('.luTitle').textContent = '⭐ ' + (LEVELS[from]?.name || 'Level ' + (from + 1)) + ' cleared!';
+    sh.querySelector('.luSub').textContent = 'Clear bonus +' + bonus.toLocaleString()
+      + ' · Score ' + this.score.toLocaleString() + ' · Up next: ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
+    this._pendingLevel = next;
+    this.levelUpEl.style.display = 'grid';
+  }
+  advanceLevel() {
+    const next = this._pendingLevel;
+    if (next === null || next === undefined) return;
+    this._pendingLevel = null;
+    this.settings.level = next;
+    this.state = 'play';
+    this.resetGame({ score: this.score });
+    this._syncSettings?.();
+  }
+  /* Furthest authored level reached. Progress, not score — score lives on the server. */
+  recordProgress(cleared) {
+    try {
+      const best = Math.max(Number(localStorage.getItem('bt_progress') || 0), cleared + 1);
+      localStorage.setItem('bt_progress', String(Math.min(best, LEVELS.length - 1)));
+    } catch (e) {}
   }
   supportCheck() {
     const safe = new Set(), st = [];
@@ -476,15 +540,24 @@ class CoopBubbles extends HTMLElement {
     }
     return { n: doomed.length, comps, x: sx / doomed.length, y: sy / doomed.length };
   }
+  /* Superlinear so a patient 12-bubble cut beats four hurried 3s: 10/bubble plus a
+     quadratic bonus on everything past the minimum match. Mirrors OnlineGame. */
+  popPoints(n) { const over = Math.max(0, n - 3); return n * 10 + over * over * 10; }
+  /* `comps` is how many separate clusters the cut severed at once. Each extra
+     simultaneous cluster is worth half again, capped so a lucky shear stays sane. */
+  dropPoints(n, comps) { const cascade = Math.min(3, 1 + 0.5 * Math.max(0, comps - 1)); return Math.round(n * 30 * cascade) + (n >= 5 ? 200 : 0); }
   registerClear(pi) {
     const ch = this.chain;
-    if (ch.last !== pi) { ch.mult = Math.min(ch.mult + 1, 4); ch.same = 0; ch.pulseT = this.now; }
+    // Solo runs have no second clearer to hand the chain to, so consecutive clears by
+    // the only player must build the multiplier instead of resetting it.
+    const solo = this.players.length <= 1;
+    if (solo || ch.last !== pi) { ch.mult = Math.min(ch.mult + 1, 4); ch.same = 0; ch.pulseT = this.now; }
     else if (++ch.same >= 3) { ch.mult = 1; ch.players.clear(); ch.same = 0; }
     ch.last = pi; ch.players.add(pi); ch.t = 8;
     if (ch.mult >= 2) {
       if (ch.players.size >= 4) { this.callout('FOUR-PLAYER BURST!', '#ff6fb1'); this.score += 400; ch.players.clear(); }
       else if (ch.players.size === 3) this.callout('THREE-PLAYER CHAIN!', '#35d3c8');
-      else this.callout('TEAM CHAIN ×' + ch.mult, '#a78bfa');
+      else this.callout((solo ? 'CHAIN ×' : 'TEAM CHAIN ×') + ch.mult, '#a78bfa');
       this.sfx('chain');
     }
   }
@@ -750,6 +823,8 @@ class CoopBubbles extends HTMLElement {
       a:[1,'l'], d:[1,'r'], arrowleft:[2,'l'], arrowright:[2,'r'], j:[3,'l'], l:[3,'r'],
     };
     const firemap = { w:1, ' ':1, arrowup:2, enter:2, k:3 };
+    const swapmap = { s:1, arrowdown:2, i:3 };
+    const swapKeys = ['s','arrowdown','i']; // union, for the single-launcher modes
     const kd = e => {
       if (/input|select|textarea/i.test(e.target.tagName)) return;
       this.ensureAudio();
@@ -767,23 +842,27 @@ class CoopBubbles extends HTMLElement {
           if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
           if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
           if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
+          if (swapKeys.includes(k)) { this.swapBubble(); e.preventDefault(); }
           return;
         }
         const hp = bt.human.player;
         if (['a','arrowleft','j'].includes(k)) { hp.held.l = true; e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { hp.held.r = true; e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.battleFire(); e.preventDefault(); }
+        if (swapKeys.includes(k)) { this.battleSwap(); e.preventDefault(); }
         return;
       }
       if (this.online) {
         if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
+        if (swapKeys.includes(k)) { this.swapBubble(); e.preventDefault(); }
         return;
       }
       const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
+      if (swapmap[k] !== undefined) { const p = this.players[swapmap[k]]; if (p && !p.bot) { this.swapBubble(swapmap[k]); e.preventDefault(); } }
     };
     const ku = e => { const k=e.key.toLowerCase();
       if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
@@ -1112,7 +1191,8 @@ class CoopBubbles extends HTMLElement {
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.beginPath(); ctx.ellipse(x + ox - 8, y - 58 + oy, 16, 9, -0.5, 0, 7); ctx.fill();
     // next preview
-    this.drawBubble(ctx, x + 40, y + 6, 13, p.next.kind, p.next.special, false, false);
+    const npulse = p.next.swapT && this.now - p.next.swapT < 0.5 ? 1 + Math.sin((this.now - p.next.swapT) * 20) * 0.12 : 1;
+    this.drawBubble(ctx, x + 40, y + 6, 13 * npulse, p.next.kind, p.next.special, false, false);
     ctx.font = '600 12px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5'; ctx.textAlign = 'center';
     ctx.fillText('next', x + 40, y + 34);
     // identity icon + label
@@ -1530,6 +1610,7 @@ class CoopBubbles extends HTMLElement {
     }).join('');
     const again = sh.querySelector('.again'); again.textContent = 'Battle again'; again.disabled = false;
     this.endEl.style.display = 'grid';
+    this.showHighScores(Math.round(bt.human.score || 0));
   }
   battleSlots() {
     const n = this.battle.boards.length;
@@ -1713,6 +1794,7 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
 .pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none}
 .pad button:active{background:#2b6fd4;color:#fff}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
+.pad .padS{font-size:19px;padding:7px 14px}
 .side{width:var(--sideW);flex:none;height:100%;overflow-y:auto;background:#fff;border-radius:20px;padding:18px;box-shadow:0 8px 30px rgba(40,80,140,.12);font-size:14px}
 .side h3{margin:14px 0 8px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#7593b5}
 .side h2{margin:0 0 4px;font-size:20px}
@@ -1753,6 +1835,18 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
 .statRow .who{font-weight:700;width:34px}
 .statRow .nums{color:#5b7997;font-size:12.5px}
+.hiscore{margin:14px 0 4px;text-align:left}
+.hiscore h3{margin:0 0 8px;font-size:15px;color:#2b4a70}
+.hsPrompt{display:block;font-size:13px;color:#2b6fd4;font-weight:700;margin-bottom:6px}
+.hsSlots{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.hsIn{width:110px;font:inherit;font-weight:700;font-size:22px;letter-spacing:.35em;text-align:center;text-transform:uppercase;padding:6px 4px 6px 10px;border:2px solid #c4ddf5;border-radius:12px;color:#17335c;background:#f9fcff}
+.hsRow{display:flex;gap:10px;padding:5px 10px;border-radius:10px;font-size:13.5px;color:#2b4a70}
+.hsRow:nth-child(odd){background:#f4f9ff}
+.hsRow .rk{width:26px;color:#7593b5}
+.hsRow .ini{font-weight:700;letter-spacing:.12em;width:46px}
+.hsRow .pts{margin-left:auto;font-variant-numeric:tabular-nums}
+.hsRow.you{background:#ffe9f3;color:#17335c}
+.hsNote{font-size:12.5px;color:#7593b5;margin-top:6px}
 .homeActions{display:grid;gap:9px;margin-top:18px}.joinFields{display:grid;grid-template-columns:1fr 110px;gap:8px;margin-top:12px}
 .textInput{width:100%;border:2px solid #d7e6f5;border-radius:11px;padding:10px;font:inherit;color:#17335c;background:#f8fbff}
 .lobbyCard{width:min(540px,92%)}.roomCode{font:700 52px ui-monospace,monospace;letter-spacing:.18em;text-align:center;color:#2b6fd4;margin:6px 0}
@@ -1783,6 +1877,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  .pad .padR{right:0;justify-content:flex-end}
  .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,.05);color:#2b6fd4}
  .pad .padF{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:2;transform:translateX(-50%);padding:calc(12px * var(--u,1)) calc(28px * var(--u,1));font-size:clamp(11px,calc(14px * var(--u,1)),19px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ /* Sits on top of the .padR aim overlay rather than beside it, so the aim halves stay
+    full width and the swap target still wins the pointer where they overlap. */
+ .pad .padS{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:3;transform:translateX(calc(-50% + 92px * var(--u,1)));padding:calc(11px * var(--u,1)) calc(15px * var(--u,1));font-size:clamp(15px,calc(19px * var(--u,1)),25px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
  /* A short board — phone landscape, an unfolded Fold — leaves too little height for the
     bottom-half aim zones, so let them own the board's full height instead. FIRE keeps its
     own stacking context above them. */
@@ -1795,7 +1892,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton fullscreenButton" type="button" title="Enter fullscreen" aria-label="Enter fullscreen"><span class="enterIcon" aria-hidden="true">\u26f6</span><span class="exitIcon" aria-hidden="true">\u2715</span></button>
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
-    <div class="pad"><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
+    <div class="pad"><button class="padL">\u25c0</button><button class="padS" title="Swap loaded and next bubble">\u21c4</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
@@ -1847,9 +1944,22 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h1>Paused</h1><p class="sub">press P or the button to resume</p>
       <button class="btn primary resume">Resume</button>
     </div></div>
+    <div class="overlay levelUp" style="display:none"><div class="card">
+      <h1 class="luTitle"></h1><p class="sub luSub"></p>
+      <button class="btn primary luNext">Next level</button>
+    </div></div>
     <div class="overlay end" style="display:none"><div class="card">
       <h1 class="endTitle"></h1><p class="sub endSub"></p>
       <div class="endStats"></div>
+      <div class="hiscore" style="display:none">
+        <h3 class="hsTitle">High scores</h3>
+        <div class="hsEntry" style="display:none">
+          <span class="hsPrompt">New high score! Enter your initials</span>
+          <div class="hsSlots"><input class="hsIn" maxlength="3" autocomplete="off" spellcheck="false" aria-label="Initials"><button class="btn primary hsSave">Save</button></div>
+        </div>
+        <div class="hsList"></div>
+        <div class="hsNote"></div>
+      </div>
       <button class="btn primary again">Play again</button>
     </div></div>
   </div>
@@ -1865,6 +1975,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.reconnectEl = sh.querySelector('.reconnect');
     this.pauseEl = sh.querySelector('.pause');
     this.endEl = sh.querySelector('.end');
+    this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');
     sh.querySelector('.localPlay').onclick = () => { this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
     sh.querySelector('.createOnline').onclick = () => this.beginOnline('create');
@@ -1872,7 +1983,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));
     sh.querySelector('.start').onclick = () => { this.ensureAudio(); if (this.settings.mode === 'battle' && !this.battle) this.resetGame(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
     sh.querySelector('.resume').onclick = () => this.togglePause();
-    sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{this.state = 'play'; this.resetGame();} };
+    sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{
+      // A finished level chain leaves settings.level on the last level; restart the run.
+      if (this._runStartLevel !== undefined) { this.settings.level = this._runStartLevel; this._syncSettings?.(); }
+      this.state = 'play'; this.resetGame(); } };
+    sh.querySelector('.luNext').onclick = () => this.advanceLevel();
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
     const fullscreenButton = sh.querySelector('.fullscreenButton');
     this.fullscreenButtonEl = fullscreenButton;
@@ -1916,6 +2031,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.padF').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
       if(this.battle&&this.settings.mode==='battle'&&!this.online){this.battleFire();return;}
       if(this.online){this.fire();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.fire(p.i); } });
+    sh.querySelector('.padS').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
+      if(this.battle&&this.settings.mode==='battle'&&!this.online){this.battleSwap();return;}
+      if(this.online){this.swapBubble();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.swapBubble(p.i); } });
     sh.querySelector('.lobbyStart').onclick=()=>this.sendOnline('start');
     sh.querySelector('.lobbyLeave').onclick=()=>this.leaveOnline();
     sh.querySelector('.reconnectLeave').onclick=()=>this.leaveOnline();
@@ -1991,7 +2109,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const gap = btn ? Math.min(btn.offsetLeft, w - btn.offsetLeft - btn.offsetWidth) : 0;
     this.chromeInset = btn ? Math.max(X0, (btn.offsetWidth + gap * 2) * W / w) : X0;
   }
-  hideOverlays() { this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; }
+  hideOverlays() { this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; this.levelUpEl.style.display = 'none'; }
   showEnd(won) {
     const sh = this.shadowRoot;
     sh.querySelector('.endTitle').textContent = won ? '\u2b50 Field cleared!' : 'The bubbles won\u2026';
@@ -2002,7 +2120,67 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
        <span class="nums">${p.stats.pops} pops \u00b7 ${p.stats.bubbles} bubbles \u00b7 ${p.stats.assists} assists \u00b7 ${p.stats.drops} dropped \u00b7 ${p.stats.rescues} rescues</span></div>`).join('');
     const againBtn = sh.querySelector('.again'); if (!this.online) { againBtn.textContent = 'Play again'; againBtn.disabled = false; }
     this.endEl.style.display = 'grid';
+    this.showHighScores(this.score);
     if(this.online){const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
+  }
+
+  /* ---------- high scores ----------
+     The table lives on the game server (same origin, /scores) so it is shared across
+     devices and survives a reload. Every call fails soft: an unreachable server must
+     never keep the game-over card from rendering. */
+  scoreBucket() {
+    const mode = this.settings.mode;
+    // Clear mode chains levels, so a run is filed under the level it started on.
+    return { mode, level: mode === 'clear' ? (this._runStartLevel ?? this.settings.level) : 0 };
+  }
+  async showHighScores(score) {
+    const sh = this.shadowRoot, wrap = sh.querySelector('.hiscore');
+    const entryEl = sh.querySelector('.hsEntry'), listEl = sh.querySelector('.hsList'), noteEl = sh.querySelector('.hsNote');
+    wrap.style.display = ''; entryEl.style.display = 'none'; noteEl.textContent = '';
+    listEl.innerHTML = '<div class="hsNote">Loading…</div>';
+    const bucket = this.scoreBucket();
+    let entries;
+    try {
+      const res = await fetch(`/scores?mode=${encodeURIComponent(bucket.mode)}&level=${encodeURIComponent(bucket.level)}`, { cache:'no-store' });
+      if (!res.ok) throw new Error('bad status');
+      entries = (await res.json()).entries || [];
+    } catch (e) {
+      listEl.innerHTML = ''; noteEl.textContent = 'Leaderboard unavailable.'; return;
+    }
+    this.renderHighScores(entries);
+    const qualifies = score > 0 && (entries.length < 20 || score > entries[entries.length - 1].score);
+    if (!qualifies) return;
+    entryEl.style.display = '';
+    const input = sh.querySelector('.hsIn'), save = sh.querySelector('.hsSave');
+    try { input.value = localStorage.getItem('bt_initials') || ''; } catch (e) {}
+    input.focus(); input.select();
+    save.disabled = false;
+    const submit = async () => {
+      const initials = input.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3);
+      if (!initials) { noteEl.textContent = 'Enter 1-3 letters or digits.'; return; }
+      save.disabled = true;
+      try { localStorage.setItem('bt_initials', initials); } catch (e) {}
+      try {
+        const res = await fetch('/scores', { method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ initials, score, mode: bucket.mode, level: bucket.level }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'rejected');
+        entryEl.style.display = 'none';
+        noteEl.textContent = 'Ranked #' + data.rank + '.';
+        this.renderHighScores(data.entries, data.rank);
+      } catch (e) {
+        save.disabled = false; noteEl.textContent = 'Could not save that score.';
+      }
+    };
+    save.onclick = submit;
+    input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+  }
+  renderHighScores(entries, mine = 0) {
+    const listEl = this.shadowRoot.querySelector('.hsList');
+    if (!entries.length) { listEl.innerHTML = '<div class="hsNote">No scores yet — be the first.</div>'; return; }
+    listEl.innerHTML = entries.map((e, i) =>
+      `<div class="hsRow${i + 1 === mine ? ' you' : ''}"><span class="rk">${i + 1}</span><span class="ini">${
+        String(e.initials).replace(/[^A-Z0-9]/gi, '')}</span><span class="pts">${Number(e.score).toLocaleString()}</span></div>`).join('');
   }
 
   /* ---------- online rooms ---------- */
@@ -2029,11 +2207,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if(msg.type==='joined'){
       this._reconnectAttempts=0;this.reconnectEl.style.display='none';this.onlinePlayerId=msg.playerId;this.onlineRoom=msg.room;this._onlineCode=msg.room.code;this._onlineToken=msg.token;
       try{localStorage.setItem('bt_online_session',JSON.stringify({code:this._onlineCode,token:this._onlineToken}));}catch(_){}
-      this.sideEl.style.display='none';this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
+      this.sideEl.style.display='none';this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
     }
     if(msg.type==='lobby_state'){this.onlineRoom=msg.room;if(msg.room.phase==='lobby')this.showOnlineLobby();return;}
     if(msg.type==='host_changed'){if(this.onlineRoom)this.onlineRoom.hostId=msg.hostId;this.syncOnlineControls();return;}
-    if(msg.type==='match_started'){this.onlineRoom=msg.room;this.lobbyEl.style.display='none';this.endEl.style.display='none';this.applyOnlineSnapshot(msg.snapshot);this.shadowRoot.querySelector('.onlineBar').style.display='flex';return;}
+    if(msg.type==='match_started'){this.onlineRoom=msg.room;this.lobbyEl.style.display='none';this.endEl.style.display='none';
+      // Snapshots overwrite settings.level as the server walks the chain, so pin the
+      // level this run started on for the leaderboard bucket.
+      this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);this.shadowRoot.querySelector('.onlineBar').style.display='flex';return;}
     if(msg.type==='snapshot'){if(msg.phase==='ended'&&this.onlineRoom)this.onlineRoom.phase='ended';this.applyOnlineSnapshot(msg.snapshot);return;}
     if(msg.type==='phase_changed'){this.state=msg.phase;this.pauseEl.style.display=msg.phase==='paused'?'grid':'none';this.syncOnlineControls();return;}
     if(msg.type==='left'){this.returnHome();}
@@ -2091,7 +2272,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='swap'){const p=this.players[d.player];if(p){if(p.cur)p.cur.swapT=this.now;if(p.next)p.next.swapT=this.now;}this.sfx('swap');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this.sendOnline('input',{seq:++this.onlineSeq,held:this._onlineHeld});}
   syncOnlineControls(){if(!this.online)return;const host=this.isOnlineHost(),sh=this.shadowRoot;sh.querySelector('.onlinePause').style.display=host?'block':'none';sh.querySelector('.onlineRestart').style.display=host?'block':'none';sh.querySelector('.onlinePause').textContent=this.state==='paused'?'Resume':'Pause';sh.querySelector('.pause .resume').style.display=host?'block':'none';sh.querySelector('.pause .sub').textContent=host?'Press the button to resume for everyone':'Waiting for the host to resume';sh.querySelector('.onlineRoomLabel').textContent='Room '+(this.onlineRoom?.code||'');}
   setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
@@ -2181,6 +2362,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       }
       this.syncButtons();
     };
+    this._syncSettings = syncAll; // so the level chain can re-mark the level picker
     segWire('.modeSeg', null, b => { S.mode = b.dataset.m;
       if (S.mode === 'battle') { if (S.players < 4) S.players = 8; else if (S.players === 4) S.players = 8; }
       else if (S.players > 4) S.players = 4;

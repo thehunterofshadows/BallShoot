@@ -43,7 +43,11 @@ class OnlineGame {
   }
 
   rnd(a, b) { return a + this.random() * (b - a); }
-  reset() {
+  /* `carry` is set only by the Clear-mode level chain: it rebuilds the board for the
+     next level while keeping the running score, per-player stats, connection state and
+     the clock. The miss meter, pressure and danger timer deliberately do NOT carry —
+     a fresh full board plus an almost-full miss meter would descend immediately. */
+  reset(carry = null) {
     const S = this.settings;
     Object.assign(this, geom(S.viewH));
     this.WW = !this.battle && S.field === 'wide' ? W * 4 : W;
@@ -60,16 +64,21 @@ class OnlineGame {
     });
     this.removeFloaters();
     this.flights = []; this.batch = []; this.resolveAt = 0;
-    this.score = 0; this.dispScore = 0; this.missMeter = 0; this.danger = null;
-    this.now = 0; this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
+    this.score = carry ? carry.score : 0;
+    this.dispScore = carry ? carry.score : 0; this.missMeter = 0; this.danger = null;
+    this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
     this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
-    this.events = []; this.eventId = 0; this.paused = false;
-    this.players = this.roster.map((member, i) => ({
-      ...member, x: this.WW * (i + 0.5) / this.roster.length,
-      angle: this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
-      held: { l: false, r: false }, connected: true,
-      stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 },
-    }));
+    if (!carry) { this.now = 0; this.events = []; this.eventId = 0; this.paused = false; }
+    const prior = carry ? new Map(carry.players.map(p => [p.id, p])) : null;
+    this.players = this.roster.map((member, i) => {
+      const was = prior?.get(member.id);
+      return {
+        ...member, x: this.WW * (i + 0.5) / this.roster.length,
+        angle: was ? was.angle : this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
+        held: { l: false, r: false }, connected: was ? was.connected : true,
+        stats: was ? was.stats : { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 },
+      };
+    });
     for (const p of this.players) { p.cur = this.genBubble(); p.next = this.genBubble(); }
     this.updateLowest();
     this.emit('round_started', { seed: this.tickId });
@@ -180,6 +189,16 @@ class OnlineGame {
     this.emit('launch', { player: p.i, x: p.x, angle: a });
     return true;
   }
+  /* Exchange the loaded bubble with the on-deck one. Gated on the same reload timer
+     as fire() so it cannot be used as a free re-roll mid-cooldown. */
+  swap(id) {
+    const p = this.players.find(q => q.id === id);
+    if (!p || !p.connected || this.state !== 'play' || this.paused || this.inputLocked || p.reload > 0) return false;
+    if (!p.cur || !p.next) return false;
+    const held = p.cur; p.cur = p.next; p.next = held;
+    this.emit('swap', { player: p.i });
+    return true;
+  }
   emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
 
   update(dt) {
@@ -256,16 +275,38 @@ class OnlineGame {
     for(const result of results) if(result.popped){let fresh=0; result.popped.forEach(k=>{if(!all.has(k)&&this.grid.has(k)){const b=this.grid.get(k);if(b.placedBy>=0&&b.placedBy!==result.shooter)owners.add(b.placedBy);all.add(k);fresh++;}});if(fresh)clearers.push(result.shooter);}
     const popped=[]; all.forEach(k=>{const b=this.grid.get(k);if(b){popped.push(b);this.grid.delete(k);}});
     const dropped=this.removeFloaters(); this.updateLowest();
-    if(popped.length){if(!this.battle)clearers.forEach(i=>this.registerClear(i));const pts=popped.length*10*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
+    if(popped.length){if(!this.battle)clearers.forEach(i=>this.registerClear(i));const pts=this.popPoints(popped.length)*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}owners.forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts});}
     const misses=results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
-    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
-    if(dropped.length){const pts=dropped.length*30*(this.battle?1:this.chain.mult)+(dropped.length>=5?200:0);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
+    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax*0.6){this.chain.mult=1;this.chain.players.clear();}if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
+    if(dropped.length){const pts=this.dropPoints(dropped.length,this.countComponents(dropped))*(this.battle?1:this.chain.mult);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts});}
     if(this.danger&&!this.anyDangerCells()){this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue');}
     this.refreshQueues();
     const total=popped.length+dropped.length;
     if(this.battle&&total>=6){const amount=clamp(2+Math.round(total*.7),3,14);this.emit('attack_ready',{amount});this.hooks.onAttack?.(amount);}
     if(this.battle&&!this.grid.size)this.refillBattleBoard();
-    if(this.settings.mode==='clear'&&!this.grid.size)this.end(true);
+    if(this.settings.mode==='clear'&&!this.grid.size&&this.state==='play')this.clearLevel();
+  }
+  /* Clear mode chains the authored levels instead of stopping at the first one. A
+     custom level has nowhere to advance to, so it still ends the run. */
+  levelIndex() { return this.settings.level === 'custom' ? -1 : (Number(this.settings.level) || 0); }
+  nextLevelIndex() {
+    const i = this.levelIndex();
+    return i >= 0 && i + 1 < LEVELS.length ? i + 1 : -1;
+  }
+  levelBonus() {
+    let shots = 0, pops = 0;
+    for (const p of this.players) { shots += p.stats.shots; pops += p.stats.pops; }
+    const accuracy = shots ? pops / shots : 0;
+    const headroom = Math.max(0, this.settings.missMax - this.missMeter) / Math.max(1, this.settings.missMax);
+    return Math.round(accuracy * 1500) + Math.round(headroom * 500);
+  }
+  clearLevel() {
+    const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
+    this.score += bonus;
+    if (next < 0) { this.emit('level_cleared', { level: from, bonus, final: true }); return this.end(true); }
+    this.emit('level_cleared', { level: from, next, bonus, final: false });
+    this.settings.level = next;
+    this.reset({ score: this.score, players: this.players });
   }
   refillBattleBoard(){
     this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;this.anchorRow=0;this.pressure=0;
@@ -282,7 +323,25 @@ class OnlineGame {
     }
     this.updateLowest();this.refreshQueues();this.emit('garbage',{fromId,amount:added});return added;
   }
-  registerClear(i){const c=this.chain;if(c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
+  /* Superlinear so a patient 12-bubble cut beats four hurried 3s: 10/bubble plus a
+     quadratic bonus on everything past the minimum match. */
+  popPoints(n){ const over=Math.max(0,n-3); return n*10+over*over*10; }
+  /* `comps` is how many separate clusters the cut severed at once. Each extra
+     simultaneous cluster is worth half again, capped so a lucky shear stays sane. */
+  dropPoints(n,comps){ const cascade=Math.min(3,1+0.5*Math.max(0,comps-1)); return Math.round(n*30*cascade)+(n>=5?200:0); }
+  countComponents(cells){
+    const pool=new Set(cells.map(b=>key(b.r,b.c)));
+    let comps=0;
+    while(pool.size){
+      comps++; const start=pool.values().next().value, stack=[start.split(',').map(Number)]; pool.delete(start);
+      while(stack.length){ const [r,c]=stack.pop();
+        for(const [nr,nc] of this.neighbors(r,c)){ const k=key(nr,nc); if(pool.has(k)){pool.delete(k);stack.push([nr,nc]);} } }
+    }
+    return comps;
+  }
+  /* Solo runs have no second clearer to hand the chain to, so consecutive clears by
+     the only player must build the multiplier instead of resetting it. */
+  registerClear(i){const c=this.chain,solo=this.players.length<=1;if(solo||c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
   anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>this.DANGER_Y)hit=true;});return hit;}
   // Puzzle Bobble ceiling descent: the whole pack slides down one row and the
   // wall stagger alternates. Bumping r and parityFlip together leaves par(r) —

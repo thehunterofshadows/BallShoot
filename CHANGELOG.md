@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Added a bubble swap. `S` / `↓` / `I` per launcher, or the `⇄` touch button, exchanges the
+  loaded bubble with the on-deck one. It is gated on the same reload timer as firing, so it
+  is never a free re-roll, and it costs neither a shot nor shot pressure.
+- Co-op Clear now chains the four authored levels instead of stopping at the first. Score
+  and per-player stats carry forward, each clear pays an accuracy and miss-headroom bonus,
+  and only the last level ends the run. Custom levels still end where they always did. The
+  miss meter deliberately does not carry: a fresh full board plus a nearly-full meter would
+  descend immediately.
+- Deepened scoring. Pops pay superlinearly, so one 12-bubble cut beats four hurried 3s;
+  drops pay a cascade multiplier when a shot severs several clusters at once; and the chain
+  multiplier now builds in solo play, where previously it was permanently ×1 because it
+  required a second clearer.
+- Added a server-hosted arcade leaderboard. `GET`/`POST /scores`, top 20 per mode and
+  level, persisted to a Docker volume. Qualifying runs prompt for three initials on the
+  game-over card. Served over HTTP rather than the room socket so offline Local play can
+  post too, and every call fails soft — an unreachable server never blocks the card.
+  Submission is unauthenticated and therefore forgeable; validation and per-IP rate
+  limiting bound the damage, but the table is a wall of initials, not an audited record.
+- Fixed the server missing the client's rule that filling 60% of the miss meter resets the
+  chain multiplier, which made online chains more forgiving than local ones.
+
 - Made the playfield fill any screen shape. The field stays 640 wide and 11 columns,
   so every authored level is unchanged, but the world height now adapts to the device
   between 1080 and 1560 virtual units: foldable cover panels and 21:9 phones gain real

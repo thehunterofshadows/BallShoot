@@ -11,6 +11,16 @@ two to eight. The host chooses every lobby setting and starts the match. Co-op
 players share one server-authoritative field, while Battle gives each person a
 private field.
 
+Aim with the arrow keys or the touch halves, fire, and swap the loaded bubble with the
+on-deck one (`S`, or the `⇄` button) when the one you drew is no use. Swapping is free but
+obeys the same reload timer as firing.
+
+Co-op Clear plays the four authored levels as a chain: clearing one carries your score and
+stats into the next, pays an accuracy bonus, and only the last level ends the run. Beating
+the top-20 board prompts for three initials; the table lives on the game server, so it is
+shared across devices and survives a restart. It is not authenticated — treat it as an
+arcade cabinet, not a record.
+
 Every few shots the field pushes down a row, and the ceiling comes with it. The
 threshold tightens as colours disappear from the board, so endgames accelerate on
 their own. Hosts tune it with the **Shot pressure** slider; `0` turns it off.
@@ -72,11 +82,12 @@ overflow. It needs network egress because `support.js` boots React from a CDN.
 - `server/game.js` — authoritative bubble-board simulation
 - `server/battle.js` — private-board battle orchestration, attacks, and placements
 - `server/lobbies.js` — room membership, settings, reconnect, and host lifecycle
+- `server/scores.js` — leaderboard buckets, validation, and JSON-file persistence
 - `server/server.js` — HTTP health endpoint and WebSocket protocol adapter
 - `support.js` — generated browser runtime
 - `thumbnail.webp` — original preview image
 
-Nginx serves the browser app and proxies same-origin `/ws` connections to the
+Nginx serves the browser app and proxies same-origin `/ws` and `/scores` requests to the
 `gameserver` service over their shared network namespace. Only Nginx has an
 address on the external `edge` network; the game server listens on loopback with
 no published ports.

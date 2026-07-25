@@ -114,6 +114,72 @@ test('fewer colours on the board means faster drops', () => {
   assert.equal(game.shotsPerDrop(),0,'zero disables the mechanic');
 });
 
+test('swap exchanges the queue without consuming a shot or beating the reload', () => {
+  const game=new OnlineGame(DEFAULT_SETTINGS,roster,777), p=game.players[0];
+  const cur={...p.cur}, next={...p.next};
+  assert.equal(game.swap('a'),true);
+  assert.deepEqual({kind:p.cur.kind,special:p.cur.special},{kind:next.kind,special:next.special});
+  assert.deepEqual({kind:p.next.kind,special:p.next.special},{kind:cur.kind,special:cur.special});
+  assert.equal(p.stats.shots,0,'a swap is not a shot');
+  assert.equal(game.pressure,0,'a swap does not push the ceiling');
+  // Firing starts the cooldown, and the cooldown must gate swapping too — otherwise it
+  // becomes a free re-roll of the bubble you just decided not to like.
+  game.fire('a');
+  assert.ok(p.reload>0);
+  assert.equal(game.swap('a'),false);
+  for(let t=0;t<180;t++)game.update(1/60);
+  assert.equal(game.swap('a'),true);
+  game.setConnected('a',false);
+  assert.equal(game.swap('a'),false,'a disconnected launcher cannot swap');
+});
+
+test('clear mode chains the authored levels and carries the score', () => {
+  const game=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:0},[roster[0]],31);
+  game.players[0].stats.shots=10;game.players[0].stats.pops=5;
+  game.grid=new Map();game.batch=[];game.resolveBatch();
+  assert.equal(game.state,'play','clearing level 1 does not end the run');
+  assert.equal(game.settings.level,1,'advanced to the next authored level');
+  assert.ok(game.grid.size>0,'the next board was built');
+  const carried=game.score;
+  assert.ok(carried>0,'the accuracy/headroom bonus was awarded');
+  assert.equal(game.players[0].stats.shots,10,'per-player stats survive the level change');
+  assert.equal(game.missMeter,0,'the miss meter resets with the fresh board');
+  // Walk out the rest of the chain; only the last level ends the run.
+  for(let i=1;i<4;i++){game.grid=new Map();game.batch=[];game.resolveBatch();}
+  assert.equal(game.state,'won');
+  assert.equal(game.settings.level,3,'stops on the last authored level');
+  assert.ok(game.score>carried,'score accumulated across levels');
+});
+
+test('a custom level has nowhere to advance to and still ends the run', () => {
+  const game=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:'custom',customText:'RRR'},[roster[0]],31);
+  game.grid=new Map();game.batch=[];game.resolveBatch();
+  assert.equal(game.state,'won');
+  assert.equal(game.settings.level,'custom');
+});
+
+test('scoring rewards big cuts, cascades, and a solo chain', () => {
+  const game=new OnlineGame(DEFAULT_SETTINGS,roster,3);
+  // Superlinear pops: one 12 must beat four 3s, or there is no reason to set up.
+  assert.equal(game.popPoints(3),30);
+  assert.equal(game.popPoints(12),930); // 120 base + 9^2 * 10 over the minimum match
+  assert.ok(game.popPoints(12)>4*game.popPoints(3));
+  // Cascades: severing two clusters at once pays more than one cluster of the same size.
+  assert.ok(game.dropPoints(6,2)>game.dropPoints(6,1));
+  assert.equal(game.dropPoints(6,1),380);
+  assert.equal(game.dropPoints(4,5),Math.round(4*30*3),'the cascade multiplier is capped at 3x');
+  // Solo runs have nobody to hand the chain to, so consecutive clears must build it.
+  const solo=new OnlineGame(DEFAULT_SETTINGS,[roster[0]],3);
+  solo.registerClear(0);assert.equal(solo.chain.mult,2);
+  solo.registerClear(0);assert.equal(solo.chain.mult,3);
+  solo.registerClear(0);assert.equal(solo.chain.mult,4);
+  solo.registerClear(0);assert.equal(solo.chain.mult,4,'still capped at 4x');
+  // Co-op keeps the old hand-off rule: three in a row by one player drops it.
+  game.registerClear(0);assert.equal(game.chain.mult,2);
+  game.registerClear(0);game.registerClear(0);game.registerClear(0);
+  assert.equal(game.chain.mult,1,'hogging the field resets the team chain');
+});
+
 test('disconnected launchers become idle and cannot fire', () => {
   const game=new OnlineGame(DEFAULT_SETTINGS,roster,8);
   game.input('a',{l:true});game.update(1/60);const angle=game.players[0].angle;

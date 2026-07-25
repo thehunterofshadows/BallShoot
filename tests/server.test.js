@@ -24,6 +24,41 @@ test('two websocket clients create, join, start, input, and receive one authorit
   a.ws.terminate();b.ws.terminate();app.wss.close();await new Promise(resolve=>app.server.close(resolve));
 });
 
+test('the leaderboard endpoint reads and writes over plain HTTP', async () => {
+  // Plain HTTP, not the room socket, because Local offline play never opens one.
+  const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  const base=`http://127.0.0.1:${app.server.address().port}/scores`;
+  const post=body=>fetch(base,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+
+  const empty=await fetch(`${base}?mode=clear&level=0`);
+  assert.equal(empty.status,200);
+  assert.deepEqual((await empty.json()).entries,[]);
+
+  const saved=await post({initials:'ada',score:4200,mode:'clear',level:0});
+  assert.equal(saved.status,200);
+  const result=await saved.json();
+  assert.equal(result.rank,1);
+  assert.equal(result.entries[0].initials,'ADA','initials are normalised server-side');
+
+  const listed=await fetch(`${base}?mode=clear&level=0`);
+  assert.equal(listed.headers.get('cache-control'),'no-store','never cached by the JS rules');
+  assert.equal((await listed.json()).entries[0].score,4200);
+
+  // A different bucket is untouched by that submission.
+  assert.deepEqual((await (await fetch(`${base}?mode=clear&level=1`)).json()).entries,[]);
+
+  // Rejections are 4xx with a code, not a crash.
+  for (const bad of [{initials:'',score:1,mode:'clear',level:0},{initials:'AAA',score:-5,mode:'clear',level:0},
+                     {initials:'AAA',score:1,mode:'nope',level:0},{initials:'AAA',score:1,mode:'clear',level:42}]) {
+    const res=await post(bad);
+    assert.equal(res.status,400);
+    assert.ok((await res.json()).code,'a machine-readable code comes back');
+  }
+  const bogus=await fetch(base,{method:'PUT'});assert.equal(bogus.status,405);
+
+  await new Promise(resolve=>app.server.close(resolve));app.wss.close();
+});
+
 test('battle rooms start with personalized snapshots and server-validated targeting', async () => {
   const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const port=app.server.address().port,url=`ws://127.0.0.1:${port}/ws`;
   const a=client(url),b=client(url);await Promise.all([a.opened,b.opened]);

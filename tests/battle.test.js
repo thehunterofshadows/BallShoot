@@ -34,7 +34,8 @@ test('a six-bubble clear charges an attack and refills an empty battle field', (
   board.grid=new Map();for(let c=0;c<6;c++)board.grid.set(`0,${c}`,{r:0,c,kind:'R',special:null,placedBy:c===5?0:-1});
   board.batch=[board.grid.get('0,5')];board.resolveBatch();
   assert.equal(game.snapshotFor('a').pendingTarget.amount,6);
-  assert.ok(board.grid.size>6);assert.equal(board.score,1060);
+  // 6 popped = 60 base + 90 group-size bonus, plus the 1000 empty-field refill.
+  assert.ok(board.grid.size>6);assert.equal(board.score,1150);
 });
 
 test('expired targeting chooses a living opponent deterministically', () => {

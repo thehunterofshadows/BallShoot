@@ -18,6 +18,11 @@ services:
     container_name: ${GAME_SERVER_CONTAINER_NAME:-ballshoot-dev-gameserver}
     network_mode: "service:web"
     restart: unless-stopped
+    environment:
+      # Leaderboard table. Unset or unwritable falls back to in-memory only.
+      SCORES_PATH: /data/scores.json
+    volumes:
+      - scores:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -55,6 +60,7 @@ services:
         node --check /app/server/battle.js
         node --check /app/server/lobbies.js
         node --check /app/server/server.js
+        node --check /app/server/scores.js
         npm test
     profiles:
       - test
@@ -80,6 +86,11 @@ services:
     shm_size: 1gb
     profiles:
       - test
+
+volumes:
+  # Unnamed on purpose: Compose prefixes it with COMPOSE_PROJECT_NAME, so Dev and Prod
+  # get separate leaderboards without any extra env plumbing.
+  scores:
 
 networks:
   edge:
