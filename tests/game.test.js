@@ -188,3 +188,20 @@ test('disconnected launchers become idle and cannot fire', () => {
   for(let i=0;i<20;i++)game.update(1/60);
   assert.equal(game.players[0].angle,angle);
 });
+
+test('aim speed is a room setting that scales how fast the launcher swings', () => {
+  const swing = aimSpeed => {
+    const game = new OnlineGame({ ...DEFAULT_SETTINGS, aimSpeed }, roster, 5);
+    const from = game.players[0].angle;
+    game.input('a', { r:true });
+    for (let i = 0; i < 6; i++) game.update(1/60);
+    return game.players[0].angle - from;
+  };
+  assert.ok(Math.abs(swing(4.8) - 2 * swing(2.4)) < 1e-9, 'double the setting, double the swing');
+  assert.ok(swing(0.6) > 0 && swing(0.6) < swing(2.4));
+  // A missing or junk value falls back to the speed the game shipped with.
+  const legacy = new OnlineGame({ ...DEFAULT_SETTINGS, aimSpeed:undefined }, roster, 5);
+  const from = legacy.players[0].angle;
+  legacy.input('a', { r:true }); legacy.update(1/60);
+  assert.ok(Math.abs(legacy.players[0].angle - from - 2.4/60) < 1e-9);
+});

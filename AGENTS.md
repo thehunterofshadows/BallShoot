@@ -19,9 +19,16 @@ external Automated GitHub Watcher; see that section below.
 
 ## Required handoff
 
-Before handing work back to the user, always commit every change in the working
-tree, including untracked files, and push the current branch. Do not leave any
-local changes or commits unpushed.
+Before handing work back to the user, always:
+
+1. Run `./rebuild.sh` so the running environment serves the change. Editing files
+   is not delivering: the user tests the deployed container, and an unrebuilt
+   environment still serves the previous bundle. This applies to every change to
+   `index.html`, `coop-bubbles.js`, `support.js`, `nginx.conf`, `Dockerfile`, or
+   anything under `server/`. Report the build stamp or `?v=` hash of what you
+   deployed so the user can confirm they are looking at it.
+2. Commit every change in the working tree, including untracked files, and push
+   the current branch. Do not leave any local changes or commits unpushed.
 
 ## Project architecture
 

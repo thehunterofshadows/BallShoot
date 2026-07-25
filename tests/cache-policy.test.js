@@ -19,6 +19,16 @@ test('browser assets receive content-derived versions during the image build', (
   assert.match(dockerfile, /s\/__GAME_VERSION__\/\$\{game_version\}\/g/);
 });
 
+test('the loaded build identifies itself on screen', () => {
+  const game = fs.readFileSync(path.join(root, 'coop-bubbles.js'), 'utf8');
+  assert.match(game, /const BUILD_STAMP = '__BUILD_STAMP__'/);
+  assert.match(game, /class="buildTag">\$\{BUILD_LABEL\}/);
+  // Stamped before the cache-busting hash is taken, so the ?v= changes every build.
+  const stampAt = dockerfile.indexOf('s/__BUILD_STAMP__/');
+  const hashAt = dockerfile.indexOf('sha256sum /usr/share/nginx/html/coop-bubbles.js');
+  assert.ok(stampAt > -1 && hashAt > stampAt, 'stamp must be applied before hashing');
+});
+
 test('HTML is never cached while JavaScript must be revalidated', () => {
   assert.match(nginx, /location = \/ \{[\s\S]*?Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always/);
   assert.match(nginx, /location = \/index\.html \{[\s\S]*?Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always/);

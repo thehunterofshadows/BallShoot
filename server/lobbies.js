@@ -6,7 +6,7 @@ const { BattleGame } = require('./battle');
 
 const DEFAULT_SETTINGS = Object.freeze({
   reload:1.35, missMax:12, rescueDur:4, assist:.35, pressureShots:8, mateLines:true, sound:true,
-  mode:'clear', field:'classic', guide:1, level:0, customText:'', viewH:1080,
+  mode:'clear', field:'classic', guide:1, level:0, customText:'', viewH:1080, aimSpeed:2.4,
 });
 const rooms = new Map();
 const limits = new Map();
@@ -20,7 +20,7 @@ function validateSettings(input) {
   if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level <= 3)) throw fail('bad_settings','Invalid level.');
   const number = (name,min,max) => { s[name]=Number(s[name]); if(!Number.isFinite(s[name])||s[name]<min||s[name]>max)throw fail('bad_settings',`Invalid ${name}.`); };
   number('reload',.8,2.2); number('missMax',4,20); number('rescueDur',3,5); number('assist',0,1);
-  number('pressureShots',0,20);
+  number('pressureShots',0,20); number('aimSpeed',.6,6);
   if (![.25,.5,1].includes(Number(s.guide))) throw fail('bad_settings','Invalid guide length.');
   s.guide=Number(s.guide); s.mateLines=!!s.mateLines; s.sound=!!s.sound;
   s.customText=String(s.customText || '').slice(0, 512);

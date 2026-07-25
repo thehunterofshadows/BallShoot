@@ -208,8 +208,9 @@ class OnlineGame {
     for (const p of this.players) {
       p.reload = Math.max(0, p.reload - dt);
       if (!p.connected || this.inputLocked) continue;
-      if (p.held.l) p.angle = clamp(p.angle - 2.4*dt, -1.22, 1.22);
-      if (p.held.r) p.angle = clamp(p.angle + 2.4*dt, -1.22, 1.22);
+      const spd = (Number(this.settings.aimSpeed) || 2.4) * dt;
+      if (p.held.l) p.angle = clamp(p.angle - spd, -1.22, 1.22);
+      if (p.held.r) p.angle = clamp(p.angle + spd, -1.22, 1.22);
     }
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();

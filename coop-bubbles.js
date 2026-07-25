@@ -5,6 +5,13 @@
 (() => {
 if (customElements.get('coop-bubbles')) return;
 
+/* Stamped by the image build (see Dockerfile). It is substituted before the cache-busting
+   hash is taken, so a rebuild always yields a new ?v= and the corner tag on screen always
+   names the build the browser actually loaded. Unstamped source runs as "dev". */
+const BUILD_STAMP = '__BUILD_STAMP__';
+const APP_VERSION = '1.0.0'; // keep in step with package.json
+const BUILD_LABEL = 'v' + APP_VERSION + ' · ' + (/^__BUILD/.test(BUILD_STAMP) ? 'dev' : BUILD_STAMP);
+
 const W = 640, R = 28, COLS = 11;
 const ROWH = R * Math.sqrt(3), X0 = 12, GRIDTOP0 = 108;
 /* The field stays 640 wide and 11 columns so every authored level still fits, but its
@@ -104,7 +111,9 @@ class CoopBubbles extends HTMLElement {
     this.setViewH(H0); // measure() refines this once .root has a box
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
-      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0 };
+      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
+      aimSpeed:2.4, padTint:0.025, fireScale:1 };
+    Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
     this.resetGame();
     this.state = 'home';
@@ -114,6 +123,30 @@ class CoopBubbles extends HTMLElement {
       const saved=JSON.parse(localStorage.getItem('bt_online_session')||'null');
       if(saved&&/^\d{3}$/.test(saved.code)&&saved.token){this.online=true;this._onlineCode=saved.code;this._onlineToken=saved.token;this.reconnectEl.style.display='grid';this.openOnlineSocket(true);}
     } catch(_) {}
+  }
+  // Aim speed, the touch tint, and the FIRE button size are feel preferences for a given
+  // device rather than match rules, so they outlive a single session instead of resetting
+  // with the game.
+  loadLocalPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem('bt_prefs') || 'null') || {};
+      const out = {};
+      if (Number.isFinite(p.aimSpeed)) out.aimSpeed = clamp(p.aimSpeed, 0.6, 6);
+      if (Number.isFinite(p.padTint)) out.padTint = clamp(p.padTint, 0, 0.3);
+      if (Number.isFinite(p.fireScale)) out.fireScale = clamp(p.fireScale, 0.6, 2.2);
+      return out;
+    } catch (_) { return {}; }
+  }
+  saveLocalPrefs() {
+    const { aimSpeed, padTint, fireScale } = this.settings;
+    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale })); } catch (_) {}
+  }
+  applyTouchStyle() {
+    const root = this.rootEl; if (!root) return;
+    const tint = this.settings.padTint;
+    root.style.setProperty('--padTint', String(tint));
+    root.style.setProperty('--padInk', tint ? '#2b6fd4' : 'rgba(43,74,112,.48)');
+    root.style.setProperty('--fireScale', String(this.settings.fireScale));
   }
   disconnectedCallback() {
     cancelAnimationFrame(this._raf);
@@ -725,7 +758,7 @@ class CoopBubbles extends HTMLElement {
       p.reload = Math.max(0, p.reload - dt);
       if (p.bot) this.botUpdate(p, dt);
       else {
-        const spd = 2.4 * rdt;
+        const spd = this.settings.aimSpeed * rdt;
         if (p.held.l) { p.angle = clamp(p.angle - spd, -1.22, 1.22); this.activeP = p.i; }
         if (p.held.r) { p.angle = clamp(p.angle + spd, -1.22, 1.22); this.activeP = p.i; }
       }
@@ -1420,7 +1453,7 @@ class CoopBubbles extends HTMLElement {
     const locked = tg && tg.by === b.i && !p.bot;
     if (p.bot) this.botUpdate(p, rdt);
     else if (!locked) {
-      const spd = 2.4 * rdt;
+      const spd = this.settings.aimSpeed * rdt;
       if (p.held.l) p.angle = clamp(p.angle - spd, -1.22, 1.22);
       if (p.held.r) p.angle = clamp(p.angle + spd, -1.22, 1.22);
     }
@@ -1791,10 +1824,16 @@ class CoopBubbles extends HTMLElement {
 .gameCol{position:relative;flex:none;height:100%;width:auto;max-width:100%;max-height:100%;aspect-ratio:var(--fieldAspect,.59259);min-width:0}
 canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px 40px rgba(40,80,140,.18);touch-action:none}
 .pad{position:absolute;left:50%;transform:translateX(-50%);bottom:4px;display:flex;gap:10px;z-index:4}
-.pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none}
+/* The UA tap highlight is its own blue wash on top of ours, so an aim half tinted at 0%
+   still flashed on touch. Ours is the only pressed feedback these controls get. */
+.pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 .pad button:active{background:#2b6fd4;color:#fff}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
 .pad .padS{font-size:19px;padding:7px 14px}
+/* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
+   under the pad's z-index and takes no pointer events, so it never eats an aim drag. */
+.buildTag{position:absolute;right:8px;bottom:3px;z-index:3;pointer-events:none;user-select:none;
+ font-size:clamp(8px,calc(10px * var(--u,1)),12px);letter-spacing:.02em;color:rgba(43,74,112,.38)}
 .side{width:var(--sideW);flex:none;height:100%;overflow-y:auto;background:#fff;border-radius:20px;padding:18px;box-shadow:0 8px 30px rgba(40,80,140,.12);font-size:14px}
 .side h3{margin:14px 0 8px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#7593b5}
 .side h2{margin:0 0 4px;font-size:20px}
@@ -1875,15 +1914,15 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 calc(24px * var(--u,1)) calc(24px * var(--u,1));border-radius:0;background:transparent;box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:clamp(18px,calc(26px * var(--u,1)),34px)}
  .pad .padL{left:0;justify-content:flex-start}
  .pad .padR{right:0;justify-content:flex-end}
- .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,.05);color:#2b6fd4}
- .pad .padF{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:2;transform:translateX(-50%);padding:calc(12px * var(--u,1)) calc(28px * var(--u,1));font-size:clamp(11px,calc(14px * var(--u,1)),19px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ /* At 0% the whole pressed state goes away, arrow ink included, so "off" really is
+    invisible rather than merely a fainter wash. */
+ .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,var(--padTint,.025));color:var(--padInk,#2b6fd4)}
+ /* --fireScale multiplies the whole button, so the label and the tap target grow
+    together and the swap button slides out of the way instead of being overlapped. */
+ .pad .padF{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:2;transform:translateX(-50%);padding:calc(12px * var(--u,1) * var(--fireScale,1)) calc(28px * var(--u,1) * var(--fireScale,1));font-size:calc(clamp(11px,calc(14px * var(--u,1)),19px) * var(--fireScale,1));border-radius:calc(14px * var(--fireScale,1));box-shadow:0 4px 14px rgba(40,80,140,.25)}
  /* Sits on top of the .padR aim overlay rather than beside it, so the aim halves stay
     full width and the swap target still wins the pointer where they overlap. */
- .pad .padS{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:3;transform:translateX(calc(-50% + 92px * var(--u,1)));padding:calc(11px * var(--u,1)) calc(15px * var(--u,1));font-size:clamp(15px,calc(19px * var(--u,1)),25px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
- /* A short board — phone landscape, an unfolded Fold — leaves too little height for the
-    bottom-half aim zones, so let them own the board's full height instead. FIRE keeps its
-    own stacking context above them. */
- .root.wideLayout .pad{height:100%}
+ .pad .padS{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:3;transform:translateX(calc(-50% + 92px * var(--u,1) * var(--fireScale,1)));padding:calc(11px * var(--u,1)) calc(15px * var(--u,1));font-size:clamp(15px,calc(19px * var(--u,1)),25px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
 }
 </style>
 <div class="root">
@@ -1892,6 +1931,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton fullscreenButton" type="button" title="Enter fullscreen" aria-label="Enter fullscreen"><span class="enterIcon" aria-hidden="true">\u26f6</span><span class="exitIcon" aria-hidden="true">\u2715</span></button>
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
+    <div class="buildTag">${BUILD_LABEL}</div>
     <div class="pad"><button class="padL">\u25c0</button><button class="padS" title="Swap loaded and next bubble">\u21c4</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
@@ -1913,6 +1953,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <label>Shot pressure<input data-setting="pressureShots" type="range" min="0" max="20" step="1"></label>
         <label>Rescue timer<input data-setting="rescueDur" type="range" min="3" max="5" step="0.5"></label>
         <label>Aim assist<input data-setting="assist" type="range" min="0" max="1" step="0.05"></label>
+        <label>Aim speed<input data-setting="aimSpeed" type="range" min="0.6" max="6" step="0.1"></label>
         <label>Teammate lines<select data-setting="mateLines"><option value="true">Show</option><option value="false">Hide</option></select></label>
         <label>Sound<select data-setting="sound"><option value="true">On</option><option value="false">Off</option></select></label>
         <label class="full customSetting">Custom level<textarea data-setting="customText" rows="4" maxlength="512" spellcheck="false"></textarea></label>
@@ -1977,6 +2018,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.endEl = sh.querySelector('.end');
     this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');
+    this.applyTouchStyle();
     sh.querySelector('.localPlay').onclick = () => { this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
     sh.querySelector('.createOnline').onclick = () => this.beginOnline('create');
     sh.querySelector('.joinOnline').onclick = () => this.beginOnline('join');
@@ -2229,7 +2271,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide','aimSpeed'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
@@ -2309,6 +2351,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Shot pressure</span><input type="range" class="sp" min="0" max="20" step="1"><span class="val spv"></span></div>
 <div class="row"><span>Rescue timer</span><input type="range" class="rc" min="3" max="5" step="0.5"><span class="val rcv"></span></div>
 <div class="row"><span>Aim assist</span><input type="range" class="aa" min="0" max="1" step="0.05"><span class="val aav"></span></div>
+<div class="row"><span>Aim speed</span><input type="range" class="as" min="0.6" max="6" step="0.1"><span class="val asv"></span></div>
+<div class="row"><span>Touch tint</span><input type="range" class="pt" min="0" max="0.3" step="0.005"><span class="val ptv"></span></div>
+<div class="row"><span>FIRE size</span><input type="range" class="fs" min="0.6" max="2.2" step="0.05"><span class="val fsv"></span></div>
+<div style="color:#9db8d4;font-size:12px;margin-top:-2px">touch tint: how strongly the aim halves glow blue while held</div>
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full</button><button data-g="0.5">50%</button><button data-g="0.25">25%</button></div></div>
 <div class="row tlRow"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
@@ -2339,6 +2385,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelector('.spv').textContent = S.pressureShots ? S.pressureShots + ' shots' : 'off';
       el.querySelector('.rc').value = S.rescueDur; el.querySelector('.rcv').textContent = S.rescueDur.toFixed(1) + 's';
       el.querySelector('.aa').value = S.assist; el.querySelector('.aav').textContent = Math.round(S.assist * 100) + '%';
+      el.querySelector('.as').value = S.aimSpeed; el.querySelector('.asv').textContent = S.aimSpeed.toFixed(1) + '×';
+      el.querySelector('.pt').value = S.padTint;
+      el.querySelector('.ptv').textContent = S.padTint ? (S.padTint * 100).toFixed(1) + '%' : 'off';
+      el.querySelector('.fs').value = S.fireScale; el.querySelector('.fsv').textContent = S.fireScale.toFixed(2) + '×';
       const isB = S.mode === 'battle';
       el.querySelector('.fieldWrap').style.display = isB ? 'none' : '';
       el.querySelector('.tlRow').style.display = isB ? 'none' : '';
@@ -2391,6 +2441,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     slider('.sp', 0, v => S.pressureShots = v);
     slider('.rc', 0, v => S.rescueDur = v);
     slider('.aa', 0, v => S.assist = v);
+    slider('.as', 0, v => { S.aimSpeed = v; this.saveLocalPrefs(); });
+    slider('.pt', 0, v => { S.padTint = v; this.applyTouchStyle(); this.saveLocalPrefs(); });
+    slider('.fs', 0, v => { S.fireScale = v; this.applyTouchStyle(); this.saveLocalPrefs(); });
     el.querySelector('.pauseBtn').onclick = () => this.togglePause();
     el.querySelector('.resetBtn').onclick = () => { this.state = 'play'; this.resetGame(); };
     el.querySelector('.howBtn').onclick = () => this.showTutorial();

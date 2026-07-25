@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Aim speed is now tunable (`Aim speed`, 0.6×–6×, default 2.4× as before) in both the local
+  settings panel and the online lobby, since online aiming is integrated on the server.
+- The blue tint the mobile aim halves show while held is tunable (`Touch tint`, 0–30%,
+  default 2.5% as before), and `0` is now genuinely off: the browser's own tap highlight
+  was painting a second blue wash over ours, and the pressed arrow ink now switches off
+  with the tint.
+- The FIRE button is resizable (`FIRE size`, 0.6×–2.2×). Padding, label, and corner radius
+  scale together so the tap target grows with the look, and the swap button slides outward
+  with it rather than being overlapped. These three are device feel preferences rather
+  than match rules, so they persist in `localStorage` instead of resetting with the game.
+
 - Added a bubble swap. `S` / `↓` / `I` per launcher, or the `⇄` touch button, exchanges the
   loaded bubble with the on-deck one. It is gated on the same reload timer as firing, so it
   is never a free re-roll, and it costs neither a shot nor shot pressure.

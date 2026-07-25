@@ -42,9 +42,27 @@ test('leftover width beside the board is spent on UI rather than a viewport brea
 
 test('mobile touch controls scale with the board and use a subtle pressed tint', () => {
   assert.match(component, /\.pad \.padF\{[^}]*bottom:calc\(18px \* var\(--u,1\)\)/);
-  assert.match(component, /\.pad \.padL:active,.pad \.padR:active\{background:rgba\(43,111,212,.05\)/);
-  // A short board leaves too little height for bottom-half aim zones.
-  assert.match(component, /\.root\.wideLayout \.pad\{height:100%\}/);
+  // The tint strength is a --padTint setting, defaulting to the old subtle 2.5%.
+  assert.match(component, /\.pad \.padL:active,.pad \.padR:active\{background:rgba\(43,111,212,var\(--padTint,\.025\)\)/);
+  assert.match(component, /padTint:0\.025/);
+  assert.match(component, /setProperty\('--padTint'/);
+  // "Off" must be genuinely invisible: no arrow-ink change, and no UA tap highlight
+  // painting its own wash over ours.
+  assert.match(component, /-webkit-tap-highlight-color:transparent/);
+  assert.match(component, /:active[^}]*color:var\(--padInk,#2b6fd4\)/);
+  assert.match(component, /setProperty\('--padInk'/);
+});
+
+test('the FIRE button scales as a whole and pushes the swap button clear', () => {
+  assert.match(component, /\.pad \.padF\{[^}]*padding:calc\(12px \* var\(--u,1\) \* var\(--fireScale,1\)\)/);
+  assert.match(component, /\.pad \.padF\{[^}]*font-size:calc\(clamp\(11px,calc\(14px \* var\(--u,1\)\),19px\) \* var\(--fireScale,1\)\)/);
+  assert.match(component, /\.pad \.padS\{[^}]*translateX\(calc\(-50% \+ 92px \* var\(--u,1\) \* var\(--fireScale,1\)\)\)/);
+  assert.match(component, /fireScale:1/);
+  assert.match(component, /setProperty\('--fireScale'/);
+  // The aim zones stay in the bottom half of the board at every board shape, so the
+  // upper half is free for reading the field rather than swallowing aim drags.
+  assert.match(component, /\.pad\{[^}]*height:50%/);
+  assert.doesNotMatch(component, /\.root\.wideLayout \.pad\{height:100%\}/);
 });
 
 test('overlay chrome is sized in board units so it stays tappable at any board size', () => {
