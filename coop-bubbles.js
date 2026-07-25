@@ -98,6 +98,27 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rnd = (a,b) => a + Math.random() * (b - a);
+/* Short aim guides are a fixed stub off the barrel, not a share of the flight path. A
+   share grew and shrank with how far the shot had to travel, which leaks exactly the
+   distance information the shortened setting exists to withhold — and made the 25% guide
+   nearly invisible on close targets. Lengths are in world units, so they read the same on
+   every screen shape. */
+const GUIDE_STUB = { 0.5: 9 * R, 0.25: 4 * R };
+const trimPath = (pts, maxLen) => {
+  if (pts.length < 2) return pts.slice();
+  const out = [pts[0]];
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i], d = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len + d >= maxLen) {
+      const t = d ? (maxLen - len) / d : 0;
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      return out;
+    }
+    out.push(b); len += d;
+  }
+  return out;
+};
 /* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
    a fold animation mid-frame — cannot churn the world height on every resize tick. */
 const geom = vh => {
@@ -1161,7 +1182,7 @@ class CoopBubbles extends HTMLElement {
     const sim = this.simulate(p.x, clamp(p.angle, -1.22, 1.22));
     const meta = p.meta;
     const frac = this.settings.guide;
-    const pts = frac >= 1 ? sim.pts : sim.pts.slice(0, Math.max(2, Math.ceil(sim.pts.length * frac)));
+    const pts = frac >= 1 ? sim.pts : trimPath(sim.pts, GUIDE_STUB[frac] || GUIDE_STUB[0.5]);
     ctx.save(); ctx.globalAlpha = alpha; ctx.strokeStyle = meta.accent; ctx.fillStyle = meta.accent;
     if (meta.trail === 'solid') {
       ctx.lineWidth = 3; ctx.setLineDash([]);
@@ -1170,9 +1191,13 @@ class CoopBubbles extends HTMLElement {
       ctx.setLineDash([2, 14]); ctx.lineWidth = 5; ctx.lineCap = 'round';
       ctx.beginPath(); pts.forEach((q,i) => i ? ctx.lineTo(q.x,q.y) : ctx.moveTo(q.x,q.y)); ctx.stroke(); ctx.setLineDash([]);
     } else if (meta.trail === 'rings') {
-      for (let i = 4; i < pts.length; i += 5) { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 5, 0, 7); ctx.stroke(); }
+      // Marker styles are spaced by point index, so a stub needs a tighter step to read as
+      // a direction rather than as one stray mark.
+      const step = frac >= 1 ? 5 : 3;
+      for (let i = step - 1; i < pts.length; i += step) { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 5, 0, 7); ctx.stroke(); }
     } else {
-      for (let i = 3; i < pts.length; i += 4) { const q = pts[i]; ctx.lineWidth = 2;
+      const step = frac >= 1 ? 4 : 3;
+      for (let i = step - 1; i < pts.length; i += step) { const q = pts[i]; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(q.x-4,q.y); ctx.lineTo(q.x+4,q.y); ctx.moveTo(q.x,q.y-4); ctx.lineTo(q.x,q.y+4); ctx.stroke(); }
     }
     if (frac >= 1) for (const b of sim.bpts) { // first-bounce markers
@@ -1947,7 +1972,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option><option value="battle">Battle Royale (2\u20138)</option></select></label>
         <label>Field<select data-setting="field"><option value="classic">Classic</option><option value="wide">Wide 4×</option></select></label>
         <label>Level<select data-setting="level"><option value="0">1. The Vault</option><option value="1">2. Chandeliers</option><option value="2">3. The Canyon</option><option value="3">4. Hive Bridge</option><option value="custom">Custom</option></select></label>
-        <label>Aim guide<select data-setting="guide"><option value="1">Full</option><option value="0.5">50%</option><option value="0.25">25%</option></select></label>
+        <label>Aim guide<select data-setting="guide"><option value="1">Full path</option><option value="0.5">Short</option><option value="0.25">Tiny</option></select></label>
         <label>Reload<input data-setting="reload" type="range" min="0.8" max="2.2" step="0.05"></label>
         <label>Miss limit<input data-setting="missMax" type="range" min="4" max="20" step="1"></label>
         <label>Shot pressure<input data-setting="pressureShots" type="range" min="0" max="20" step="1"></label>
@@ -2356,7 +2381,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>FIRE size</span><input type="range" class="fs" min="0.6" max="2.2" step="0.05"><span class="val fsv"></span></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">touch tint: how strongly the aim halves glow blue while held</div>
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
-  <button data-g="1">Full</button><button data-g="0.5">50%</button><button data-g="0.25">25%</button></div></div>
+  <button data-g="1">Full path</button><button data-g="0.5">Short</button><button data-g="0.25">Tiny</button></div></div>
 <div class="row tlRow"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
 <div class="row"><span>Sound</span><div class="seg sndSeg"><button data-v="1">On</button><button data-v="0">Off</button></div></div>
 <button class="btn ghost pauseBtn">Pause (P)</button>

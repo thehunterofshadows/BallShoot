@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Shortened aim guides are now a fixed-length stub off the barrel instead of a share of the
+  flight path. A percentage grew and shrank with how far the shot had to travel, which
+  leaked the very distance information the setting withholds and left the shortest guide
+  nearly invisible on close targets. `Short` reaches about two rows, `Tiny` about two
+  bubbles, at any target distance; the settings are relabelled `Full path` / `Short` /
+  `Tiny` to match (the stored values are unchanged, so existing rooms are unaffected).
 - Aim speed is now tunable (`Aim speed`, 0.6×–6×, default 2.4× as before) in both the local
   settings panel and the online lobby, since online aiming is integrated on the server.
 - The blue tint the mobile aim halves show while held is tunable (`Touch tint`, 0–30%,
