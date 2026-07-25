@@ -1,7 +1,11 @@
 'use strict';
 
-const W = 640, H = 1080, R = 28, X0 = 12;
-const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108, DANGER_Y = 846, LAUNCH_Y = 938;
+const W = 640, R = 28, X0 = 12;
+const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108;
+/* Mirror of the client geometry in coop-bubbles.js: the field is always 640 wide and
+   11 columns, but the world height comes from the room's viewH so the whole table
+   shares one danger line no matter what each player's device looks like. */
+const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP = 92;
 const KINDS = ['R', 'Y', 'G', 'B'];
 const LEVELS = [
   ["GGBYRGBYYGB","BRRGBYRGBY","RGGYRGBYRGB","BYRBBYRGBY","RGBYYGBYRGB","BYRGBYRGBY","RGBY...YRGB","BYRG...GBY","RGB.....RGB","BY.......Y"],
@@ -11,6 +15,10 @@ const LEVELS = [
 ];
 const key = (r, c) => `${r},${c}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const geom = vh => {
+  const H = clamp(Math.round((Number(vh) || H0) / 20) * 20, VIEWH_MIN, VIEWH_MAX), LAUNCH_Y = H - LAUNCH_GAP;
+  return { H, LAUNCH_Y, DANGER_Y: LAUNCH_Y - DANGER_GAP };
+};
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -37,6 +45,7 @@ class OnlineGame {
   rnd(a, b) { return a + this.random() * (b - a); }
   reset() {
     const S = this.settings;
+    Object.assign(this, geom(S.viewH));
     this.WW = !this.battle && S.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
     this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
@@ -165,7 +174,7 @@ class OnlineGame {
     const p = this.players.find(q => q.id === id);
     if (!p || !p.connected || this.state !== 'play' || this.paused || this.inputLocked || p.reload > 0) return false;
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
-    this.flights.push({ p: p.i, x: p.x, y: LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
+    this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
     p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a });
@@ -213,7 +222,7 @@ class OnlineGame {
         landed = f.y <= this.ceilingY()+R || (f.y < this.lowestY+2.2*R && this.hitGrid(f.x,f.y));
       }
       if (landed) { this.flights.splice(i,1); this.land(f); }
-      else if (f.y > H+60) this.flights.splice(i,1);
+      else if (f.y > this.H+60) this.flights.splice(i,1);
     }
   }
   land(f) {
@@ -266,7 +275,7 @@ class OnlineGame {
   addGarbage(amount,fromId){
     let added=0;
     for(let g=0;g<amount;g++){
-      const candidates=[],maxR=Math.floor((DANGER_Y-this.gridTop)/ROWH);
+      const candidates=[],maxR=Math.floor((this.DANGER_Y-this.gridTop)/ROWH);
       for(let r=this.anchorRow;r<=maxR;r++)for(let c=0;c<this.colsIn(r);c++)if(this.validCell(r,c))candidates.push({r,c,j:this.cellY(r)+this.rnd(0,ROWH*2.2)});
       if(!candidates.length)break;candidates.sort((a,b)=>b.j-a.j);const cell=candidates[(this.random()*Math.min(4,candidates.length))|0];
       this.grid.set(key(cell.r,cell.c),{r:cell.r,c:cell.c,kind:KINDS[(this.random()*KINDS.length)|0],special:null,placedBy:-1});added++;
@@ -274,7 +283,7 @@ class OnlineGame {
     this.updateLowest();this.refreshQueues();this.emit('garbage',{fromId,amount:added});return added;
   }
   registerClear(i){const c=this.chain;if(c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=8;}
-  anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>DANGER_Y)hit=true;});return hit;}
+  anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>this.DANGER_Y)hit=true;});return hit;}
   // Puzzle Bobble ceiling descent: the whole pack slides down one row and the
   // wall stagger alternates. Bumping r and parityFlip together leaves par(r) —
   // and therefore cellX — invariant, so nothing shifts sideways. Dropping
@@ -307,4 +316,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, clamp };
+module.exports = { OnlineGame, LEVELS, clamp, geom, normalizeViewH: vh => geom(vh).H };

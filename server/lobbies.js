@@ -1,12 +1,12 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { OnlineGame } = require('./game');
+const { OnlineGame, normalizeViewH } = require('./game');
 const { BattleGame } = require('./battle');
 
 const DEFAULT_SETTINGS = Object.freeze({
   reload:1.35, missMax:12, rescueDur:4, assist:.35, pressureShots:8, mateLines:true, sound:true,
-  mode:'clear', field:'classic', guide:1, level:0, customText:'',
+  mode:'clear', field:'classic', guide:1, level:0, customText:'', viewH:1080,
 });
 const rooms = new Map();
 const limits = new Map();
@@ -24,6 +24,9 @@ function validateSettings(input) {
   if (![.25,.5,1].includes(Number(s.guide))) throw fail('bad_settings','Invalid guide length.');
   s.guide=Number(s.guide); s.mateLines=!!s.mateLines; s.sound=!!s.sound;
   s.customText=String(s.customText || '').slice(0, 512);
+  /* The host's screen shape sets the world height for the whole room. Clamp rather than
+     reject so an unusual device can never lock its owner out of hosting. */
+  s.viewH=normalizeViewH(s.viewH);
   return s;
 }
 function rateLimit(address, kind, max, windowMs) {

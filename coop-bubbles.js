@@ -5,8 +5,16 @@
 (() => {
 if (customElements.get('coop-bubbles')) return;
 
-const W = 640, H = 1080, R = 28, COLS = 11;
-const ROWH = R * Math.sqrt(3), X0 = 12, GRIDTOP0 = 108, DANGER_Y = 846, LAUNCH_Y = 938;
+const W = 640, R = 28, COLS = 11;
+const ROWH = R * Math.sqrt(3), X0 = 12, GRIDTOP0 = 108;
+/* The field stays 640 wide and 11 columns so every authored level still fits, but its
+   height adapts to the device: tall screens (foldable cover panels, 21:9 phones) get
+   real playfield instead of letterbox bars. The launcher and danger line keep their
+   historic distance from the floor, so viewH 1080 reproduces the original
+   LAUNCH_Y 938 / DANGER_Y 846 exactly. The floor is that original height on purpose —
+   a wide screen letterboxes rather than shrinking the world, so no shape ever gets less
+   runway than the game already shipped with. */
+const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP = 92;
 const PAL  = { R:'#ff5b6b', Y:'#ffc233', G:'#3ecf72', B:'#3f9dff' };
 const PALD = { R:'#d13a4c', Y:'#d69a12', G:'#1fa557', B:'#2273cc' };
 const KINDS = ['R','Y','G','B'];
@@ -83,10 +91,17 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rnd = (a,b) => a + Math.random() * (b - a);
+/* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
+   a fold animation mid-frame — cannot churn the world height on every resize tick. */
+const geom = vh => {
+  const H = clamp(Math.round(vh / 20) * 20, VIEWH_MIN, VIEWH_MAX), LAUNCH_Y = H - LAUNCH_GAP;
+  return { H, LAUNCH_Y, DANGER_Y: LAUNCH_Y - DANGER_GAP };
+};
 
 class CoopBubbles extends HTMLElement {
   connectedCallback() {
     if (this._init) return; this._init = true;
+    this.setViewH(H0); // measure() refines this once .root has a box
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
       reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0 };
@@ -104,12 +119,22 @@ class CoopBubbles extends HTMLElement {
     cancelAnimationFrame(this._raf);
     this._unbind && this._unbind();
     this._resizeObserver && this._resizeObserver.disconnect();
+    this._availObserver && this._availObserver.disconnect();
+    this._viewportUnbind && this._viewportUnbind();
     this._fullscreenUnbind && this._fullscreenUnbind();
     clearTimeout(this._reconnectTimer);
     if (this.ws) this.ws.close();
   }
 
   /* ---------- state / setup ---------- */
+  /* Single writer for the adaptive world height. Returns whether it actually moved so
+     callers can skip the relayout when the quantised value is unchanged. */
+  setViewH(vh) {
+    const g = geom(vh);
+    if (g.H === this.H) return false;
+    Object.assign(this, g);
+    return true;
+  }
   resetGame() {
     if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
     this.battle = null;
@@ -259,7 +284,7 @@ class CoopBubbles extends HTMLElement {
     const p = this.players[i];
     if (this.state !== 'play' || p.reload > 0) return;
     const a = clamp(p.angle, -1.22, 1.22);
-    const sx = p.x, sy = LAUNCH_Y - 44, sp = 1150;
+    const sx = p.x, sy = this.LAUNCH_Y - 44, sp = 1150;
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
     p.cur = p.next; p.next = this.genBubble();
@@ -270,7 +295,7 @@ class CoopBubbles extends HTMLElement {
     this.sfx('launch');
   }
   simulate(x0, angle) { // shared by aim guides + bots
-    let x = x0, y = LAUNCH_Y - 44, bounces = 0;
+    let x = x0, y = this.LAUNCH_Y - 44, bounces = 0;
     const st = 7, dx = Math.sin(angle) * st, dy = -Math.cos(angle) * st;
     let vx = dx; const pts = [{x,y}], bpts = [];
     for (let i = 0; i < 420; i++) {
@@ -310,7 +335,7 @@ class CoopBubbles extends HTMLElement {
         if (f.y <= this.ceilingY() + R || (f.y < this.lowestY + 2.2*R && this.hitGrid(f.x, f.y))) landed = true;
       }
       if (landed) { this.flights.splice(fi, 1); this.land(f); }
-      else if (f.y > H + 60) this.flights.splice(fi, 1);
+      else if (f.y > this.H + 60) this.flights.splice(fi, 1);
     }
   }
   land(f) {
@@ -503,7 +528,7 @@ class CoopBubbles extends HTMLElement {
   }
   anyDangerCells() {
     let hit = false;
-    this.grid.forEach(b => { if (this.cellY(b.r) + R > DANGER_Y) hit = true; });
+    this.grid.forEach(b => { if (this.cellY(b.r) + R > this.DANGER_Y) hit = true; });
     return hit;
   }
   endGame(won) {
@@ -562,7 +587,7 @@ class CoopBubbles extends HTMLElement {
         if (this.danger) { // does this pop reach the endangered zone?
           const grp = this.matchGroup(cell.r, cell.c, kind);
           let low = 0; grp.forEach(k => { const [r] = k.split(',').map(Number); low = Math.max(low, this.cellY(r)); });
-          if (low + R > DANGER_Y - ROWH * 1.5) s += 900;
+          if (low + R > this.DANGER_Y - ROWH * 1.5) s += 900;
         }
       } else if (g === 2) s = 34;
       else {
@@ -600,7 +625,7 @@ class CoopBubbles extends HTMLElement {
       for(const p of this.players)p.reload=Math.max(0,p.reload-dt);
       for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>this.WW-X0-R)f.vx=-f.vx;}
       if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
-      const floor=92+LAUNCH_Y-60-R+6;
+      const floor=92+this.LAUNCH_Y-60-R+6;
       for(let i=this.falling.length-1;i>=0;i--){const f=this.falling[i];f.vy+=1900*dt;f.x+=f.vx*dt;f.y+=f.vy*dt;f.a+=f.spin*dt;if(f.y>floor){f.y=floor;f.fade=(f.fade??1)-2.5*dt;}if((f.fade??1)<=0)this.falling.splice(i,1);}
       const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX+=(target-this.camX)*Math.min(1,6*dt);}
     }
@@ -641,7 +666,7 @@ class CoopBubbles extends HTMLElement {
     const perDrop = this.shotsPerDrop();
     if (perDrop && this.pressure >= perDrop && !this.resolveAt) this.pressureDescend();
     // falling bubbles (bounce once on the floor edge, splash, fade)
-    const FLOOR = 92 + LAUNCH_Y - 60 - R + 6;
+    const FLOOR = 92 + this.LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
       const f = this.falling[i];
       f.vy += 1900 * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.a += f.spin * dt;
@@ -652,7 +677,7 @@ class CoopBubbles extends HTMLElement {
           color: PAL[f.kind] || '#fff', sz: rnd(2.5, 5) });
       }
       if (f.b >= 2) f.fade = (f.fade !== undefined ? f.fade : 1) - 3 * dt;
-      if ((f.fade !== undefined && f.fade <= 0) || f.y > H + 60) this.falling.splice(i, 1);
+      if ((f.fade !== undefined && f.fade <= 0) || f.y > this.H + 60) this.falling.splice(i, 1);
     }
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const s = this.sparks[i];
@@ -710,7 +735,7 @@ class CoopBubbles extends HTMLElement {
   bindInput() {
     this.canvas.addEventListener('pointerdown', () => this.ensureAudio());
     const canvasPt = e => { const r = this.canvas.getBoundingClientRect();
-      return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+      return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * this.H / r.height }; };
     this.canvas.addEventListener('pointermove', e => {
       if (!this.battleTargetActive()) return;
       this.battle.targeting.hover = this.battleSlotAt(canvasPt(e));
@@ -785,18 +810,18 @@ class CoopBubbles extends HTMLElement {
     ctx.setTransform(sc, 0, 0, sc, 0, 0);
     if (this.shake > 0) ctx.translate(rnd(-this.shake, this.shake) * 0.4, rnd(-this.shake, this.shake) * 0.4);
     // background
-    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    const bg = ctx.createLinearGradient(0, 0, 0, this.H);
     bg.addColorStop(0, '#eaf4ff'); bg.addColorStop(1, '#d8ecff');
-    ctx.fillStyle = bg; ctx.fillRect(-20, -20, W + 40, H + 40);
+    ctx.fillStyle = bg; ctx.fillRect(-20, -20, W + 40, this.H + 40);
     ctx.save(); ctx.translate(-this.camX, 0);
     const vwL = this.camX - 2 * R, vwR = this.camX + W + 2 * R;
     // field panel
     ctx.fillStyle = '#f9fcff';
-    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), LAUNCH_Y - 60, 26); ctx.fill();
+    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), this.LAUNCH_Y - 60, 26); ctx.fill();
     ctx.strokeStyle = '#c4ddf5'; ctx.lineWidth = 3; ctx.stroke();
     // honeycomb ghost grid
     ctx.save(); ctx.beginPath();
-    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), LAUNCH_Y - 60, 26); ctx.clip();
+    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), this.LAUNCH_Y - 60, 26); ctx.clip();
     // parallax backdrop bubbles
     for (let i = 0; i < 12; i++) {
       let px = (i * 173.3 - this.camX * 0.45) % (W + 160); if (px < 0) px += W + 160;
@@ -811,12 +836,12 @@ class CoopBubbles extends HTMLElement {
     // wall inner shadows
     let sg = ctx.createLinearGradient(X0 - 6, 0, X0 + 26, 0);
     sg.addColorStop(0, 'rgba(60,100,150,0.14)'); sg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = sg; ctx.fillRect(X0 - 6, 92, 32, LAUNCH_Y - 60);
+    ctx.fillStyle = sg; ctx.fillRect(X0 - 6, 92, 32, this.LAUNCH_Y - 60);
     sg = ctx.createLinearGradient(this.WW - X0 + 6, 0, this.WW - X0 - 26, 0);
     sg.addColorStop(0, 'rgba(60,100,150,0.14)'); sg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = sg; ctx.fillRect(this.WW - X0 - 26, 92, 32, LAUNCH_Y - 60);
+    ctx.fillStyle = sg; ctx.fillRect(this.WW - X0 - 26, 92, 32, this.LAUNCH_Y - 60);
     ctx.strokeStyle = 'rgba(90,140,190,0.10)'; ctx.lineWidth = 1.4;
-    const maxR = Math.ceil((DANGER_Y - this.gridTop) / ROWH);
+    const maxR = Math.ceil((this.DANGER_Y - this.gridTop) / ROWH);
     for (let r = this.anchorRow; r <= maxR; r++) {
       const n = this.colsIn(r);
       for (let c = 0; c < n; c++) {
@@ -857,7 +882,7 @@ class CoopBubbles extends HTMLElement {
           const amp = (1 - kk) * 3.5 * (1 - d / (R * 3.2));
           x += (x - rp.x) / d * amp * Math.sin(kk * 14); y += (y - rp.y) / d * amp * Math.sin(kk * 14); }
       }
-      const dangerB = this.danger && this.cellY(b.r) + R > DANGER_Y;
+      const dangerB = this.danger && this.cellY(b.r) + R > this.DANGER_Y;
       ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
       this.drawBubble(ctx, 0, 0, R - 1, b.kind, b.special, true, dangerB);
       ctx.restore();
@@ -917,15 +942,15 @@ class CoopBubbles extends HTMLElement {
     }
     ctx.restore();
     // vignette + rescue drama (screen space)
-    const vg = ctx.createRadialGradient(W/2, H/2, H*0.35, W/2, H/2, H*0.75);
+    const vg = ctx.createRadialGradient(W/2, this.H/2, this.H*0.35, W/2, this.H/2, this.H*0.75);
     vg.addColorStop(0, 'rgba(40,70,120,0)'); vg.addColorStop(1, 'rgba(40,70,120,0.10)');
-    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, this.H);
     if (this.danger && this.state === 'play') {
-      ctx.fillStyle = 'rgba(140,160,200,0.10)'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(140,160,200,0.10)'; ctx.fillRect(0, 0, W, this.H);
       const dp = 0.22 + Math.sin(this.now * 8) * 0.12;
-      const eg = ctx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.72);
+      const eg = ctx.createRadialGradient(W/2, this.H/2, this.H*0.3, W/2, this.H/2, this.H*0.72);
       eg.addColorStop(0, 'rgba(255,91,107,0)'); eg.addColorStop(1, 'rgba(255,91,107,' + dp.toFixed(3) + ')');
-      ctx.fillStyle = eg; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = eg; ctx.fillRect(0, 0, W, this.H);
     }
     // HUD
     this.drawHUD(ctx);
@@ -941,7 +966,7 @@ class CoopBubbles extends HTMLElement {
     ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'left';
     this.sfxLog.slice(-3).forEach((s, i) => {
       ctx.globalAlpha = Math.max(0, 1 - (this.now - s.t) / 1.6) * 0.55;
-      ctx.fillStyle = '#3a5a80'; ctx.fillText('\u266a ' + s.name, X0 + 6, LAUNCH_Y - 78 - i * 20);
+      ctx.fillStyle = '#3a5a80'; ctx.fillText('\u266a ' + s.name, X0 + 6, this.LAUNCH_Y - 78 - i * 20);
     });
     ctx.globalAlpha = 1;
   }
@@ -1052,7 +1077,7 @@ class CoopBubbles extends HTMLElement {
     ctx.restore();
   }
   drawLauncher(ctx, p) {
-    const x = p.x, y = LAUNCH_Y, meta = p.meta;
+    const x = p.x, y = this.LAUNCH_Y, meta = p.meta;
     const rk = p.recoilT !== undefined ? clamp((this.now - p.recoilT) / 0.18, 0, 1) : 1;
     const rec = (1 - rk) * 7, aa = clamp(p.angle, -1.22, 1.22);
     const ox = -Math.sin(aa) * rec, oy = Math.cos(aa) * rec;
@@ -1105,38 +1130,40 @@ class CoopBubbles extends HTMLElement {
   drawDanger(ctx) {
     ctx.setLineDash([12, 10]); ctx.lineWidth = 3;
     ctx.strokeStyle = this.danger ? '#ff5b6b' : 'rgba(255,91,107,0.45)';
-    ctx.beginPath(); ctx.moveTo(X0, DANGER_Y); ctx.lineTo(this.WW - X0, DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(X0, this.DANGER_Y); ctx.lineTo(this.WW - X0, this.DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
     ctx.font = '600 14px Fredoka, sans-serif'; ctx.fillStyle = 'rgba(255,91,107,0.7)'; ctx.textAlign = 'right';
-    ctx.fillText('danger line', this.camX + W - X0 - 8, DANGER_Y - 8);
+    ctx.fillText('danger line', this.camX + W - X0 - 8, this.DANGER_Y - 8);
     if (this.danger) {
       const pulse = 0.10 + Math.sin(this.now * 8) * 0.07;
       ctx.fillStyle = 'rgba(255,91,107,' + pulse + ')';
-      ctx.fillRect(X0 - 6, DANGER_Y - ROWH * 1.6, this.WW - 2*(X0-6), ROWH * 1.6);
+      ctx.fillRect(X0 - 6, this.DANGER_Y - ROWH * 1.6, this.WW - 2*(X0-6), ROWH * 1.6);
       // countdown
       const t = Math.max(0, this.danger.t), cx0 = this.camX + W / 2;
       ctx.textAlign = 'center';
       ctx.font = '700 84px Fredoka, sans-serif';
       ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
-      ctx.strokeText(t.toFixed(1), cx0, DANGER_Y - 60);
-      ctx.fillStyle = '#ff5b6b'; ctx.fillText(t.toFixed(1), cx0, DANGER_Y - 60);
+      ctx.strokeText(t.toFixed(1), cx0, this.DANGER_Y - 60);
+      ctx.fillStyle = '#ff5b6b'; ctx.fillText(t.toFixed(1), cx0, this.DANGER_Y - 60);
       ctx.font = '600 22px Fredoka, sans-serif';
-      ctx.lineWidth = 6; ctx.strokeText('CLEAR THE GLOWING BUBBLES!', cx0, DANGER_Y - 20);
-      ctx.fillText('CLEAR THE GLOWING BUBBLES!', cx0, DANGER_Y - 20);
+      ctx.lineWidth = 6; ctx.strokeText('CLEAR THE GLOWING BUBBLES!', cx0, this.DANGER_Y - 20);
+      ctx.fillText('CLEAR THE GLOWING BUBBLES!', cx0, this.DANGER_Y - 20);
     }
   }
   drawHUD(ctx) {
     if (this.battle && this.settings.mode === 'battle' && !this.online) return this.drawBattleStrip(ctx);
     ctx.textAlign = 'left';
-    const mw = 170, mx = W - X0 - 10 - mw, my = 34;
+    // Keep both boxes clear of the corner buttons, which grow relative to a narrow board.
+    const hx = this.chromeInset || X0;
+    const mw = 170, mx = W - hx - 12 - mw, my = 34;
     ctx.save(); ctx.shadowColor = 'rgba(40,80,140,0.18)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
     ctx.fillStyle = 'rgba(255,255,255,0.88)';
-    this.rrect(ctx, X0, 10, 190, 64, 16); ctx.fill();
+    this.rrect(ctx, hx, 10, 190, 64, 16); ctx.fill();
     this.rrect(ctx, mx - 12, 10, mw + 24, 64, 16); ctx.fill();
     ctx.restore();
     ctx.font = '700 32px Fredoka, sans-serif'; ctx.fillStyle = '#17335c';
-    ctx.fillText(Math.round(this.dispScore || 0).toLocaleString(), X0 + 14, 46);
+    ctx.fillText(Math.round(this.dispScore || 0).toLocaleString(), hx + 14, 46);
     ctx.font = '600 13px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5';
-    ctx.fillText('TEAM SCORE', X0 + 14, 65);
+    ctx.fillText('TEAM SCORE', hx + 14, 65);
     // chain badge
     ctx.textAlign = 'center';
     if (this.chain.mult > 1) {
@@ -1154,12 +1181,15 @@ class CoopBubbles extends HTMLElement {
       ctx.fillRect(-60, 15, 120 * k, 3);
       ctx.restore();
     } else {
+      /* The strapline is decoration between two boxes whose width is fixed but whose
+         inset grows on a narrow board. Drop it rather than run it underneath them. */
       ctx.fillStyle = '#9db8d4'; ctx.font = '600 17px Fredoka, sans-serif';
-      ctx.fillText(this.settings.mode === 'clear' ? 'clear the field together!' : 'endless survival', W/2, 42);
+      const tag = this.settings.mode === 'clear' ? 'clear the field together!' : 'endless survival';
+      if (ctx.measureText(tag).width + 16 <= (mx - 12) - (hx + 190)) ctx.fillText(tag, W/2, 42);
     }
     // miss meter (secondary)
     ctx.textAlign = 'right'; ctx.font = '600 13px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5';
-    ctx.fillText('MISS METER \u2192 ceiling drops', W - X0 - 14, my - 6);
+    ctx.fillText('MISS METER \u2192 ceiling drops', W - hx - 14, my - 6);
     ctx.fillStyle = '#e3eefa'; this.rrect(ctx, mx, my, mw, 14, 7); ctx.fill();
     const frac = clamp(this.missMeter / this.settings.missMax, 0, 1);
     if (frac > 0) {
@@ -1175,7 +1205,7 @@ class CoopBubbles extends HTMLElement {
     if (left !== null) {
       ctx.font = '700 13px Fredoka, sans-serif';
       ctx.fillStyle = left <= 1 ? '#ff5b6b' : left <= 3 ? '#ffb054' : '#7593b5';
-      ctx.fillText('ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - X0 - 14, my + 30);
+      ctx.fillText('ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - hx - 14, my + 30);
     }
   }
   // shots remaining before the field pushes down; null when the mechanic is off.
@@ -1321,7 +1351,7 @@ class CoopBubbles extends HTMLElement {
       const pre = this.shake; this.pressureDescend();
       if (b.i !== this.battle.view) this.shake = pre; // only the watched board shakes the screen
     }
-    const FLOOR = 92 + LAUNCH_Y - 60 - R + 6;
+    const FLOOR = 92 + this.LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
       const f = this.falling[i];
       f.vy += 1900 * rdt; f.x += f.vx * rdt; f.y += f.vy * rdt; f.a += f.spin * rdt;
@@ -1332,7 +1362,7 @@ class CoopBubbles extends HTMLElement {
           color: PAL[f.kind] || '#fff', sz: rnd(2.5, 5) });
       }
       if (f.b >= 2) f.fade = (f.fade !== undefined ? f.fade : 1) - 3 * rdt;
-      if ((f.fade !== undefined && f.fade <= 0) || f.y > H + 60) this.falling.splice(i, 1);
+      if ((f.fade !== undefined && f.fade <= 0) || f.y > this.H + 60) this.falling.splice(i, 1);
     }
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const s = this.sparks[i];
@@ -1349,7 +1379,7 @@ class CoopBubbles extends HTMLElement {
   stepLoose(b, dt) {
     for (let i = b.falling.length - 1; i >= 0; i--) { const f = b.falling[i];
       f.vy += 1900 * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.a += f.spin * dt;
-      if (f.y > H + 60) b.falling.splice(i, 1); }
+      if (f.y > this.H + 60) b.falling.splice(i, 1); }
     b.pops = b.pops.filter(p => this.now - p.t < 0.62);
     b.callouts = b.callouts.filter(c => this.now - c.t < 1.5);
     b.popups = b.popups.filter(p => this.now - p.t < 1.1);
@@ -1443,7 +1473,7 @@ class CoopBubbles extends HTMLElement {
     let added = 0;
     for (let g = 0; g < n; g++) {
       const cand = [];
-      const maxR = Math.floor((DANGER_Y - this.gridTop) / ROWH);
+      const maxR = Math.floor((this.DANGER_Y - this.gridTop) / ROWH);
       for (let r = this.anchorRow; r <= maxR; r++) { const cn = this.colsIn(r);
         for (let c = 0; c < cn; c++) if (this.validCell(r, c)) cand.push({ r, c, jy: this.cellY(r) + rnd(0, ROWH * 2.2) }); }
       if (!cand.length) break;
@@ -1505,9 +1535,9 @@ class CoopBubbles extends HTMLElement {
     const n = this.battle.boards.length;
     const cols = n <= 4 ? 2 : n <= 6 ? 3 : 4;
     const rows = Math.ceil(n / cols);
-    const areaY = 190, areaW = W - 52, areaH = H - 300;
+    const areaY = 190, areaW = W - 52, areaH = this.H - 300;
     const gapX = 16, gapY = 46;
-    let cw = (areaW - (cols - 1) * gapX) / cols, ch = cw * H / W;
+    let cw = (areaW - (cols - 1) * gapX) / cols, ch = cw * this.H / W;
     const totH = rows * ch + (rows - 1) * gapY;
     if (totH > areaH) { const k = areaH / totH; cw *= k; ch *= k; }
     const gw = cols * cw + (cols - 1) * gapX, gh = rows * ch + (rows - 1) * gapY;
@@ -1535,7 +1565,8 @@ class CoopBubbles extends HTMLElement {
   }
   drawBattleStrip(ctx) {
     const bt = this.battle, n = bt.boards.length;
-    const x0 = 64, x1 = W - 12, gap = 5;
+    // 64 was a hand-measured clearance for the old fixed-size corner button.
+    const x0 = this.chromeInset || X0, x1 = W - x0, gap = 5;
     const w = (x1 - x0 - (n - 1) * gap) / n, y = 8, h = 66;
     ctx.save();
     bt.boards.forEach((b, idx) => {
@@ -1575,7 +1606,7 @@ class CoopBubbles extends HTMLElement {
     const bt = this.battle, tg = bt.targeting;
     ctx.save();
     ctx.fillStyle = 'rgba(16,36,70,' + (0.62 * z).toFixed(3) + ')';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, W, this.H);
     ctx.globalAlpha = z;
     ctx.textAlign = 'center';
     if (tg && tg.by === bt.human.i) {
@@ -1620,7 +1651,7 @@ class CoopBubbles extends HTMLElement {
     this.bindBoard(b);
     ctx.save(); ctx.translate(s.x, s.y); ctx.scale(k, k);
     ctx.fillStyle = b.alive ? '#f2f8ff' : '#dfe7f0';
-    this.rrect(ctx, 0, 0, W, H, 36); ctx.fill();
+    this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill();
     const selectable = tg && tg.by === this.battle.human.i && b.alive && b.i !== tg.by;
     ctx.lineWidth = hov ? 16 : 8;
     ctx.strokeStyle = hov ? '#ff8a3c' : selectable ? b.meta.accent : 'rgba(120,150,190,0.5)';
@@ -1636,21 +1667,21 @@ class CoopBubbles extends HTMLElement {
     for (const f of this.flights) { ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); }
     for (const f of this.falling) { ctx.globalAlpha = 0.7; ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
     ctx.setLineDash([18, 14]); ctx.lineWidth = 5; ctx.strokeStyle = b.danger ? '#ff5b6b' : 'rgba(255,91,107,0.5)';
-    ctx.beginPath(); ctx.moveTo(18, DANGER_Y); ctx.lineTo(W - 18, DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(18, this.DANGER_Y); ctx.lineTo(W - 18, this.DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
     const p = b.player;
-    ctx.save(); ctx.translate(p.x, LAUNCH_Y - 44); ctx.rotate(clamp(p.angle, -1.22, 1.22));
+    ctx.save(); ctx.translate(p.x, this.LAUNCH_Y - 44); ctx.rotate(clamp(p.angle, -1.22, 1.22));
     ctx.fillStyle = b.meta.accent; this.rrect(ctx, -14, -70, 28, 52, 12); ctx.fill(); ctx.restore();
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 34, 0, 7); ctx.fill();
-    ctx.lineWidth = 7; ctx.strokeStyle = b.meta.accent; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 34, 0, 7); ctx.stroke();
-    if (p.cur) { ctx.fillStyle = p.cur.special ? '#5b6f93' : PAL[p.cur.kind]; ctx.beginPath(); ctx.arc(p.x, LAUNCH_Y - 44, 22, 0, 7); ctx.fill(); }
-    if (b.danger && b.alive) { ctx.fillStyle = 'rgba(255,91,107,' + (0.12 + Math.sin(this.now * 8) * 0.08).toFixed(3) + ')'; this.rrect(ctx, 0, 0, W, H, 36); ctx.fill(); }
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 34, 0, 7); ctx.fill();
+    ctx.lineWidth = 7; ctx.strokeStyle = b.meta.accent; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 34, 0, 7); ctx.stroke();
+    if (p.cur) { ctx.fillStyle = p.cur.special ? '#5b6f93' : PAL[p.cur.kind]; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 22, 0, 7); ctx.fill(); }
+    if (b.danger && b.alive) { ctx.fillStyle = 'rgba(255,91,107,' + (0.12 + Math.sin(this.now * 8) * 0.08).toFixed(3) + ')'; this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill(); }
     if (!b.alive) {
-      ctx.fillStyle = 'rgba(60,80,110,0.55)'; this.rrect(ctx, 0, 0, W, H, 36); ctx.fill();
+      ctx.fillStyle = 'rgba(60,80,110,0.55)'; this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.font = '700 130px Fredoka, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('OUT', W / 2, H / 2 + 40);
+      ctx.fillText('OUT', W / 2, this.H / 2 + 40);
     }
     const af = this.now - b.attackFlash;
-    if (b.alive && af >= 0 && af < 0.7) { ctx.globalAlpha = 1 - af / 0.7; ctx.lineWidth = 22; ctx.strokeStyle = '#ff5b6b'; this.rrect(ctx, 8, 8, W - 16, H - 16, 30); ctx.stroke(); ctx.globalAlpha = 1; }
+    if (b.alive && af >= 0 && af < 0.7) { ctx.globalAlpha = 1 - af / 0.7; ctx.lineWidth = 22; ctx.strokeStyle = '#ff5b6b'; this.rrect(ctx, 8, 8, W - 16, this.H - 16, 30); ctx.stroke(); ctx.globalAlpha = 1; }
     ctx.restore();
     this.unbindBoard(b);
   }
@@ -1670,14 +1701,19 @@ class CoopBubbles extends HTMLElement {
 :host{display:block;width:100%;height:100%;font-family:'Fredoka',sans-serif;color:#17335c}
 :host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#cfe6ff}
 *{box-sizing:border-box}
-.root{position:relative;display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);align-items:center;justify-content:center;gap:20px;padding:14px;overflow:hidden}
-.gameCol{position:relative;width:min(100%,calc((100vh - 28px) * 640 / 1080));width:min(100%,calc((100dvh - 28px) * 640 / 1080));height:auto;max-height:100%;aspect-ratio:640/1080;flex:0 1 auto;min-width:0}
+.root{--sideW:290px;--rootGap:20px;position:relative;display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);align-items:center;justify-content:center;gap:var(--rootGap);overflow:hidden;
+ padding:max(14px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+/* relayout() sets the board's pixel size outright. Letterboxing it in pure CSS needs a
+   definite height, and a definite height plus max-width makes the browser break the
+   aspect ratio rather than shrink — hence the old viewport-unit calc(). The rules below
+   are only the pre-measure first paint. */
+.gameCol{position:relative;flex:none;height:100%;width:auto;max-width:100%;max-height:100%;aspect-ratio:var(--fieldAspect,.59259);min-width:0}
 canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px 40px rgba(40,80,140,.18);touch-action:none}
 .pad{position:absolute;left:50%;transform:translateX(-50%);bottom:4px;display:flex;gap:10px;z-index:4}
 .pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none}
 .pad button:active{background:#2b6fd4;color:#fff}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
-.side{width:290px;flex:none;height:100%;overflow-y:auto;background:#fff;border-radius:20px;padding:18px;box-shadow:0 8px 30px rgba(40,80,140,.12);font-size:14px}
+.side{width:var(--sideW);flex:none;height:100%;overflow-y:auto;background:#fff;border-radius:20px;padding:18px;box-shadow:0 8px 30px rgba(40,80,140,.12);font-size:14px}
 .side h3{margin:14px 0 8px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#7593b5}
 .side h2{margin:0 0 4px;font-size:20px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:7px 0}
@@ -1698,15 +1734,22 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .ctrlList{margin:4px 0 0;padding:0;list-style:none;color:#5b7997;font-size:12.5px;line-height:1.5}
 .ctrlList b{color:#2b4a70}
 .overlay{position:absolute;inset:0;display:grid;place-items:center;border-radius:22px;background:rgba(23,51,92,.45);backdrop-filter:blur(3px);z-index:5}
-.card{background:#fff;border-radius:24px;padding:26px 28px;width:min(480px,88%);max-height:92%;overflow-y:auto;box-shadow:0 20px 60px rgba(20,40,80,.35)}
-.card h1{margin:0 0 2px;font-size:30px}
-.card .sub{color:#7593b5;margin:0 0 16px;font-size:15px}
+/* Cards are bounded by the board, which can be as narrow as ~300px on a cover screen, so
+   they scale with --u and reflow off their own width via container queries rather than
+   guessing at device breakpoints. */
+.card{container-type:inline-size;background:#fff;border-radius:24px;padding:clamp(14px,calc(26px * var(--u,1)),30px) clamp(15px,calc(28px * var(--u,1)),32px);width:min(480px,92%);max-height:94%;overflow-y:auto;box-shadow:0 20px 60px rgba(20,40,80,.35)}
+.card h1{margin:0 0 2px;font-size:clamp(20px,calc(30px * var(--u,1)),34px)}
+.card .sub{color:#7593b5;margin:0 0 16px;font-size:clamp(13px,calc(15px * var(--u,1)),17px)}
 .tut{display:flex;gap:12px;align-items:flex-start;margin:11px 0}
 .tut .n{flex:none;width:30px;height:30px;border-radius:50%;background:#2b6fd4;color:#fff;display:grid;place-items:center;font-weight:700;font-size:15px}
 .tut p{margin:3px 0 0;font-size:15px;line-height:1.35}
 .tut b{color:#2b6fd4}
-.cornerButton{position:absolute;top:10px;z-index:4;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);color:#2b4a70;font:700 22px/1 Fredoka,sans-serif;cursor:pointer;display:grid;place-items:center;touch-action:manipulation}
-.fullscreenButton{left:10px}.fullscreenButton[hidden]{display:none}.gear{right:10px;display:none;font-size:20px}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
+/* Overlay chrome is sized in board units (--u, published by fit()) so it stays in
+   proportion on a 344px cover screen and a 900px desktop board alike, but clamped so
+   touch targets never drop below ~36px. */
+.cornerButton{position:absolute;top:var(--chromeGap);z-index:4;width:var(--chromeBtn);height:var(--chromeBtn);border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);color:#2b4a70;font:700 clamp(16px,calc(22px * var(--u,1)),28px)/1 Fredoka,sans-serif;cursor:pointer;display:grid;place-items:center;touch-action:manipulation}
+.gameCol{--chromeBtn:clamp(36px,calc(44px * var(--u,1)),56px);--chromeGap:clamp(6px,calc(10px * var(--u,1)),14px)}
+.fullscreenButton{left:var(--chromeGap)}.fullscreenButton[hidden]{display:none}.gear{right:var(--chromeGap);display:none;font-size:clamp(15px,calc(20px * var(--u,1)),25px)}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
 .statRow .who{font-weight:700;width:34px}
 .statRow .nums{color:#5b7997;font-size:12.5px}
@@ -1716,21 +1759,34 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .onlinePlayers{display:grid;gap:6px;margin:12px 0}.onlinePlayer{display:flex;align-items:center;gap:9px;padding:8px 10px;background:#f4f9ff;border-radius:10px}
 .statusDot{width:10px;height:10px;border-radius:50%;background:#3ecf72}.statusDot.off{background:#a9b8c8}.hostTag{margin-left:auto;color:#7593b5;font-size:12px}
 .lobbySettings{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.lobbySettings label{display:grid;gap:3px;font-size:12px;color:#7593b5}.lobbySettings select,.lobbySettings input,.lobbySettings textarea{border:2px solid #d7e6f5;border-radius:8px;padding:6px;font:inherit;color:#2b4a70;background:#f8fbff;min-width:0}
-.lobbySettings .full{grid-column:1/-1}.onlineBar{position:absolute;left:62px;right:62px;top:10px;z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
+.lobbySettings .full{grid-column:1/-1}
+@container (max-width:330px){.lobbySettings{grid-template-columns:1fr}.joinFields{grid-template-columns:1fr}.roomCode{font-size:38px}}.onlineBar{position:absolute;left:calc(var(--chromeBtn) + var(--chromeGap) * 2);right:calc(var(--chromeBtn) + var(--chromeGap) * 2);top:var(--chromeGap);z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
 .onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
-@media (max-width:900px){ .root{padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}
- .gameCol{width:min(100%,calc((100vh - 12px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 640 / 1080));width:min(100%,calc((100dvh - 12px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 640 / 1080))}
- .side{display:none} .gear{display:grid}
- .onlineBar{gap:4px}.onlineBar .onlineRoomLabel{display:none}.onlineBar button,.onlineBar span{padding:6px 7px;font-size:11px}
- .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)} }
+/* Whether the side panel fits is a question about the space left beside the board, not
+   about viewport width, so relayout() sets .wideLayout and this rule follows it. That is
+   what reclaims phone landscape and the unfolded Fold, where a viewport-width test failed. */
+/* Padding is keyed to the viewport, never to .wideLayout: relayout() measures the padded
+   box to make that decision, so letting the class change the padding would feed the
+   decision back into its own input. */
+@media (max-width:520px),(max-height:520px){.root{padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}}
+.root:not(.wideLayout) .side{display:none}
+.root:not(.wideLayout) .gear{display:grid}
+.root:not(.wideLayout) .onlineBar{gap:4px}
+.root:not(.wideLayout) .onlineBar .onlineRoomLabel{display:none}
+.root:not(.wideLayout) .onlineBar button,.root:not(.wideLayout) .onlineBar span{padding:6px 7px;font-size:11px}
+.root:not(.wideLayout) .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)}
 @media (hover:none) and (pointer:coarse){
  .pad{left:0;right:0;bottom:0;height:50%;transform:none;display:block;pointer-events:none}
  .pad button{pointer-events:auto}
- .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 24px 24px;border-radius:0;background:transparent;box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:26px}
+ .pad .padL,.pad .padR{position:absolute;bottom:0;width:50%;height:100%;padding:0 calc(24px * var(--u,1)) calc(24px * var(--u,1));border-radius:0;background:transparent;box-shadow:none;color:rgba(43,74,112,.48);display:flex;align-items:flex-end;font-size:clamp(18px,calc(26px * var(--u,1)),34px)}
  .pad .padL{left:0;justify-content:flex-start}
  .pad .padR{right:0;justify-content:flex-end}
  .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,.05);color:#2b6fd4}
- .pad .padF{position:absolute;left:50%;bottom:18px;z-index:2;transform:translateX(-50%);padding:12px 28px;border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ .pad .padF{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:2;transform:translateX(-50%);padding:calc(12px * var(--u,1)) calc(28px * var(--u,1));font-size:clamp(11px,calc(14px * var(--u,1)),19px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ /* A short board — phone landscape, an unfolded Fold — leaves too little height for the
+    bottom-half aim zones, so let them own the board's full height instead. FIRE keeps its
+    own stacking context above them. */
+ .root.wideLayout .pad{height:100%}
 }
 </style>
 <div class="root">
@@ -1801,6 +1857,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 </div>`;
     this.canvas = sh.querySelector('canvas');
     this.ctx = this.canvas.getContext('2d');
+    this.rootEl = sh.querySelector('.root');
+    this.gameColEl = sh.querySelector('.gameCol');
     this.tutEl = sh.querySelector('.tutorial');
     this.homeEl = sh.querySelector('.home');
     this.lobbyEl = sh.querySelector('.lobby');
@@ -1817,6 +1875,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{this.state = 'play'; this.resetGame();} };
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
     const fullscreenButton = sh.querySelector('.fullscreenButton');
+    this.fullscreenButtonEl = fullscreenButton;
+    this.gearEl = sh.querySelector('.gear');
     const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
     const syncFullscreenButton = () => {
       const active = fullscreenElement() === this;
@@ -1863,15 +1923,73 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.onlinePause').onclick=()=>this.togglePause();
     sh.querySelector('.onlineRestart').onclick=()=>{if(this.isOnlineHost()&&confirm('Restart the match for everyone?'))this.sendOnline('restart');};
     sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>el.addEventListener('change',()=>this.pushLobbySettings()));
+    /* Observe .root (the available box) for the world-height decision and .gameCol (the
+       result of that decision) only for the backing-store resize. Keeping the two apart
+       is what stops the observer from feeding its own output back in. */
+    this._availObserver = new ResizeObserver(() => this.measure());
+    this._availObserver.observe(this.rootEl);
     this._resizeObserver = new ResizeObserver(() => this.fit());
-    this._resizeObserver.observe(sh.querySelector('.gameCol'));
-    this.fit();
+    this._resizeObserver.observe(this.gameColEl);
+    /* A fold/unfold or an address bar sliding away does not reliably resize an element
+       whose own size is percentage-derived, so listen for the viewport directly too. */
+    const onViewport = () => this.measure();
+    window.addEventListener('orientationchange', onViewport);
+    window.visualViewport?.addEventListener('resize', onViewport);
+    this._viewportUnbind = () => {
+      window.removeEventListener('orientationchange', onViewport);
+      window.visualViewport?.removeEventListener('resize', onViewport);
+    };
+    this.measure();
     this.buildSettings();
+  }
+
+  /* ---------- layout ---------- */
+  /* Available space picks the world height; the world height sets the CSS aspect ratio.
+     Offline that chain runs live; online the room's viewH wins so every player shares
+     one danger line, and a mismatched device simply letterboxes. */
+  measure() {
+    const root = this.rootEl; if (!root) return;
+    const cs = getComputedStyle(root);
+    const availW = root.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const availH = root.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (!(availW > 0 && availH > 0)) return;
+    this._avail = { w: availW, h: availH,
+      sideW: parseFloat(cs.getPropertyValue('--sideW')) || 290,
+      gap: parseFloat(cs.getPropertyValue('--rootGap')) || 20 };
+    this._deviceViewH = geom(W * availH / availW).H;
+    if (!this.online) this.setViewH(this._deviceViewH);
+    this.relayout();
+  }
+  relayout() {
+    const root = this.rootEl, col = this.gameColEl, a = this._avail;
+    if (!root || !col || !a) return;
+    root.style.setProperty('--fieldAspect', (W / this.H).toFixed(5));
+    /* One pass, no oscillation. Decide on the side panel from the board as it would be
+       with no panel; because the panel only appears with 300px+ to spare, the board is
+       already height-limited by then, so reserving the panel cannot shrink it and flip
+       the decision back. Wide and near-square screens — phone landscape, an unfolded
+       Fold — spend that space on UI instead of empty gradient. */
+    const wide = a.w - Math.min(a.w, a.h * W / this.H) >= 300;
+    root.classList.toggle('wideLayout', wide);
+    const usableW = wide ? a.w - a.sideW - a.gap : a.w;
+    const boardW = Math.max(1, Math.min(usableW, a.h * W / this.H));
+    col.style.width = boardW + 'px';
+    col.style.height = boardW * this.H / W + 'px';
+    this.fit();
   }
   fit() {
     const el = this.canvas, dpr = Math.min(2, window.devicePixelRatio || 1);
     const w = el.clientWidth || 320;
-    el.width = Math.round(w * dpr); el.height = Math.round(w * dpr * H / W);
+    el.width = Math.round(w * dpr); el.height = Math.round(w * dpr * this.H / W);
+    /* One unit of "board scale" so overlay chrome can track the board instead of the
+       page — a 44px button is huge on a 344px cover screen and lost on a 900px one. */
+    this.gameColEl?.style.setProperty('--u', (w / W).toFixed(4));
+    /* The corner buttons are DOM overlays with a minimum tap size, so on a narrow board
+       they cover more of the world than their nominal 44px. Measure one of them and let
+       the canvas HUD inset itself to match rather than being drawn underneath. */
+    const btn = [this.fullscreenButtonEl, this.gearEl].find(el => el && el.offsetWidth > 0);
+    const gap = btn ? Math.min(btn.offsetLeft, w - btn.offsetLeft - btn.offsetWidth) : 0;
+    this.chromeInset = btn ? Math.max(X0, (btn.offsetWidth + gap * 2) * W / w) : X0;
   }
   hideOverlays() { this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; }
   showEnd(won) {
@@ -1924,14 +2042,17 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const sh=this.shadowRoot,room=this.onlineRoom;if(!room)return;this.state='lobby';this.homeEl.style.display='none';this.tutEl.style.display='none';this.endEl.style.display='none';this.pauseEl.style.display='none';this.reconnectEl.style.display='none';this.lobbyEl.style.display='grid';sh.querySelector('.onlineBar').style.display='none';
     sh.querySelector('.roomCode').textContent=room.code;sh.querySelector('.onlinePlayers').innerHTML=room.players.map((p,i)=>`<div class="onlinePlayer"><span class="pDot" style="background:${META[i].accent}"></span><span>${this.escapeHTML(p.name)}</span><span class="statusDot ${p.connected?'':'off'}"></span>${p.id===room.hostId?'<span class="hostTag">HOST</span>':''}</div>`).join('');
     const host=this.isOnlineHost(),settings=room.settings,battle=settings.mode==='battle';sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');if(['field','mateLines'].includes(k))el.closest('label').style.display=battle?'none':'';});
+    /* The host's screen shape is a room setting, so publish it on arrival — otherwise a
+       host who never touches a slider would silently hand everyone the 1080 default. */
+    if(host&&room.phase==='lobby'&&this._deviceViewH&&settings.viewH!==this._deviceViewH)this.pushLobbySettings();
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
-    const oldState=this.state;this.settings={...this.settings,...s.settings};this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
+    const oldState=this.state;this.settings={...this.settings,...s.settings};if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
     this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
@@ -1953,7 +2074,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineBattleSnapshot(s){
     if(s.tick===0){this._lastOnlineBattleEvent=0;this._lastBattleOverviewEvent={};this._battlePreviews=new Map();}
     const oldState=this.state,oldBattle=this.battle,oldById=new Map((oldBattle?.boards||[]).map(b=>[b.id,b]));
-    this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
+    this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};if(this.setViewH(this.settings.viewH??H0))this.relayout();this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
     this._battlePreviews=this._battlePreviews||new Map();if(s.overview)for(const preview of s.overview)this._battlePreviews.set(preview.id,preview);
     const summaries=[...(s.boards||[])].sort((a,b)=>a.seat-b.seat),boards=summaries.map(summary=>{
       const data=summary.id===this.onlinePlayerId?s.self:this._battlePreviews.get(summary.id),old=oldById.get(summary.id)||{};
@@ -1976,7 +2097,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
   leaveOnline(){this._leaving=true;this.sendOnline('leave');if(this.ws)this.ws.close();this.clearOnlineSession();this.returnHome();setTimeout(()=>this._leaving=false,0);}
   clearOnlineSession(){try{localStorage.removeItem('bt_online_session');}catch(_){}this._onlineToken=null;this._onlineCode=null;}
-  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.resetGame();this.state='home';}
+  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.measure();this.resetGame();this.state='home';}
   escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
     const S = this.settings, el = this.sideEl;

@@ -1,0 +1,7 @@
+# Browsers and their system libraries come from the official Playwright image, so the
+# screenshot matrix needs nothing installed on the host. Keep this version in step with the
+# playwright package installed below.
+FROM mcr.microsoft.com/playwright:v1.49.1-noble
+WORKDIR /app
+RUN npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund playwright@1.49.1
+CMD ["node", "scripts/screenshot-matrix.mjs"]

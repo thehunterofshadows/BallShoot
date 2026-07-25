@@ -54,12 +54,16 @@ shared host tunnel.
 ./setup.sh
 ./rebuild.sh
 docker compose run --rm --no-deps test
+docker compose run --rm --no-deps screens  # device-shape screenshots -> ./screenshots
 ./promote.sh --dry-run
 ./promote.sh --confirm  # only after explicit human approval
 ```
 
 `setup.sh` creates the Prod worktree and starts isolated Dev and Prod Compose
 projects. `rebuild.sh` validates first and refuses to rebuild on failure.
+`screens` renders the game at nine device shapes — including Galaxy Z Fold cover and
+inner panels, a Flip cover panel, and phone landscape — and fails on horizontal
+overflow. It needs network egress because `support.js` boots React from a CDN.
 
 ## Source layout
 

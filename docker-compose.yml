@@ -59,6 +59,28 @@ services:
     profiles:
       - test
 
+  # Renders the game across the device shapes that broke the old fixed-aspect layout.
+  # Run: docker compose run --rm --no-deps screens
+  screens:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.screens
+    image: ${SCREENS_IMAGE:-ballshoot-screens:dev}
+    working_dir: /app
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./coop-bubbles.js:/app/coop-bubbles.js:ro
+      - ./support.js:/app/support.js:ro
+      - ./index.html:/app/index.html:ro
+      - ./screenshots:/app/screenshots
+    # The game is served on loopback, but support.js boots by fetching React (and the
+    # Fredoka webfont) from a CDN, so this one needs egress unlike the `test` service.
+    # Joining the shared default bridge avoids allocating a per-project subnet.
+    network_mode: bridge
+    shm_size: 1gb
+    profiles:
+      - test
+
 networks:
   edge:
     name: edge
