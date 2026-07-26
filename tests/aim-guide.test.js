@@ -56,3 +56,16 @@ test('only the full guide reveals bounce markers and the landing ghost', () => {
   // The old proportional slice is gone.
   assert.doesNotMatch(component, /sim\.pts\.slice\(0, Math\.max\(2, Math\.ceil\(sim\.pts\.length \* frac\)\)\)/);
 });
+
+test('every mode reaches the same aim-speed, guide, and touch-control code', () => {
+  // Local co-op (update), local battle (boardTick), and both online modes (the server's
+  // OnlineGame, which BattleGame builds one of per board) must all honour the setting.
+  assert.equal((component.match(/const spd = this\.settings\.aimSpeed \* rdt;/g) || []).length, 2);
+  const server = fs.readFileSync(path.join(root, 'server', 'game.js'), 'utf8');
+  const battle = fs.readFileSync(path.join(root, 'server', 'battle.js'), 'utf8');
+  assert.match(server, /Number\(this\.settings\.aimSpeed\) \|\| 2\.4/);
+  assert.match(battle, /new OnlineGame\(this\.settings,/);
+  assert.match(component, /<label>Aim speed<input data-setting="aimSpeed"/);
+  // Leaving a room hands the device preferences back rather than keeping the host's.
+  assert.match(component, /returnHome\(\)\{[^}]*this\.restoreLocalPrefs\(\)/);
+});

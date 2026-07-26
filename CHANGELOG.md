@@ -8,6 +8,9 @@
   nearly invisible on close targets. `Short` reaches about two rows, `Tiny` about two
   bubbles, at any target distance; the settings are relabelled `Full path` / `Short` /
   `Tiny` to match (the stored values are unchanged, so existing rooms are unaffected).
+- Leaving an online room now restores your saved aim speed. Snapshots merge the room's
+  settings into the client's, so the host's value used to stick to every local game that
+  followed.
 - Aim speed is now tunable (`Aim speed`, 0.6×–6×, default 2.4× as before) in both the local
   settings panel and the online lobby, since online aiming is integrated on the server.
 - The blue tint the mobile aim halves show while held is tunable (`Touch tint`, 0–30%,

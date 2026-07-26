@@ -2345,7 +2345,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
   leaveOnline(){this._leaving=true;this.sendOnline('leave');if(this.ws)this.ws.close();this.clearOnlineSession();this.returnHome();setTimeout(()=>this._leaving=false,0);}
   clearOnlineSession(){try{localStorage.removeItem('bt_online_session');}catch(_){}this._onlineToken=null;this._onlineCode=null;}
-  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.measure();this.resetGame();this.state='home';}
+  /* Snapshots merge the room's settings into ours, so leaving has to hand the device
+     preferences back to their owner: otherwise the host's aim speed silently becomes yours
+     for every local game that follows, overriding what you saved. */
+  restoreLocalPrefs(){Object.assign(this.settings,{aimSpeed:2.4},this.loadLocalPrefs());this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
+  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.measure();this.resetGame();this.state='home';}
   escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
     const S = this.settings, el = this.sideEl;
