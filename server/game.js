@@ -20,6 +20,32 @@ const geom = vh => {
   return { H, LAUNCH_Y, DANGER_Y: LAUNCH_Y - DANGER_GAP };
 };
 
+/* Shared aim integrator, mirrored verbatim in coop-bubbles.js so the client's prediction
+   and this authority agree frame for frame. The barrel carries angular velocity instead of
+   snapping between "turning at full speed" and "stopped": it ramps up over AIM_RAMP and
+   brakes AIM_BRAKE times harder, which reads as weight without costing precision. With
+   p.aimTarget set (point-to-aim) the same velocity glides onto the target and stops there;
+   the glide speed is derived from the braking rate, so it lands rather than overshooting. */
+const AIM_MAX = 1.22, AIM_RAMP = 0.12, AIM_BRAKE = 4;
+const aimTick = (p, dt, aimSpeed) => {
+  if (!(dt > 0)) return;
+  const spd = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4, accel = spd / AIM_RAMP;
+  let want;
+  if (p.aimTarget == null) want = (p.held && p.held.r ? spd : 0) - (p.held && p.held.l ? spd : 0);
+  else {
+    const gap = clamp(p.aimTarget, -AIM_MAX, AIM_MAX) - p.angle;
+    // Never ask for more than this frame's remaining gap, or the last frame overshoots and
+    // the barrel hunts back and forth across the target forever.
+    const glide = Math.min(Math.sqrt(2 * accel * AIM_BRAKE * Math.abs(gap)), Math.abs(gap) / dt);
+    want = clamp(gap < 0 ? -glide : glide, -spd, spd);
+  }
+  const vel = p.aimVel || 0;
+  const rate = (Math.abs(want) < Math.abs(vel) || want * vel < 0) ? accel * AIM_BRAKE : accel;
+  const next = vel + clamp(want - vel, -rate * dt, rate * dt);
+  const raw = p.angle + next * dt, angle = clamp(raw, -AIM_MAX, AIM_MAX);
+  p.angle = angle; p.aimVel = raw === angle ? next : 0; // no winding up against the stops
+};
+
 function mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
@@ -75,7 +101,7 @@ class OnlineGame {
       return {
         ...member, x: this.WW * (i + 0.5) / this.roster.length,
         angle: was ? was.angle : this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
-        held: { l: false, r: false }, connected: was ? was.connected : true,
+        held: { l: false, r: false }, aimVel: 0, aimTarget: null, connected: was ? was.connected : true,
         stats: was ? was.stats : { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 },
       };
     });
@@ -174,10 +200,14 @@ class OnlineGame {
   }
   hypoSize(r, c, kind) { return this.matchGroup(r, c, kind).size; }
 
-  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) p.held = { l:false, r:false }; } }
-  input(id, held) {
+  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.aimVel = 0; } } }
+  /* `aim` is the point-to-aim absolute angle; anything that is not a finite number — including
+     the client clearing it on finger-up — puts the launcher back on the held-direction stream. */
+  input(id, held, aim) {
     const p = this.players.find(q => q.id === id);
-    if (p && p.connected && this.state === 'play') p.held = { l: !!held.l, r: !!held.r };
+    if (!p || !p.connected || this.state !== 'play') return;
+    p.held = { l: !!(held && held.l), r: !!(held && held.r) };
+    p.aimTarget = Number.isFinite(aim) ? clamp(Number(aim), -AIM_MAX, AIM_MAX) : null;
   }
   fire(id) {
     const p = this.players.find(q => q.id === id);
@@ -208,9 +238,7 @@ class OnlineGame {
     for (const p of this.players) {
       p.reload = Math.max(0, p.reload - dt);
       if (!p.connected || this.inputLocked) continue;
-      const spd = (Number(this.settings.aimSpeed) || 2.4) * dt;
-      if (p.held.l) p.angle = clamp(p.angle - spd, -1.22, 1.22);
-      if (p.held.r) p.angle = clamp(p.angle + spd, -1.22, 1.22);
+      aimTick(p, dt, this.settings.aimSpeed);
     }
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
@@ -368,7 +396,7 @@ class OnlineGame {
       WW:this.WW, cols:this.cols, parityFlip:this.parityFlip, anchorRow:this.anchorRow,
       gridTop:this.gridTop, gridTopTarget:this.gridTopTarget, pressure:this.pressure, perDrop:this.shotsPerDrop(),
       lowestY:this.lowestY, grid:[...this.grid.values()], flights:this.flights,
-      players:this.players.map(p=>({...p,held:undefined})), score:this.score, dispScore:this.dispScore,
+      players:this.players.map(p=>({...p,held:undefined,aimTarget:undefined,aimVel:undefined})), score:this.score, dispScore:this.dispScore,
       missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,
     };
@@ -376,4 +404,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, clamp, geom, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, normalizeViewH: vh => geom(vh).H };

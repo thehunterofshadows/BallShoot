@@ -23,6 +23,23 @@ test('only the host may change validated lobby settings', () => {
   assert.throws(()=>rooms.updateSettings(host.room,host.p,next,0),e=>e.code==='stale_revision');
 });
 
+test('the host sets the control feel for the whole room', () => {
+  // Touch tint and FIRE size are device preferences locally, but inside a room they are the
+  // host's call like every other rule, so they have to survive validation and reach clients.
+  const host=rooms.create('Host',socket(),'one');
+  rooms.updateSettings(host.room,host.p,{...host.room.settings,padTint:.2,fireScale:1.8,aimSpeed:5},0);
+  assert.equal(host.room.settings.padTint,.2);
+  assert.equal(host.room.settings.fireScale,1.8);
+  assert.equal(rooms.publicRoom(host.room).settings.fireScale,1.8);
+  for(const bad of [{padTint:.9},{padTint:-1},{fireScale:3},{fireScale:.1},{fireScale:'big'}])
+    assert.throws(()=>rooms.updateSettings(host.room,host.p,{...host.room.settings,...bad},1),e=>e.code==='bad_settings');
+  // A client that predates the settings gets the shipped defaults rather than a rejection.
+  const legacy={...host.room.settings};delete legacy.padTint;delete legacy.fireScale;
+  rooms.updateSettings(host.room,host.p,legacy,1);
+  assert.equal(host.room.settings.padTint,rooms.DEFAULT_SETTINGS.padTint);
+  assert.equal(host.room.settings.fireScale,rooms.DEFAULT_SETTINGS.fireScale);
+});
+
 test('reconnect tokens reclaim seats and explicit host leave transfers authority', () => {
   const host=rooms.create('Host',socket(),'one'), guest=rooms.join(host.room.code,'Guest',socket(),'two');
   rooms.disconnect(host.room,host.p,false);const replacement=socket();const result=rooms.rejoin(host.room.code,host.p.token,replacement);

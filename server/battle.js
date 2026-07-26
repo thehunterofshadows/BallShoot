@@ -28,7 +28,7 @@ class BattleGame {
   }
 
   board(id) { return this.boards.find(b => b.id === id); }
-  input(id, held) { const b=this.board(id); if(b?.alive)b.game.input(id,held); }
+  input(id, held, aim) { const b=this.board(id); if(b?.alive)b.game.input(id,held,aim); }
   fire(id) { const b=this.board(id); return !!(b?.alive&&!this.pending.has(id)&&b.game.fire(id)); }
   swap(id) { const b=this.board(id); return !!(b?.alive&&!this.pending.has(id)&&b.game.swap(id)); }
   setConnected(id, connected) {

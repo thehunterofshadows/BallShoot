@@ -57,15 +57,77 @@ test('only the full guide reveals bounce markers and the landing ghost', () => {
   assert.doesNotMatch(component, /sim\.pts\.slice\(0, Math\.max\(2, Math\.ceil\(sim\.pts\.length \* frac\)\)\)/);
 });
 
-test('every mode reaches the same aim-speed, guide, and touch-control code', () => {
-  // Local co-op (update), local battle (boardTick), and both online modes (the server's
-  // OnlineGame, which BattleGame builds one of per board) must all honour the setting.
-  assert.equal((component.match(/const spd = this\.settings\.aimSpeed \* rdt;/g) || []).length, 2);
+test('every mode reaches the same aim integrator, and it is the same code on both sides', () => {
+  // Local co-op (update), local battle (boardTick) and both online prediction paths call the
+  // one integrator; the server's OnlineGame — which BattleGame builds one of per board — runs
+  // a byte-identical copy, so prediction and authority cannot drift apart.
+  assert.equal((component.match(/aimTick\(p, rdt, this\.settings\.aimSpeed\)/g) || []).length, 2);
+  assert.match(component, /predictOwnAim\(p, dt\)/);
   const server = fs.readFileSync(path.join(root, 'server', 'game.js'), 'utf8');
   const battle = fs.readFileSync(path.join(root, 'server', 'battle.js'), 'utf8');
-  assert.match(server, /Number\(this\.settings\.aimSpeed\) \|\| 2\.4/);
+  assert.match(server, /aimTick\(p, dt, this\.settings\.aimSpeed\)/);
   assert.match(battle, /new OnlineGame\(this\.settings,/);
+  const body = src => { const m = src.match(/^const aimTick = [\s\S]*?^};$/m); assert.ok(m); return m[0]; };
+  assert.equal(body(component), body(server), 'the client mirror and the server authority must match');
   assert.match(component, /<label>Aim speed<input data-setting="aimSpeed"/);
   // Leaving a room hands the device preferences back rather than keeping the host's.
   assert.match(component, /returnHome\(\)\{[^}]*this\.restoreLocalPrefs\(\)/);
+});
+
+// The integrator is pure, so lift it out of the component and drive it directly.
+const aimTick = (() => {
+  const m = component.match(/^const AIM_MAX = [\s\S]*?^};$/m);
+  assert.ok(m, 'aimTick not found in coop-bubbles.js');
+  return vm.runInNewContext(`const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)); ${m[0]} aimTick`);
+})();
+const run = (p, seconds, speed = 2.4, dt = 1 / 60) => {
+  for (let t = 0; t < seconds; t += dt) aimTick(p, dt, speed);
+  return p;
+};
+
+test('held aim ramps up to speed instead of stepping on at full rate', () => {
+  const p = { angle: 0, held: { l: false, r: true } };
+  aimTick(p, 1 / 60, 2.4);
+  assert.ok(p.aimVel > 0 && p.aimVel < 2.4 * 0.5, 'the first frame is a fraction of full speed');
+  run(p, 0.2);
+  assert.ok(Math.abs(p.aimVel - 2.4) < 1e-6, 'full speed within a fifth of a second');
+  // And it coasts to a stop rather than freezing mid-sweep.
+  p.held.r = false;
+  const atRelease = p.angle;
+  run(p, 0.5);
+  assert.equal(p.aimVel, 0);
+  assert.ok(p.angle - atRelease > 0 && p.angle - atRelease < 0.06, 'a short, controllable coast');
+});
+
+test('aim stops at the launcher limits without winding up against them', () => {
+  const p = { angle: 0, held: { l: false, r: true } };
+  run(p, 5);
+  assert.ok(Math.abs(p.angle - 1.22) < 1e-9);
+  assert.equal(p.aimVel, 0, 'no stored velocity to fling the barrel back on release');
+  p.held = { l: true, r: false };
+  aimTick(p, 1 / 60, 2.4);
+  assert.ok(p.angle < 1.22, 'turning the other way responds immediately');
+});
+
+test('point-to-aim glides onto the target and stays there', () => {
+  const p = { angle: -0.9, held: { l: false, r: false }, aimTarget: 0.7 };
+  run(p, 2);
+  assert.ok(Math.abs(p.angle - 0.7) < 0.01, 'lands on the target');
+  assert.ok(Math.abs(p.aimVel) < 0.05, 'and does not oscillate around it');
+  // Out-of-range targets clamp to the launcher's limit rather than being chased.
+  p.aimTarget = 9;
+  run(p, 3);
+  assert.ok(Math.abs(p.angle - 1.22) < 1e-6);
+  // Clearing the target hands the launcher back to the held-direction stream.
+  p.aimTarget = null; p.held = { l: true, r: false };
+  const before = p.angle;
+  run(p, 0.3);
+  assert.ok(p.angle < before);
+});
+
+test('a faster aim speed setting is a faster sweep, not a different feel', () => {
+  const slow = run({ angle: 0, held: { l: false, r: true } }, 0.3, 1.2);
+  const fast = run({ angle: 0, held: { l: false, r: true } }, 0.3, 4.8);
+  assert.ok(fast.angle > slow.angle * 2);
+  assert.ok(Math.abs(fast.aimVel - 4.8) < 1e-6 && Math.abs(slow.aimVel - 1.2) < 1e-6);
 });

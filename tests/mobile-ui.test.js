@@ -65,6 +65,43 @@ test('the FIRE button scales as a whole and pushes the swap button clear', () =>
   assert.doesNotMatch(component, /\.root\.wideLayout \.pad\{height:100%\}/);
 });
 
+test('FIRE outranks the aim halves, and a near miss still fires', () => {
+  // The halves are transparent full-height overlays, so leaving this to CSS stacking meant a
+  // thumb a few pixels off FIRE turned the launcher instead of shooting. One router decides.
+  const order = component.match(/padHit\(x, y\) \{[\s\S]*?\n  \}/);
+  assert.ok(order, 'padHit not found');
+  const picks = [...order[0].matchAll(/return '(\w+)'/g)].map(m => m[1]);
+  assert.deepEqual(picks, ['swap','fire','fire','swap','aim','l','r'],
+    'exact hits first, keeping swap; then near misses, where FIRE outranks everything');
+  // Slop grows with the button and only exists where the overlays do.
+  assert.match(component, /padSlop\(\) \{[\s\S]*?pointer: coarse[\s\S]*?22 \* u \* \(this\.settings\.fireScale \|\| 1\)/);
+  // A single capture-phase listener owns the pad; the per-button pointerdown wiring is gone.
+  assert.match(component, /pad\.addEventListener\('pointerdown', e => \{[\s\S]{0,200}this\.padHit\(e\.clientX, e\.clientY\)/);
+  assert.doesNotMatch(component, /wireHold\('\.padL', 'l'\)/);
+});
+
+test('point-to-aim is a per-device control scheme, never a room setting', () => {
+  assert.match(component, /const AIM_MODES = \['halves', 'point'\]/);
+  assert.match(component, /\.root\[data-aim-mode="point"\] \.pad\{top:0;height:100%\}/);
+  assert.match(component, /\.root\[data-aim-mode="point"\] \.pad \.padL,[^{]*\.padR\{display:none\}/);
+  assert.match(component, /AIM_MODES\.includes\(p\.aimMode\)/);       // clamped on load like the sliders
+  assert.match(component, /JSON\.stringify\(\{ aimSpeed, padTint, fireScale, aimMode \}\)/);
+  // It must not travel with the room: the server has no such setting to merge over it.
+  const lobbies = fs.readFileSync(path.join(root, 'server', 'lobbies.js'), 'utf8');
+  assert.doesNotMatch(lobbies, /aimMode/);
+  assert.doesNotMatch(component, /data-setting="aimMode"/);
+});
+
+test('the host publishes one set of controls to the whole room', () => {
+  assert.match(component, /<label>Touch tint<input data-setting="padTint"/);
+  assert.match(component, /<label>FIRE size<input data-setting="fireScale"/);
+  // Range inputs ship strings, which validateSettings rejects.
+  assert.match(component, /'guide','aimSpeed','padTint','fireScale'\]\.includes\(el\.dataset\.setting\)\)v=Number\(v\)/);
+  // Arriving settings have to reach the CSS variables, and leaving hands the device's own back.
+  assert.match(component, /applyRoomControls\(\)\{this\.applyTouchStyle\(\)/);
+  assert.match(component, /restoreLocalPrefs\(\)\{Object\.assign\(this\.settings,\{aimSpeed:2\.4,padTint:0\.025,fireScale:1\}/);
+});
+
 test('overlay chrome is sized in board units so it stays tappable at any board size', () => {
   assert.match(component, /setProperty\('--u'/);
   assert.match(component, /--chromeBtn:clamp\(36px,calc\(44px \* var\(--u,1\)\),56px\)/);

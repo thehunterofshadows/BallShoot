@@ -78,8 +78,16 @@ const LEVELS = [
     "GYYB..YBGR",
   ]},
 ];
+/* P1's touch controls depend on the aim mode, so its hint is filled in from AIM_HINT rather
+   than fixed here; the keyboard launchers never change. */
+const AIM_HINT = {
+  halves: { ctrl:'Touch the lower left / right to aim · FIRE to shoot · ⇄ swap',
+    tut:'On mobile, hold the lower-left or lower-right half to aim, then tap FIRE above.' },
+  point: { ctrl:'Drag anywhere on the board to aim · FIRE to shoot · ⇄ swap',
+    tut:'On mobile, drag anywhere on the board and the cannon swings to your finger, then tap FIRE.' },
+};
 const META = [
-  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:'Touch the lower left / right to aim · FIRE to shoot · ⇄ swap' },
+  { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:AIM_HINT.halves.ctrl },
   { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · S swap' },
   { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire · ↓ swap' },
   { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire · I swap' },
@@ -119,6 +127,34 @@ const trimPath = (pts, maxLen) => {
   }
   return out;
 };
+/* Shared aim integrator, mirrored verbatim in server/game.js so the client's prediction and
+   the server's authority agree frame for frame. The barrel carries angular velocity instead
+   of snapping between "turning at full speed" and "stopped": it ramps up over AIM_RAMP and
+   brakes AIM_BRAKE times harder, which reads as weight without costing precision. With
+   p.aimTarget set (point-to-aim) the same velocity glides onto the target and stops there;
+   the glide speed is derived from the braking rate, so it lands rather than overshooting. */
+const AIM_MAX = 1.22, AIM_RAMP = 0.12, AIM_BRAKE = 4;
+/* 'halves' holds the lower-left or lower-right of the board to turn; 'point' aims the barrel
+   at wherever the finger is. Both feed the same integrator below. */
+const AIM_MODES = ['halves', 'point'];
+const aimTick = (p, dt, aimSpeed) => {
+  if (!(dt > 0)) return;
+  const spd = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4, accel = spd / AIM_RAMP;
+  let want;
+  if (p.aimTarget == null) want = (p.held && p.held.r ? spd : 0) - (p.held && p.held.l ? spd : 0);
+  else {
+    const gap = clamp(p.aimTarget, -AIM_MAX, AIM_MAX) - p.angle;
+    // Never ask for more than this frame's remaining gap, or the last frame overshoots and
+    // the barrel hunts back and forth across the target forever.
+    const glide = Math.min(Math.sqrt(2 * accel * AIM_BRAKE * Math.abs(gap)), Math.abs(gap) / dt);
+    want = clamp(gap < 0 ? -glide : glide, -spd, spd);
+  }
+  const vel = p.aimVel || 0;
+  const rate = (Math.abs(want) < Math.abs(vel) || want * vel < 0) ? accel * AIM_BRAKE : accel;
+  const next = vel + clamp(want - vel, -rate * dt, rate * dt);
+  const raw = p.angle + next * dt, angle = clamp(raw, -AIM_MAX, AIM_MAX);
+  p.angle = angle; p.aimVel = raw === angle ? next : 0; // no winding up against the stops
+};
 /* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
    a fold animation mid-frame — cannot churn the world height on every resize tick. */
 const geom = vh => {
@@ -133,7 +169,7 @@ class CoopBubbles extends HTMLElement {
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
       reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
-      aimSpeed:2.4, padTint:0.025, fireScale:1 };
+      aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves' };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
     this.resetGame();
@@ -145,9 +181,10 @@ class CoopBubbles extends HTMLElement {
       if(saved&&/^\d{3}$/.test(saved.code)&&saved.token){this.online=true;this._onlineCode=saved.code;this._onlineToken=saved.token;this.reconnectEl.style.display='grid';this.openOnlineSocket(true);}
     } catch(_) {}
   }
-  // Aim speed, the touch tint, and the FIRE button size are feel preferences for a given
-  // device rather than match rules, so they outlive a single session instead of resetting
-  // with the game.
+  /* Device preferences: they outlive a session instead of resetting with the game. Aim speed,
+     touch tint and FIRE size are also room settings, so a host sets one set of controls for
+     everyone and restoreLocalPrefs hands these back on the way out. The control scheme is
+     not — which of two ways you like to aim is yours alone, and the server never sees it. */
   loadLocalPrefs() {
     try {
       const p = JSON.parse(localStorage.getItem('bt_prefs') || 'null') || {};
@@ -155,12 +192,13 @@ class CoopBubbles extends HTMLElement {
       if (Number.isFinite(p.aimSpeed)) out.aimSpeed = clamp(p.aimSpeed, 0.6, 6);
       if (Number.isFinite(p.padTint)) out.padTint = clamp(p.padTint, 0, 0.3);
       if (Number.isFinite(p.fireScale)) out.fireScale = clamp(p.fireScale, 0.6, 2.2);
+      if (AIM_MODES.includes(p.aimMode)) out.aimMode = p.aimMode;
       return out;
     } catch (_) { return {}; }
   }
   saveLocalPrefs() {
-    const { aimSpeed, padTint, fireScale } = this.settings;
-    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale })); } catch (_) {}
+    const { aimSpeed, padTint, fireScale, aimMode } = this.settings;
+    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale, aimMode })); } catch (_) {}
   }
   applyTouchStyle() {
     const root = this.rootEl; if (!root) return;
@@ -168,6 +206,14 @@ class CoopBubbles extends HTMLElement {
     root.style.setProperty('--padTint', String(tint));
     root.style.setProperty('--padInk', tint ? '#2b6fd4' : 'rgba(43,74,112,.48)');
     root.style.setProperty('--fireScale', String(this.settings.fireScale));
+    const mode = AIM_MODES.includes(this.settings.aimMode) ? this.settings.aimMode : 'halves';
+    if (root.dataset.aimMode === mode) return;
+    root.dataset.aimMode = mode;
+    // Switching mid-hold would leave the control you just walked away from latched on.
+    const p = this.aimPlayer();
+    if (p) { p.held = { l:false, r:false }; p.aimTarget = null; }
+    this._padHold = null;
+    if (this.online) { this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); this.setOnlineAim(null); }
   }
   disconnectedCallback() {
     cancelAnimationFrame(this._raf);
@@ -744,12 +790,37 @@ class CoopBubbles extends HTMLElement {
     else if (this.online && ['play','paused','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
     this.render();
   }
+  /* Own-launcher prediction. The server runs the same aimTick over the same input stream, so
+     while the finger is down the two differ only by the round trip: the snapshot angle is
+     this barrel a moment ago. Correcting toward it mid-hold would drag the barrel backwards
+     against the player — which, applied twenty times a second, is what made online aiming
+     feel stepped. So the hold is pure prediction, and the moment input stops the server
+     catches up to exactly where the prediction already is. Only an idle launcher is
+     reconciled: a gentle drift for ordinary drift, an outright take for a gap no drift can
+     hide (a dropped input, a resume, a rejoin). */
+  predictOwnAim(p, dt) {
+    this.flushOnlineAim();
+    p.held = this._onlineHeld || { l:false, r:false };
+    p.aimTarget = this._onlineAimWant ?? null; // predict from the finger, not the last packet
+    aimTick(p, dt, this.settings.aimSpeed);
+    if (p.serverAngle === undefined || p.held.l || p.held.r || p.aimTarget != null) return;
+    const gap = p.serverAngle - p.angle;
+    if (Math.abs(gap) > 0.35) { p.angle = p.serverAngle; p.aimVel = 0; }
+    else p.angle = clamp(p.angle + clamp(gap, -3 * dt, 3 * dt), -AIM_MAX, AIM_MAX);
+  }
+  // Everyone else's barrel: interpolate toward the last snapshot rather than teleporting to it.
+  followServerAim(p, dt) {
+    if (p.serverAngle === undefined) return;
+    const gap = p.serverAngle - p.angle;
+    p.angle = Math.abs(gap) > 0.6 ? p.serverAngle : p.angle + gap * Math.min(1, 14 * dt);
+    p.aimVel = 0;
+  }
   updateOnlineVisuals(dt) {
     if (this.state !== 'paused') {
       this.now += dt;
       const own=this.players[this.activeP];
-      if(own&&this._onlineHeld){if(this._onlineHeld.l)own.angle=clamp(own.angle-2.4*dt,-1.22,1.22);if(this._onlineHeld.r)own.angle=clamp(own.angle+2.4*dt,-1.22,1.22);}
-      for(const p of this.players)p.reload=Math.max(0,p.reload-dt);
+      if(own)this.predictOwnAim(own,dt);
+      for(const p of this.players){p.reload=Math.max(0,p.reload-dt);if(p!==own)this.followServerAim(p,dt);}
       for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>this.WW-X0-R)f.vx=-f.vx;}
       if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
       const floor=92+this.LAUNCH_Y-60-R+6;
@@ -763,7 +834,7 @@ class CoopBubbles extends HTMLElement {
     if(this.state!=='paused'){
       this.now+=dt;if(bt.targeting)bt.targeting.t=Math.max(0,bt.targeting.t-dt);
       const b=bt.human;if(b){this.bindBoard(b);const p=b.player;
-        if(this.state==='play'&&!bt.targeting&&this._onlineHeld){if(this._onlineHeld.l)p.angle=clamp(p.angle-2.4*dt,-1.22,1.22);if(this._onlineHeld.r)p.angle=clamp(p.angle+2.4*dt,-1.22,1.22);}
+        if(this.state==='play'&&!bt.targeting)this.predictOwnAim(p,dt);else this.followServerAim(p,dt);
         p.reload=Math.max(0,(p.reload||0)-dt);for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>W-X0-R)f.vx=-f.vx;}
         if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);this.fxTick();this.unbindBoard(b);}
     }
@@ -779,9 +850,8 @@ class CoopBubbles extends HTMLElement {
       p.reload = Math.max(0, p.reload - dt);
       if (p.bot) this.botUpdate(p, dt);
       else {
-        const spd = this.settings.aimSpeed * rdt;
-        if (p.held.l) { p.angle = clamp(p.angle - spd, -1.22, 1.22); this.activeP = p.i; }
-        if (p.held.r) { p.angle = clamp(p.angle + spd, -1.22, 1.22); this.activeP = p.i; }
+        if (p.held.l || p.held.r || p.aimTarget != null) this.activeP = p.i;
+        aimTick(p, rdt, this.settings.aimSpeed);
       }
     }
     // camera follows the active player's aim (wide field)
@@ -859,20 +929,91 @@ class CoopBubbles extends HTMLElement {
   }
 
   /* ---------- input ---------- */
+  canvasPoint(e) { const r = this.canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * W / Math.max(1, r.width), y: (e.clientY - r.top) * this.H / Math.max(1, r.height) }; }
+  /* Which pad control a touch belongs to. Exact hits resolve first, keeping the swap button's
+     long-standing precedence where it overlaps FIRE, so a deliberate swap tap is never stolen.
+     Only then are near misses rescued, and there FIRE outranks everything: it is the button
+     being reached for on nearly every touch, and the aim halves underneath it are transparent
+     full-height overlays that would otherwise turn the launcher instead of shooting. */
+  padHit(x, y) {
+    const slop = this.padSlop();
+    if (this.padBoxHit('.padS', x, y, 0)) return 'swap';
+    if (this.padBoxHit('.padF', x, y, 0)) return 'fire';
+    if (slop && this.padBoxHit('.padF', x, y, slop)) return 'fire';
+    if (slop && this.padBoxHit('.padS', x, y, slop)) return 'swap';
+    if (this.padBoxHit('.padA', x, y, 0)) return 'aim';
+    if (this.padBoxHit('.padL', x, y, 0)) return 'l';
+    if (this.padBoxHit('.padR', x, y, 0)) return 'r';
+    return null;
+  }
+  padBoxHit(sel, x, y, slop) {
+    const el = this.shadowRoot.querySelector(sel); if (!el) return false;
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height) return false;
+    return x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop;
+  }
+  /* Forgiveness scales with the board (--u) and with the FIRE size setting, so a bigger
+     button also gets a proportionally bigger halo. Only coarse pointers get it: on desktop
+     the four pad buttons sit side by side and a halo would swallow its neighbours. */
+  padSlop() {
+    if (!this.gameColEl || !matchMedia('(pointer: coarse)').matches) return 0;
+    const u = parseFloat(getComputedStyle(this.gameColEl).getPropertyValue('--u')) || 1;
+    return 22 * u * (this.settings.fireScale || 1);
+  }
+  firstHumanPlayer() { return (this.players || []).find(q => !q.bot) || null; }
+  // The launcher this device's finger drives, across local, local battle and online play.
+  aimPlayer() {
+    if (this.battle && this.settings.mode === 'battle') return this.battle.human?.player || null;
+    if (this.online) return (this.players || [])[this.activeP] || null;
+    return this.firstHumanPlayer();
+  }
+  padFire() {
+    if (this.battle && this.settings.mode === 'battle' && !this.online) { this.battleFire(); return; }
+    if (this.online) { this.fire(); return; }
+    const p = this.firstHumanPlayer(); if (p) { this.activeP = p.i; this.fire(p.i); }
+  }
+  padSwap() {
+    if (this.battle && this.settings.mode === 'battle' && !this.online) { this.battleSwap(); return; }
+    if (this.online) { this.swapBubble(); return; }
+    const p = this.firstHumanPlayer(); if (p) { this.activeP = p.i; this.swapBubble(p.i); }
+  }
+  // Hold-to-turn. Returns the launcher engaged so the release hits the same one.
+  padAimHold(dir, value, player) {
+    if (this.battle && this.settings.mode === 'battle' && !this.online) {
+      const p = player || this.battle.human?.player; if (!p) return null;
+      p.held[dir] = value; if (value) p.aimTarget = null; return p;
+    }
+    if (this.online) { this.setOnlineHeld(dir, value); return null; }
+    const p = player || this.firstHumanPlayer(); if (!p) return null;
+    p.held[dir] = value; if (value) { p.aimTarget = null; this.activeP = p.i; }
+    return p;
+  }
+  /* Point-to-aim. The finger names an angle from the launcher to the spot it is touching and
+     aimTick glides the barrel onto it, so the cannon swings there rather than teleporting.
+     A null event is finger-up, which hands the launcher back to the held-direction stream. */
+  padAimPoint(e) {
+    const p = this.aimPlayer(); if (!p) return;
+    if (!e) { p.aimTarget = null; if (this.online) this.setOnlineAim(null); return; }
+    const pt = this.canvasPoint(e);
+    const angle = clamp(Math.atan2(pt.x + (this.camX || 0) - p.x, (this.LAUNCH_Y - 44) - pt.y), -AIM_MAX, AIM_MAX);
+    p.aimTarget = angle; p.held = { l:false, r:false };
+    if (this.online) this.setOnlineAim(angle);
+    else if (!this.battle) this.activeP = p.i;
+  }
+  /* Picking an attack target is the one thing that reads the board directly. In point-to-aim
+     the surface covers the board, so the pad router hands these two through rather than
+     letting an aim drag swallow the choice. */
+  battleHoverAt(e) { if (this.battleTargetActive()) this.battle.targeting.hover = this.battleSlotAt(this.canvasPoint(e)); }
+  battlePickAt(e) {
+    if (!this.battleTargetActive()) return;
+    const s = this.battleSlotAt(this.canvasPoint(e)), tg = this.battle.targeting;
+    if (s >= 0) { const t = this.battle.boards[s];
+      if (t.alive && s !== tg.by) this.chooseBattleTarget(t); }
+  }
   bindInput() {
     this.canvas.addEventListener('pointerdown', () => this.ensureAudio());
-    const canvasPt = e => { const r = this.canvas.getBoundingClientRect();
-      return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * this.H / r.height }; };
-    this.canvas.addEventListener('pointermove', e => {
-      if (!this.battleTargetActive()) return;
-      this.battle.targeting.hover = this.battleSlotAt(canvasPt(e));
-    });
-    this.canvas.addEventListener('pointerdown', e => {
-      if (!this.battleTargetActive()) return;
-      const s = this.battleSlotAt(canvasPt(e)), tg = this.battle.targeting;
-      if (s >= 0) { const t = this.battle.boards[s];
-        if (t.alive && s !== tg.by) this.chooseBattleTarget(t); }
-    });
+    this.canvas.addEventListener('pointermove', e => this.battleHoverAt(e));
+    this.canvas.addEventListener('pointerdown', e => this.battlePickAt(e));
     const keymap = { // player input streams by key
       a:[1,'l'], d:[1,'r'], arrowleft:[2,'l'], arrowright:[2,'r'], j:[3,'l'], l:[3,'r'],
     };
@@ -900,8 +1041,8 @@ class CoopBubbles extends HTMLElement {
           return;
         }
         const hp = bt.human.player;
-        if (['a','arrowleft','j'].includes(k)) { hp.held.l = true; e.preventDefault(); }
-        if (['d','arrowright','l'].includes(k)) { hp.held.r = true; e.preventDefault(); }
+        if (['a','arrowleft','j'].includes(k)) { hp.held.l = true; hp.aimTarget = null; e.preventDefault(); }
+        if (['d','arrowright','l'].includes(k)) { hp.held.r = true; hp.aimTarget = null; e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.battleFire(); e.preventDefault(); }
         if (swapKeys.includes(k)) { this.battleSwap(); e.preventDefault(); }
         return;
@@ -914,7 +1055,7 @@ class CoopBubbles extends HTMLElement {
         return;
       }
       const am = keymap[k];
-      if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; e.preventDefault(); } }
+      if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; p.aimTarget = null; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
       if (swapmap[k] !== undefined) { const p = this.players[swapmap[k]]; if (p && !p.bot) { this.swapBubble(swapmap[k]); e.preventDefault(); } }
     };
@@ -1477,11 +1618,8 @@ class CoopBubbles extends HTMLElement {
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80 * rdt, 80 * rdt);
     const locked = tg && tg.by === b.i && !p.bot;
     if (p.bot) this.botUpdate(p, rdt);
-    else if (!locked) {
-      const spd = this.settings.aimSpeed * rdt;
-      if (p.held.l) p.angle = clamp(p.angle - spd, -1.22, 1.22);
-      if (p.held.r) p.angle = clamp(p.angle + spd, -1.22, 1.22);
-    }
+    else if (!locked) aimTick(p, rdt, this.settings.aimSpeed);
+    else { p.aimVel = 0; p.aimTarget = null; } // choosing a target parks the barrel where it is
     this.stepFlights(rdt);
     if (this.resolveAt && this.now >= this.resolveAt) this.battleResolve(b);
     const perDrop = this.shotsPerDrop();
@@ -1853,6 +1991,9 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
    still flashed on touch. Ours is the only pressed feedback these controls get. */
 .pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 .pad button:active{background:#2b6fd4;color:#fff}
+/* The point-to-aim surface only exists on touch layouts in that mode; everywhere else it is
+   absent from hit-testing entirely rather than merely transparent. */
+.pad .padA{display:none;position:absolute;inset:0}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
 .pad .padS{font-size:19px;padding:7px 14px}
 /* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
@@ -1948,6 +2089,17 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  /* Sits on top of the .padR aim overlay rather than beside it, so the aim halves stay
     full width and the swap target still wins the pointer where they overlap. */
  .pad .padS{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:3;transform:translateX(calc(-50% + 92px * var(--u,1) * var(--fireScale,1)));padding:calc(11px * var(--u,1)) calc(15px * var(--u,1));font-size:clamp(15px,calc(19px * var(--u,1)),25px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
+ /* Point-to-aim replaces the two halves with one surface over the whole board: you aim by
+    touching where you want the shot to go, so the surface has to reach the targets, not just
+    the thumb rest. FIRE and swap keep their z-index above it, and padHit checks them first
+    anyway, so the only thing that changes is what an otherwise-unclaimed touch means. */
+ .root[data-aim-mode="point"] .pad{top:0;height:100%}
+ .root[data-aim-mode="point"] .pad .padA{display:block;pointer-events:auto;background:transparent}
+ .root[data-aim-mode="point"] .pad .padA:active{background:rgba(43,111,212,var(--padTint,.025))}
+ .root[data-aim-mode="point"] .pad .padL,.root[data-aim-mode="point"] .pad .padR{display:none}
+ /* The aim surface reaches the top of the board, where the chrome lives, and shares the pad's
+    stacking level — so lift the chrome above it or a full-board drag would eat every button. */
+ .root[data-aim-mode="point"] .cornerButton,.root[data-aim-mode="point"] .onlineBar{z-index:5}
 }
 </style>
 <div class="root">
@@ -1957,7 +2109,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="buildTag">${BUILD_LABEL}</div>
-    <div class="pad"><button class="padL">\u25c0</button><button class="padS" title="Swap loaded and next bubble">\u21c4</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
+    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padS" title="Swap loaded and next bubble">\u21c4</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
@@ -1979,6 +2131,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <label>Rescue timer<input data-setting="rescueDur" type="range" min="3" max="5" step="0.5"></label>
         <label>Aim assist<input data-setting="assist" type="range" min="0" max="1" step="0.05"></label>
         <label>Aim speed<input data-setting="aimSpeed" type="range" min="0.6" max="6" step="0.1"></label>
+        <label>Touch tint<input data-setting="padTint" type="range" min="0" max="0.3" step="0.005"></label>
+        <label>FIRE size<input data-setting="fireScale" type="range" min="0.6" max="2.2" step="0.05"></label>
         <label>Teammate lines<select data-setting="mateLines"><option value="true">Show</option><option value="false">Hide</option></select></label>
         <label>Sound<select data-setting="sound"><option value="true">On</option><option value="false">Off</option></select></label>
         <label class="full customSetting">Custom level<textarea data-setting="customText" rows="4" maxlength="512" spellcheck="false"></textarea></label>
@@ -1989,7 +2143,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h1>Bubble Together</h1>
       <p class="sub tutSub">Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field</p>
       <div class="coopSteps">
-      <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> On mobile, hold the lower-left or lower-right half to aim, then tap FIRE above. P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
+      <div class="tut"><div class="n">1</div><p><b>Aim &amp; shoot.</b> <span class="tutAim"></span> P2: A/D + Space. P3: arrows + Enter. P4: J/L + K.</p></div>
       <div class="tut"><div class="n">2</div><p><b>Match 3+</b> bubbles of the same color to pop them.</p></div>
       <div class="tut"><div class="n">3</div><p>Bubbles cut off from the ceiling <b>fall</b> \u2014 big drops score big.</p></div>
       <div class="tut"><div class="n">4</div><p><b>Everyone shares the same field</b> \u2014 set up matches for each other for Assists and Team Chains.</p></div>
@@ -2086,21 +2240,37 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     };
     if (!(this.requestFullscreen || this.webkitRequestFullscreen)) fullscreenButton.hidden = true;
     syncFullscreenButton();
-    const firstHuman = () => this.players.find(q => !q.bot);
-    const wireHold = (sel, dir) => { const b = sh.querySelector(sel);
-      b.addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
-        if(this.battle&&this.settings.mode==='battle'&&!this.online){b._p=true;this.battle.human.player.held[dir]=true;return;}
-        if(this.online){b._p=true;this.setOnlineHeld(dir,true);return;} const p = firstHuman(); if (p) { b._p = p; p.held[dir] = true; this.activeP = p.i; } });
-      const off = () => { if(this.battle&&this.settings.mode==='battle'&&!this.online){if(b._p)this.battle.human.player.held[dir]=false;b._p=null;return;} if(this.online){if(b._p)this.setOnlineHeld(dir,false);b._p=null;return;} if (b._p) { b._p.held[dir] = false; b._p = null; } };
-      b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+    /* One capture-phase router owns every touch on the pad, so which control wins is a
+       property of padHit's order rather than of CSS stacking. The aim halves are transparent
+       full-height overlays, so before this a thumb landing a few pixels off FIRE turned the
+       launcher instead of shooting — the commonest mis-hit on a phone. */
+    const pad = this.padEl = sh.querySelector('.pad');
+    pad.addEventListener('pointerdown', e => {
+      const hit = this.padHit(e.clientX, e.clientY); if (!hit) return;
+      e.preventDefault(); e.stopPropagation(); this.ensureAudio();
+      try { pad.setPointerCapture(e.pointerId); } catch (_) {}
+      const hold = this._padHold = { id: e.pointerId, hit, p: null };
+      if (hit === 'fire') this.padFire();
+      else if (hit === 'swap') this.padSwap();
+      else if (hit === 'aim') { if (this.battleTargetActive()) this.battlePickAt(e); else this.padAimPoint(e); }
+      else hold.p = this.padAimHold(hit, true);
+    }, true);
+    pad.addEventListener('pointermove', e => {
+      const hold = this._padHold;
+      if (!hold || hold.id !== e.pointerId || hold.hit !== 'aim') return;
+      e.preventDefault();
+      if (this.battleTargetActive()) this.battleHoverAt(e); else this.padAimPoint(e);
+    }, true);
+    const padRelease = e => {
+      const hold = this._padHold;
+      if (!hold || (e && e.pointerId !== undefined && hold.id !== e.pointerId)) return;
+      this._padHold = null;
+      if (hold.hit === 'aim') this.padAimPoint(null);
+      else if (hold.hit === 'l' || hold.hit === 'r') this.padAimHold(hold.hit, false, hold.p);
     };
-    wireHold('.padL', 'l'); wireHold('.padR', 'r');
-    sh.querySelector('.padF').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
-      if(this.battle&&this.settings.mode==='battle'&&!this.online){this.battleFire();return;}
-      if(this.online){this.fire();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.fire(p.i); } });
-    sh.querySelector('.padS').addEventListener('pointerdown', e => { e.preventDefault(); this.ensureAudio();
-      if(this.battle&&this.settings.mode==='battle'&&!this.online){this.battleSwap();return;}
-      if(this.online){this.swapBubble();return;} const p = firstHuman(); if (p) { this.activeP = p.i; this.swapBubble(p.i); } });
+    pad.addEventListener('pointerup', padRelease, true);
+    pad.addEventListener('pointercancel', padRelease, true);
+    pad.addEventListener('pointerleave', padRelease, true); // fallback where capture is unavailable
     sh.querySelector('.lobbyStart').onclick=()=>this.sendOnline('start');
     sh.querySelector('.lobbyLeave').onclick=()=>this.leaveOnline();
     sh.querySelector('.reconnectLeave').onclick=()=>this.leaveOnline();
@@ -2296,12 +2466,20 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide','aimSpeed'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide','aimSpeed','padTint','fireScale'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+  }
+  /* Rebuild a launcher from a snapshot without stamping on the angle we are already showing:
+     the wire value becomes serverAngle and predictOwnAim / followServerAim ease onto it. Seat
+     identity has to match or the carried angle belongs to somebody else. */
+  playerFromSnapshot(p,i,old){
+    const keep=old&&old.id===p.id;
+    return {...p,i,meta:META[i],bot:false,held:keep?old.held:{},serverAngle:p.angle,
+      angle:keep?old.angle:p.angle,aimVel:keep?old.aimVel:0,aimTarget:keep?old.aimTarget:null};
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
-    const oldState=this.state;this.settings={...this.settings,...s.settings};if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>({...p,i,meta:META[i],bot:false,held:{}}));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
+    const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
+    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
@@ -2309,7 +2487,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
   }
   battleBoardFromSnapshot(summary,data,old={}){
-    const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:{},stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
+    const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},wasPlayer=old.player?.id===summary.id?old.player:null;
+    const player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:wasPlayer?wasPlayer.held:{},
+      serverAngle:rawPlayer.angle,angle:wasPlayer?wasPlayer.angle:rawPlayer.angle??0,aimVel:wasPlayer?wasPlayer.aimVel:0,aimTarget:wasPlayer?wasPlayer.aimTarget:null,
+      stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
     const rawGrid=data&&Array.isArray(data.grid)?data.grid:(old.grid?[...old.grid.values()]:[]);
     return {i:seat,id:summary.id,name:summary.name,meta:META[seat],connected:summary.connected,alive:summary.alive,place:summary.place,
       grid:new Map(rawGrid.map(b=>[key(b.r,b.c),b])),parityFlip:data?.parityFlip??old.parityFlip??0,anchorRow:data?.anchorRow??old.anchorRow??0,
@@ -2322,7 +2503,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineBattleSnapshot(s){
     if(s.tick===0){this._lastOnlineBattleEvent=0;this._lastBattleOverviewEvent={};this._battlePreviews=new Map();}
     const oldState=this.state,oldBattle=this.battle,oldById=new Map((oldBattle?.boards||[]).map(b=>[b.id,b]));
-    this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};if(this.setViewH(this.settings.viewH??H0))this.relayout();this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
+    this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
     this._battlePreviews=this._battlePreviews||new Map();if(s.overview)for(const preview of s.overview)this._battlePreviews.set(preview.id,preview);
     const summaries=[...(s.boards||[])].sort((a,b)=>a.seat-b.seat),boards=summaries.map(summary=>{
       const data=summary.id===this.onlinePlayerId?s.self:this._battlePreviews.get(summary.id),old=oldById.get(summary.id)||{};
@@ -2340,15 +2521,33 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
   applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='swap'){const p=this.players[d.player];if(p){if(p.cur)p.cur.swapT=this.now;if(p.next)p.next.swapT=this.now;}this.sfx('swap');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
-  setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this.sendOnline('input',{seq:++this.onlineSeq,held:this._onlineHeld});}
+  setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
+  /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
+     than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at
+     the server's own 20 Hz snapshot cadence; local prediction covers the gap between sends.
+     Finger-up sends null, which puts the launcher back on the held-direction stream. */
+  setOnlineAim(angle){this._onlineAimWant=angle;this.flushOnlineAim();}
+  flushOnlineAim(){
+    const want=this._onlineAimWant;if(want===undefined)return;
+    const cur=this._onlineAim??null;
+    if(want===null?cur===null:cur!==null&&Math.abs(want-cur)<0.005)return;
+    const now=performance.now();if(now-(this._onlineAimAt||0)<50)return;
+    this._onlineAim=want;this._onlineAimAt=now;this.sendOnlineInput();
+  }
+  sendOnlineInput(){this.sendOnline('input',{seq:++this.onlineSeq,held:this._onlineHeld||{l:false,r:false},aim:this._onlineAim??null});}
   syncOnlineControls(){if(!this.online)return;const host=this.isOnlineHost(),sh=this.shadowRoot;sh.querySelector('.onlinePause').style.display=host?'block':'none';sh.querySelector('.onlineRestart').style.display=host?'block':'none';sh.querySelector('.onlinePause').textContent=this.state==='paused'?'Resume':'Pause';sh.querySelector('.pause .resume').style.display=host?'block':'none';sh.querySelector('.pause .sub').textContent=host?'Press the button to resume for everyone':'Waiting for the host to resume';sh.querySelector('.onlineRoomLabel').textContent='Room '+(this.onlineRoom?.code||'');}
   setNetworkState(text,bad=false){const el=this.shadowRoot.querySelector('.netState');el.textContent=text;el.classList.toggle('bad',bad);}
   leaveOnline(){this._leaving=true;this.sendOnline('leave');if(this.ws)this.ws.close();this.clearOnlineSession();this.returnHome();setTimeout(()=>this._leaving=false,0);}
   clearOnlineSession(){try{localStorage.removeItem('bt_online_session');}catch(_){}this._onlineToken=null;this._onlineCode=null;}
+  /* The host owns the control feel for the room, so a snapshot's tint and FIRE size have to
+     reach the CSS variables the way a local slider would. The aim mode is not in room state
+     and so is never touched here. */
+  applyRoomControls(){this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
   /* Snapshots merge the room's settings into ours, so leaving has to hand the device
-     preferences back to their owner: otherwise the host's aim speed silently becomes yours
-     for every local game that follows, overriding what you saved. */
-  restoreLocalPrefs(){Object.assign(this.settings,{aimSpeed:2.4},this.loadLocalPrefs());this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
+     preferences back to their owner: otherwise the host's controls silently become yours for
+     every local game that follows, overriding what you saved. The shipped defaults come
+     first, so a room value is dropped even for a player who never saved a preference. */
+  restoreLocalPrefs(){Object.assign(this.settings,{aimSpeed:2.4,padTint:0.025,fireScale:1},this.loadLocalPrefs());this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
   returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.measure();this.resetGame();this.state='home';}
   escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
@@ -2383,7 +2582,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Aim speed</span><input type="range" class="as" min="0.6" max="6" step="0.1"><span class="val asv"></span></div>
 <div class="row"><span>Touch tint</span><input type="range" class="pt" min="0" max="0.3" step="0.005"><span class="val ptv"></span></div>
 <div class="row"><span>FIRE size</span><input type="range" class="fs" min="0.6" max="2.2" step="0.05"><span class="val fsv"></span></div>
-<div style="color:#9db8d4;font-size:12px;margin-top:-2px">touch tint: how strongly the aim halves glow blue while held</div>
+<div style="color:#9db8d4;font-size:12px;margin-top:-2px">touch tint: how strongly the aim halves glow blue while held · in an online room the host sets aim speed, tint and FIRE size for everyone</div>
+<div class="row"><span>Touch aiming</span><div class="seg amSeg">
+  <button data-am="halves">Left / right</button><button data-am="point">Where I press</button></div></div>
+<div style="color:#9db8d4;font-size:12px;margin-top:-2px">where I press: drag anywhere on the board and the cannon swings to your finger · FIRE still shoots · touch screens only, and it stays yours in online rooms</div>
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full path</button><button data-g="0.5">Short</button><button data-g="0.25">Tiny</button></div></div>
 <div class="row tlRow"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
@@ -2392,7 +2594,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <button class="btn ghost resetBtn">Reset stage</button>
 <button class="btn ghost howBtn">How to play</button>
 <h3>Controls</h3>
-<ul class="ctrlList">${META.slice(0,4).map(m => `<li><b style="color:${m.accent}">${m.name}</b> \u2014 ${m.ctrl}</li>`).join('')}</ul>`;
+<ul class="ctrlList">${META.slice(0,4).map((m, i) => `<li${i ? '' : ' class="ctrlP1"'}><b style="color:${m.accent}">${m.name}</b> \u2014 <span class="ctrlText">${m.ctrl}</span></li>`).join('')}</ul>`;
     const segWire = (sel, get, set) => el.querySelectorAll(sel + ' button').forEach(b => {
       b.onclick = () => { set(b); syncAll(); };
     });
@@ -2418,6 +2620,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelector('.pt').value = S.padTint;
       el.querySelector('.ptv').textContent = S.padTint ? (S.padTint * 100).toFixed(1) + '%' : 'off';
       el.querySelector('.fs').value = S.fireScale; el.querySelector('.fsv').textContent = S.fireScale.toFixed(2) + '×';
+      el.querySelectorAll('.amSeg button').forEach(b => b.classList.toggle('on', b.dataset.am === S.aimMode));
+      const hint = AIM_HINT[S.aimMode] || AIM_HINT.halves;
+      el.querySelector('.ctrlP1 .ctrlText').textContent = hint.ctrl;
+      const tutAim = this.shadowRoot.querySelector('.tutAim'); if (tutAim) tutAim.textContent = hint.tut;
       const isB = S.mode === 'battle';
       el.querySelector('.fieldWrap').style.display = isB ? 'none' : '';
       el.querySelector('.tlRow').style.display = isB ? 'none' : '';
@@ -2463,6 +2669,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     segWire('.tlSeg', null, b => { S.mateLines = +b.dataset.v === 1; });
     segWire('.glSeg', null, b => { S.guide = +b.dataset.g; });
     segWire('.sndSeg', null, b => { S.sound = +b.dataset.v === 1; if (S.sound) this.ensureAudio(); });
+    segWire('.amSeg', null, b => { S.aimMode = b.dataset.am; this.applyTouchStyle(); this.saveLocalPrefs(); });
     const slider = (cls, fmt, set) => { const s = el.querySelector(cls);
       s.oninput = () => { set(parseFloat(s.value)); syncAll(); }; };
     slider('.rl', 0, v => S.reload = v);

@@ -200,8 +200,21 @@ test('aim speed is a room setting that scales how fast the launcher swings', () 
   assert.ok(Math.abs(swing(4.8) - 2 * swing(2.4)) < 1e-9, 'double the setting, double the swing');
   assert.ok(swing(0.6) > 0 && swing(0.6) < swing(2.4));
   // A missing or junk value falls back to the speed the game shipped with.
-  const legacy = new OnlineGame({ ...DEFAULT_SETTINGS, aimSpeed:undefined }, roster, 5);
-  const from = legacy.players[0].angle;
-  legacy.input('a', { r:true }); legacy.update(1/60);
-  assert.ok(Math.abs(legacy.players[0].angle - from - 2.4/60) < 1e-9);
+  assert.ok(Math.abs(swing(undefined) - swing(2.4)) < 1e-9);
+  assert.ok(Math.abs(swing('nonsense') - swing(2.4)) < 1e-9);
+});
+
+test('point-to-aim sends an angle, and the launcher glides onto it', () => {
+  const game = new OnlineGame({ ...DEFAULT_SETTINGS }, roster, 5);
+  game.input('a', {}, 0.8);
+  for (let i = 0; i < 120; i++) game.update(1/60);
+  assert.ok(Math.abs(game.players[0].angle - 0.8) < 0.01);
+  // Out of range clamps to the launcher's limit; junk is ignored and hands back to held input.
+  game.input('a', {}, 99);
+  for (let i = 0; i < 200; i++) game.update(1/60);
+  assert.ok(Math.abs(game.players[0].angle - 1.22) < 1e-6);
+  game.input('a', { l:true }, 'not a number');
+  assert.equal(game.players[0].aimTarget, null);
+  for (let i = 0; i < 30; i++) game.update(1/60);
+  assert.ok(game.players[0].angle < 1.22);
 });

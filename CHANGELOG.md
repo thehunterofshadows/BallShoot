@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- FIRE now wins the touch. The aim halves are transparent overlays covering the bottom half of
+  the board, so a thumb landing a few pixels off FIRE turned the launcher instead of shooting.
+  One capture-phase router on the pad decides every press in a declared order — an exact hit
+  first, so a deliberate swap tap is never stolen, then near misses, where FIRE outranks
+  everything within a halo that scales with the board and the FIRE size setting.
+- Aiming carries momentum instead of switching between full speed and stopped. The barrel
+  ramps up over about a tenth of a second and brakes four times harder, so it has weight
+  without losing precision, and it no longer winds up against the launcher's limits.
+- Fixed online aiming feeling stepped. The client predicted at a hardcoded 2.4× while the
+  server integrated at the room's aim speed, and every 50 ms snapshot overwrote the angle
+  outright. Prediction now uses the room's setting and runs the same integrator the server
+  does — byte-identical, and guarded by a test — so a hold is pure prediction and the server
+  lands exactly where the barrel already is when the finger lifts. Only an idle launcher is
+  reconciled, and other players' barrels interpolate rather than teleporting between snapshots.
+- Touch tint and FIRE size join aim speed as room settings: the host sets one set of controls
+  for everyone in the lobby, and leaving hands each device its own saved values back.
+- Added a second way to aim on touch screens. `Touch aiming: Where I press` replaces the two
+  halves with a surface over the whole board — drag and the cannon swings to your finger,
+  FIRE still shoots. Online it ships an absolute angle at the server's own snapshot rate
+  rather than two held directions. Which scheme you like is a device preference, so unlike
+  the rest of the control feel it is never overridden by a room.
+
 - Shortened aim guides are now a fixed-length stub off the barrel instead of a share of the
   flight path. A percentage grew and shrank with how far the shot had to travel, which
   leaked the very distance information the setting withholds and left the shortest guide
