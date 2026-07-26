@@ -53,10 +53,9 @@ test('mobile touch controls scale with the board and use a subtle pressed tint',
   assert.match(component, /setProperty\('--padInk'/);
 });
 
-test('the FIRE button scales as a whole and pushes the swap button clear', () => {
+test('the FIRE button scales as a whole', () => {
   assert.match(component, /\.pad \.padF\{[^}]*padding:calc\(12px \* var\(--u,1\) \* var\(--fireScale,1\)\)/);
   assert.match(component, /\.pad \.padF\{[^}]*font-size:calc\(clamp\(11px,calc\(14px \* var\(--u,1\)\),19px\) \* var\(--fireScale,1\)\)/);
-  assert.match(component, /\.pad \.padS\{[^}]*translateX\(calc\(-50% \+ 92px \* var\(--u,1\) \* var\(--fireScale,1\)\)\)/);
   assert.match(component, /fireScale:1/);
   assert.match(component, /setProperty\('--fireScale'/);
   // The aim zones stay in the bottom half of the board at every board shape, so the
@@ -71,8 +70,8 @@ test('FIRE outranks the aim halves, and a near miss still fires', () => {
   const order = component.match(/padHit\(x, y\) \{[\s\S]*?\n  \}/);
   assert.ok(order, 'padHit not found');
   const picks = [...order[0].matchAll(/return '(\w+)'/g)].map(m => m[1]);
-  assert.deepEqual(picks, ['swap','fire','fire','swap','aim','l','r'],
-    'exact hits first, keeping swap; then near misses, where FIRE outranks everything');
+  assert.deepEqual(picks, ['fire','fire','aim','l','r'],
+    'an exact FIRE hit, then a near miss, and only then the aim surfaces underneath');
   // Slop grows with the button and only exists where the overlays do.
   assert.match(component, /padSlop\(\) \{[\s\S]*?pointer: coarse[\s\S]*?22 \* u \* \(this\.settings\.fireScale \|\| 1\)/);
   // A single capture-phase listener owns the pad; the per-button pointerdown wiring is gone.

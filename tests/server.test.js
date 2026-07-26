@@ -24,6 +24,37 @@ test('two websocket clients create, join, start, input, and receive one authorit
   a.ws.terminate();b.ws.terminate();app.wss.close();await new Promise(resolve=>app.server.close(resolve));
 });
 
+test('a cleared level holds the whole room until both clients send level_ready', async () => {
+  const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));const url=`ws://127.0.0.1:${app.server.address().port}/ws`;
+  const a=client(url),b=client(url);await Promise.all([a.opened,b.opened]);
+  a.send({type:'create',name:'Alpha'});const aj=await a.next('joined');
+  b.send({type:'join',code:aj.room.code,name:'Bravo'});await b.next('joined');
+  await a.next('lobby_state');
+  a.send({type:'update_settings',revision:aj.room.revision,settings:{...aj.room.settings,mode:'clear',level:0}});
+  await a.next('lobby_state');
+  a.send({type:'start'});await Promise.all([a.next('match_started'),b.next('match_started')]);
+
+  // Clear the board the way the game does, straight on the authority the room is running.
+  const game=require('../server/lobbies').rooms.get(aj.room.code).game;
+  game.grid=new Map();game.batch=[];game.resolveBatch();
+  assert.equal(game.state,'levelup');
+  const held=await nextWhere(b,'snapshot',m=>m.snapshot.state==='levelup');
+  assert.equal(held.snapshot.levelSummary.next,1,'the card names the level up next');
+  assert.equal(held.snapshot.levelSummary.players.length,2,'one stat row per player');
+  assert.deepEqual(held.snapshot.levelReady,[],'nobody has continued yet');
+  assert.ok(held.snapshot.levelSecs>0,'the backstop is counting');
+
+  a.send({type:'level_ready'});
+  const one=await nextWhere(b,'snapshot',m=>(m.snapshot.levelReady||[]).length===1);
+  assert.equal(one.snapshot.state,'levelup','one of two is not enough to start');
+  b.send({type:'level_ready'});
+  const went=await nextWhere(b,'snapshot',m=>m.snapshot.state==='play');
+  assert.equal(went.snapshot.settings.level,1,'the last ready starts the next level');
+  assert.equal(went.snapshot.levelSummary,null,'and the card is cleared');
+
+  a.ws.terminate();b.ws.terminate();app.wss.close();await new Promise(resolve=>app.server.close(resolve));
+});
+
 test('the leaderboard endpoint reads and writes over plain HTTP', async () => {
   // Plain HTTP, not the room socket, because Local offline play never opens one.
   const app=createServer();await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));

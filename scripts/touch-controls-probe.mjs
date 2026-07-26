@@ -56,12 +56,11 @@ const layout = await page.evaluate(() => {
     return { x: r.left + r.width/2, y: r.top + r.height/2, left: r.left, top: r.top, right: r.right, bottom: r.bottom }; };
   const b = sh.querySelector('.gameCol').getBoundingClientRect();
   return { coarse: matchMedia('(pointer: coarse)').matches, slop: el.padSlop(),
-    fire: box('.padF'), swap: box('.padS'), board: { left: b.left, top: b.top, w: b.width, h: b.height } };
+    fire: box('.padF'), board: { left: b.left, top: b.top, w: b.width, h: b.height } };
 });
 check('coarse-pointer aim overlays are active with slop', layout.coarse && layout.slop > 0, `slop ${layout.slop.toFixed(1)}px`);
 
-/* 1. A tap just outside every edge of FIRE must fire — never turn the launcher, and never be
-   claimed by the swap button unless it lands squarely on it. */
+/* 1. A tap just outside every edge of FIRE must fire, never turn the launcher. */
 for (const [edge, dx, dy] of [['left', -1, 0], ['right', 1, 0], ['below', 0, 1], ['above', 0, -1]]) {
   const off = layout.slop * 0.6;
   const x = dx < 0 ? layout.fire.left - off : dx > 0 ? layout.fire.right + off : layout.fire.x;
@@ -75,20 +74,34 @@ for (const [edge, dx, dy] of [['left', -1, 0], ['right', 1, 0], ['below', 0, 1],
   await page.waitForTimeout(1500); // reload
 }
 
-/* 2. Held aiming: one constant rate, and it stops dead on release. */
+/* 2. Held aiming ramps in: a tap is a nudge, a hold is a sweep, and it stops dead on release.
+   The flat rate this replaced made the shortest possible tap fifteen degrees, which is what
+   the launcher "snapping between positions" actually was. */
 {
+  const half = [layout.board.left + 30, layout.board.top + layout.board.h * 0.9];
   await page.evaluate(() => { window.g().players[0].angle = 0; });
-  await touchDown(layout.board.left + 30, layout.board.top + layout.board.h * 0.9);
+  await touchDown(...half); await page.waitForTimeout(100); await touchUp();
+  await page.waitForTimeout(150);
+  const nudge = Math.abs((await read()).angle);
+  check('a 100 ms tap is a one-column nudge, not a quarter of the arc',
+    nudge > 0.02 && nudge < 0.12, `${nudge.toFixed(3)} rad`);
+
+  await page.evaluate(() => { window.g().players[0].angle = 0; });
+  await touchDown(...half);
   const trace = [];
   for (let i = 0; i < 8; i++) { await page.waitForTimeout(60); trace.push((await read()).angle); }
-  const atRelease = (await read()).angle;
   await touchUp();
+  // Read after the lift, not before it: waitForTimeout is wall-clock and the barrel is still
+  // legitimately turning between a pre-release read and the release itself.
+  const atRelease = (await read()).angle;
   await page.waitForTimeout(400);
   const settled = (await read()).angle;
   // Drop any step that ran into the launcher's limit; a clamped frame is short by design.
   const steps = trace.slice(1).map((a, i) => a - trace[i]).filter((_, i) => trace[i + 1] > -1.219);
-  const spread = Math.max(...steps) - Math.min(...steps);
-  check('holding an aim half turns at a steady rate', trace[0] < 0 && spread < 0.02,
+  const early = Math.abs(steps[0]), late = Math.abs(steps[steps.length - 1]);
+  // The sample interval is wall-clock, so compare shapes rather than absolute rates.
+  check('holding accelerates from the fine rate up to the full sweep',
+    trace[0] < 0 && late > early * 1.8 && late < early * 6,
     `per-60ms steps ${steps.map(s => s.toFixed(3)).join(' ')}`);
   check('and it stops the instant the finger lifts', Math.abs(settled - atRelease) < 1e-9,
     `coast ${(settled - atRelease).toExponential(1)} rad`);
@@ -162,13 +175,16 @@ check('the control scheme persists per device', persisted.mode === 'point' && pe
     el.online = true; el.state = 'play'; el.onlinePlayerId = 'me'; el.activeP = 0;
     el.players = [{ ...el.players[0], id:'me', angle:0, aimTarget:null, held:{l:false,r:false}, reload:0 }];
     const dt = 1/60, lag = 6, inputs = [], samples = [];
-    const ghost = { angle: 0 };
+    // The stand-in server runs the same ramp the client predicts, because the real one does.
+    const ghost = { angle: 0, t: 0 };
+    const ghostRate = t => 2.4 * (0.25 + 0.75 * (k => k*k*(3-2*k))(Math.min(1, Math.max(0, (t - 0.16) / 0.40))));
     let reversals = 0, last = 0, maxJump = 0;
     for (let i = 0; i < 150; i++) {
       const holding = i < 60;                        // finger down, then released
       inputs.push(holding);
       const echo = inputs[Math.max(0, i - lag)];     // what the server is acting on right now
-      if (echo) ghost.angle = Math.max(-1.22, ghost.angle - 2.4 * dt);
+      if (echo) { ghost.t += dt; ghost.angle = Math.max(-1.22, ghost.angle - ghostRate(ghost.t) * dt); }
+      else ghost.t = 0;
       if (i % 3 === 0) el.players[0].serverAngle = ghost.angle;   // 20 Hz snapshots
       el._onlineHeld = { l: holding, r: false };
       el.updateOnlineVisuals(dt);

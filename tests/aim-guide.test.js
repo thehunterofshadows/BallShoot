@@ -85,13 +85,27 @@ const run = (p, seconds, speed = 2.4, dt = 1 / 60) => {
   return p;
 };
 
-test('held aim turns at one constant rate and stops the frame it is released', () => {
-  // Puzzle Bobble's launcher has no inertia. Momentum in either direction — a ramp on the way
-  // in or a coast on the way out — costs the one-degree correction the whole game is aimed at.
+test('a tap is a nudge, a hold is a sweep, and release stops on the frame', () => {
+  // One flat rate cannot do both jobs: at 2.4 rad/s the shortest tap a thumb can make is
+  // already fifteen degrees, so there is nothing to aim with — only overshoot and correct.
+  // A fresh press turns at a quarter speed and eases up to the setting from there.
+  const fine = 2.4 * 0.25;
   const p = { angle: 0, held: { l: false, r: true } };
   const step = [];
-  for (let i = 0; i < 12; i++) { const was = p.angle; aimTick(p, 1/60, 2.4); step.push(p.angle - was); }
-  for (const d of step) assert.ok(Math.abs(d - 2.4/60) < 1e-12, 'every frame moves the same amount');
+  for (let i = 0; i < 9; i++) { const was = p.angle; aimTick(p, 1/60, 2.4); step.push(p.angle - was); }
+  for (const d of step) assert.ok(Math.abs(d - fine/60) < 1e-12, 'the first 0.16s is all fine rate');
+  // A 110 ms tap is about one bubble column, not eight.
+  const tap = run({ angle: 0, held: { l: false, r: true } }, 0.11).angle;
+  assert.ok(tap > 0.05 && tap < 0.08, `a tap moves ${tap.toFixed(3)} rad`);
+  // Held on, the rate climbs and then holds at the setting. Start at the far limit so the
+  // sweep has somewhere to go and no frame is short because it was clamped.
+  const long = run({ angle: -1.22, held: { l: false, r: true } }, 1);
+  const was = long.angle; aimTick(long, 1/60, 2.4);
+  assert.ok(Math.abs((long.angle - was) - 2.4/60) < 1e-12, 'a long hold runs at the full setting');
+  // The rate never overshoots the setting on the way up.
+  const q = { angle: -1.22, held: { l: false, r: true } };
+  for (let i = 0; i < 120; i++) { const at = q.angle; aimTick(q, 1/60, 2.4);
+    assert.ok(q.angle - at <= 2.4/60 + 1e-12, 'never faster than the setting'); }
   // Release: it stops exactly where it was, with nothing carried into later frames.
   p.held.r = false;
   const atRelease = p.angle;
@@ -99,13 +113,22 @@ test('held aim turns at one constant rate and stops the frame it is released', (
   assert.equal(p.angle, atRelease, 'no coast past where you let go');
 });
 
-test('aim stops at the launcher limits and turns back immediately', () => {
+test('aim stops at the launcher limits and turns back from the fine rate', () => {
   const p = { angle: 0, held: { l: false, r: true } };
   run(p, 5);
   assert.ok(Math.abs(p.angle - 1.22) < 1e-9);
+  // Changing direction is a new press, so it starts fine again — that is what makes the
+  // small correction at the end of a sweep possible at all.
   p.held = { l: true, r: false };
   aimTick(p, 1/60, 2.4);
-  assert.ok(Math.abs(p.angle - (1.22 - 2.4/60)) < 1e-12, 'full rate on the first frame back');
+  assert.ok(Math.abs(p.angle - (1.22 - 2.4 * 0.25 / 60)) < 1e-12, 'fine rate on the first frame back');
+});
+
+test('holding both directions cancels rather than fighting itself', () => {
+  const p = { angle: 0.3, held: { l: true, r: true } };
+  run(p, 0.5);
+  assert.equal(p.angle, 0.3, 'no net turn');
+  assert.equal(p.heldT, 0, 'and no ramp is banked while cancelled');
 });
 
 test('point-to-aim puts the barrel exactly where the finger is', () => {

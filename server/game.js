@@ -6,6 +6,7 @@ const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108;
    11 columns, but the world height comes from the room's viewH so the whole table
    shares one danger line no matter what each player's device looks like. */
 const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP = 92;
+const LEVEL_READY_SECS = 60; // backstop on the between-levels ready gate
 const KINDS = ['R', 'Y', 'G', 'B'];
 const LEVELS = [
   ["GGBYRGBYYGB","BRRGBYRGBY","RGGYRGBYRGB","BYRBBYRGBY","RGBYYGBYRGB","BYRGBYRGBY","RGBY...YRGB","BYRG...GBY","RGB.....RGB","BY.......Y"],
@@ -23,20 +24,36 @@ const geom = vh => {
 /* Shared aim integrator, mirrored verbatim in coop-bubbles.js so the client's prediction and
    this authority agree frame for frame.
 
-   Aiming works the way Puzzle Bobble has always done it: hold a direction and the launcher
-   turns at one constant rate, let go and it stops on that frame. No ramp to wait through and
-   no coast past where you stopped — a bubble shooter is won on one-degree corrections, and
-   any momentum in the barrel takes those away from the player.
+   A held direction turns the launcher, and how fast depends on how long it has been held.
+   One flat rate cannot serve both jobs the barrel has: at 2.4 rad/s the whole ±1.22 arc
+   sweeps in a second, which is right for crossing the board and hopeless for picking a
+   column, because the shortest tap a thumb can make is already fifteen degrees. So there is
+   nothing to aim with — only overshoot and correct, which is what the launcher snapping
+   between positions actually was. A fresh press turns at a quarter speed, and the rate eases
+   up to the full setting once you have held it long enough to mean a sweep: taps are nudges,
+   holds are sweeps, and the setting still scales both.
+
+   This is a ramp in, not momentum. Release still stops the barrel on that frame — a coast
+   past where you let go costs the one-degree correction the game is won on.
 
    With p.aimTarget set (point-to-aim) the barrel simply points where the finger is, the way
    a stylus port works: the aim line follows the touch rather than chasing it. */
 const AIM_MAX = 1.22;
+const AIM_FINE = 0.25;   // fraction of the aim speed a fresh press turns at
+const AIM_SLOW_T = 0.16; // seconds held at the fine rate, so a tap stays a nudge
+const AIM_RAMP_T = 0.40; // seconds to ease from the fine rate up to the full setting
 const aimTick = (p, dt, aimSpeed) => {
-  if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); return; }
-  if (!(dt > 0) || !p.held) return;
-  const spd = (Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4) * dt;
-  if (p.held.l) p.angle = clamp(p.angle - spd, -AIM_MAX, AIM_MAX);
-  if (p.held.r) p.angle = clamp(p.angle + spd, -AIM_MAX, AIM_MAX);
+  if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); p.heldT = 0; p.heldDir = 0; return; }
+  const dir = (p.held && p.held.l ? -1 : 0) + (p.held && p.held.r ? 1 : 0);
+  if (!(dt > 0) || !dir) { p.heldT = 0; p.heldDir = 0; return; }
+  // Turning back is a new press: without this the correction at the end of a sweep would
+  // start at full speed, which is the overshoot the ramp exists to stop.
+  if (p.heldDir !== dir) { p.heldT = 0; p.heldDir = dir; }
+  const base = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4;
+  const t = (p.heldT = p.heldT + dt);
+  const k = t <= AIM_SLOW_T ? 0 : Math.min(1, (t - AIM_SLOW_T) / AIM_RAMP_T);
+  const rate = base * (AIM_FINE + (1 - AIM_FINE) * k * k * (3 - 2 * k));
+  p.angle = clamp(p.angle + dir * rate * dt, -AIM_MAX, AIM_MAX);
 };
 
 function mulberry32(seed) {
@@ -58,6 +75,7 @@ class OnlineGame {
     this.battle = this.settings.mode === 'battle';
     this.tickId = 0;
     this.state = 'play';
+    this.levelSummary = null; this.levelReadyIds = new Set(); this.levelTimer = 0;
     this.reset();
   }
 
@@ -193,7 +211,7 @@ class OnlineGame {
   }
   hypoSize(r, c, kind) { return this.matchGroup(r, c, kind).size; }
 
-  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; } } }
+  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.heldT = 0; this.checkLevelGate(); } } }
   /* `aim` is the point-to-aim absolute angle; anything that is not a finite number — including
      the client clearing it on finger-up — puts the launcher back on the held-direction stream. */
   input(id, held, aim) {
@@ -212,19 +230,18 @@ class OnlineGame {
     this.emit('launch', { player: p.i, x: p.x, angle: a });
     return true;
   }
-  /* Exchange the loaded bubble with the on-deck one. Gated on the same reload timer
-     as fire() so it cannot be used as a free re-roll mid-cooldown. */
-  swap(id) {
-    const p = this.players.find(q => q.id === id);
-    if (!p || !p.connected || this.state !== 'play' || this.paused || this.inputLocked || p.reload > 0) return false;
-    if (!p.cur || !p.next) return false;
-    const held = p.cur; p.cur = p.next; p.next = held;
-    this.emit('swap', { player: p.i });
-    return true;
-  }
+  /* There is no swap: a player shoots the colour they were dealt. The queue is a constraint
+     to play around rather than one to reorder. */
   emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
 
   update(dt) {
+    // Between levels the board is frozen but the backstop keeps counting, so a room whose
+    // last unready player has walked away still moves on.
+    if (this.state === 'levelup') {
+      this.tickId++;
+      if (this.levelTimer > 0 && (this.levelTimer -= Math.min(0.05, dt)) <= 0) { this.levelTimer = 0; this.checkLevelGate(); }
+      return;
+    }
     if (this.state !== 'play' || this.paused) return;
     dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*dt, 80*dt);
@@ -322,13 +339,50 @@ class OnlineGame {
     const headroom = Math.max(0, this.settings.missMax - this.missMeter) / Math.max(1, this.settings.missMax);
     return Math.round(accuracy * 1500) + Math.round(headroom * 500);
   }
+  /* A cleared level is an intermission, not a cut. The run pauses on a scoreboard and the
+     next level starts when every connected player has said they are ready — the whole point
+     of a co-op room is that nobody is dropped into a fresh board still reading the last one.
+     LEVEL_READY_SECS is the backstop: one player who walks away must not freeze the room. */
   clearLevel() {
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
     this.score += bonus;
     if (next < 0) { this.emit('level_cleared', { level: from, bonus, final: true }); return this.end(true); }
     this.emit('level_cleared', { level: from, next, bonus, final: false });
+    this.state = 'levelup';
+    this.levelReadyIds = new Set();
+    this.levelTimer = LEVEL_READY_SECS;
+    this.levelSummary = {
+      from, next, bonus, score: this.score,
+      players: this.players.map(p => ({ i: p.i, stats: { ...p.stats } })),
+    };
+  }
+  /* Anyone still connected can hold the gate; a disconnect releases it, so the check runs
+     again from disconnect() as well as from here. */
+  levelReadyCount() {
+    const live = this.players.filter(p => p.connected);
+    return { count: live.filter(p => this.levelReadyIds.has(p.id)).length, total: live.length };
+  }
+  levelReady(id) {
+    if (this.state !== 'levelup') return false;
+    const p = this.players.find(q => q.id === id);
+    if (!p || !p.connected) return false;
+    this.levelReadyIds.add(id);
+    this.checkLevelGate();
+    return true;
+  }
+  checkLevelGate() {
+    if (this.state !== 'levelup') return;
+    const { count, total } = this.levelReadyCount();
+    if (total > 0 && count < total && this.levelTimer > 0) return;
+    this.startNextLevel();
+  }
+  startNextLevel() {
+    const next = this.levelSummary ? this.levelSummary.next : this.nextLevelIndex();
+    this.levelSummary = null; this.levelReadyIds = new Set(); this.levelTimer = 0;
+    this.state = 'play';
     this.settings.level = next;
     this.reset({ score: this.score, players: this.players });
+    this.emit('level_started', { level: next });
   }
   refillBattleBoard(){
     this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;this.anchorRow=0;this.pressure=0;
@@ -392,6 +446,9 @@ class OnlineGame {
       players:this.players.map(p=>({...p,held:undefined,aimTarget:undefined})), score:this.score, dispScore:this.dispScore,
       missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,
+      levelSummary:this.levelSummary||null,
+      levelReady:this.levelSummary?[...this.levelReadyIds]:null,
+      levelSecs:this.levelSummary?Math.max(0,Math.ceil(this.levelTimer)):null,
     };
   }
   snapshotFor(){return this.snapshot();}

@@ -81,16 +81,16 @@ const LEVELS = [
 /* P1's touch controls depend on the aim mode, so its hint is filled in from AIM_HINT rather
    than fixed here; the keyboard launchers never change. */
 const AIM_HINT = {
-  halves: { ctrl:'Touch the lower left / right to aim · FIRE to shoot · ⇄ swap',
+  halves: { ctrl:'Touch the lower left / right to aim · FIRE to shoot',
     tut:'On mobile, hold the lower-left or lower-right half to aim, then tap FIRE above.' },
-  point: { ctrl:'Drag anywhere on the board to aim · FIRE to shoot · ⇄ swap',
+  point: { ctrl:'Drag anywhere on the board to aim · FIRE to shoot',
     tut:'On mobile, drag anywhere on the board and the cannon swings to your finger, then tap FIRE.' },
 };
 const META = [
   { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:AIM_HINT.halves.ctrl },
-  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · S swap' },
-  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire · ↓ swap' },
-  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire · I swap' },
+  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire' },
+  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire' },
+  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire' },
   { name:'P5', accent:'#5fb7ff', trail:'solid', icon:'tri',    ctrl:'battle royale · bot or online' },
   { name:'P6', accent:'#9ad34d', trail:'dots',  icon:'square', ctrl:'battle royale · bot or online' },
   { name:'P7', accent:'#ff8a75', trail:'rings', icon:'ring',   ctrl:'battle royale · bot or online' },
@@ -130,23 +130,39 @@ const trimPath = (pts, maxLen) => {
 /* Shared aim integrator, mirrored verbatim in server/game.js so the client's prediction and
    the server's authority agree frame for frame.
 
-   Aiming works the way Puzzle Bobble has always done it: hold a direction and the launcher
-   turns at one constant rate, let go and it stops on that frame. No ramp to wait through and
-   no coast past where you stopped — a bubble shooter is won on one-degree corrections, and
-   any momentum in the barrel takes those away from the player.
+   A held direction turns the launcher, and how fast depends on how long it has been held.
+   One flat rate cannot serve both jobs the barrel has: at 2.4 rad/s the whole ±1.22 arc
+   sweeps in a second, which is right for crossing the board and hopeless for picking a
+   column, because the shortest tap a thumb can make is already fifteen degrees. So there is
+   nothing to aim with — only overshoot and correct, which is what the launcher snapping
+   between positions actually was. A fresh press turns at a quarter speed, and the rate eases
+   up to the full setting once you have held it long enough to mean a sweep: taps are nudges,
+   holds are sweeps, and the setting still scales both.
+
+   This is a ramp in, not momentum. Release still stops the barrel on that frame — a coast
+   past where you let go costs the one-degree correction the game is won on.
 
    With p.aimTarget set (point-to-aim) the barrel simply points where the finger is, the way
    a stylus port works: the aim line follows the touch rather than chasing it. */
 const AIM_MAX = 1.22;
+const AIM_FINE = 0.25;   // fraction of the aim speed a fresh press turns at
+const AIM_SLOW_T = 0.16; // seconds held at the fine rate, so a tap stays a nudge
+const AIM_RAMP_T = 0.40; // seconds to ease from the fine rate up to the full setting
 /* 'halves' holds the lower-left or lower-right of the board to turn; 'point' aims the barrel
    at wherever the finger is. Both feed the same integrator below. */
 const AIM_MODES = ['halves', 'point'];
 const aimTick = (p, dt, aimSpeed) => {
-  if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); return; }
-  if (!(dt > 0) || !p.held) return;
-  const spd = (Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4) * dt;
-  if (p.held.l) p.angle = clamp(p.angle - spd, -AIM_MAX, AIM_MAX);
-  if (p.held.r) p.angle = clamp(p.angle + spd, -AIM_MAX, AIM_MAX);
+  if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); p.heldT = 0; p.heldDir = 0; return; }
+  const dir = (p.held && p.held.l ? -1 : 0) + (p.held && p.held.r ? 1 : 0);
+  if (!(dt > 0) || !dir) { p.heldT = 0; p.heldDir = 0; return; }
+  // Turning back is a new press: without this the correction at the end of a sweep would
+  // start at full speed, which is the overshoot the ramp exists to stop.
+  if (p.heldDir !== dir) { p.heldT = 0; p.heldDir = dir; }
+  const base = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4;
+  const t = (p.heldT = p.heldT + dt);
+  const k = t <= AIM_SLOW_T ? 0 : Math.min(1, (t - AIM_SLOW_T) / AIM_RAMP_T);
+  const rate = base * (AIM_FINE + (1 - AIM_FINE) * k * k * (3 - 2 * k));
+  p.angle = clamp(p.angle + dir * rate * dt, -AIM_MAX, AIM_MAX);
 };
 /* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
    a fold animation mid-frame — cannot churn the world height on every resize tick. */
@@ -392,23 +408,10 @@ class CoopBubbles extends HTMLElement {
       g: 0, t: this.now, life: 0.35, color: 'rgba(255,255,255,0.85)', sz: rnd(4, 8), soft: true });
     this.sfx('launch');
   }
-  /* Exchange the loaded bubble with the on-deck one. Mirrors OnlineGame.swap: gated on
-     the same reload timer as fire(), so it is never a free re-roll mid-cooldown. */
-  swapBubble(i) {
-    if (this.online) { this.sendOnline('swap'); return; }
-    const p = this.players[i === undefined ? this.activeP : i];
-    if (!p || this.state !== 'play' || p.reload > 0 || !p.cur || !p.next) return;
-    const held = p.cur; p.cur = p.next; p.next = held;
-    p.cur.swapT = this.now; p.next.swapT = this.now;
-    this.sfx('swap');
-  }
-  battleSwap() {
-    const bt = this.battle;
-    if (!bt || this.state !== 'play') return;
-    if (bt.targeting && bt.targeting.by === bt.human.i) return;
-    const b = bt.human; if (!b.alive) return;
-    this.bindBoard(b); this.swapBubble(0); this.unbindBoard(b);
-  }
+  /* There is no swap. You shoot the colour you were dealt: the queue is a constraint to play
+     around, not one you can reorder, and 'next' is there to plan the shot after this one.
+     refreshQueues() still recolours a queued bubble whose colour has left the field, which is
+     what the pod pulse and the 'swap' cue now mark. */
   simulate(x0, angle) { // shared by aim guides + bots
     let x = x0, y = this.LAUNCH_Y - 44, bounces = 0;
     const st = 7, dx = Math.sin(angle) * st, dy = -Math.cos(angle) * st;
@@ -581,12 +584,43 @@ class CoopBubbles extends HTMLElement {
     if (from >= 0) this.recordProgress(from);
     if (next < 0) return this.endGame(true);
     this.state = 'levelup'; this.sfx('win');
+    this._pendingLevel = next;
+    // Everyone on this device is looking at the same screen, so one Continue is the gate.
+    this.showLevelCard({ from, next, bonus, score: this.score, rows: this.playerStatRows(this.players) });
+  }
+  /* One row per player, the same shape the game-over card uses. It takes plain rows rather
+     than players because online the numbers come from the server's summary. */
+  statRowsHTML(rows) {
+    return rows.map(r => `<div class="statRow"><span class="who" style="color:${r.accent}">${r.name}</span>
+       <span class="nums">${r.nums}</span></div>`).join('');
+  }
+  playerStatRows(players) {
+    return (players || []).map(p => {
+      const meta = p.meta || META[p.i] || META[0], s = p.stats || {};
+      return { name: meta.name, accent: meta.accent,
+        nums: `${s.pops || 0} pops · ${s.bubbles || 0} bubbles · ${s.assists || 0} assists · ${s.drops || 0} dropped · ${s.rescues || 0} rescues` };
+    });
+  }
+  /* The level card. `ready` is only present online, where the next level does not start
+     until every connected player has said so (or the room's timer runs out). */
+  showLevelCard({ from, next, bonus, score, rows, ready }) {
     const sh = this.shadowRoot;
     sh.querySelector('.luTitle').textContent = '⭐ ' + (LEVELS[from]?.name || 'Level ' + (from + 1)) + ' cleared!';
-    sh.querySelector('.luSub').textContent = 'Clear bonus +' + bonus.toLocaleString()
-      + ' · Score ' + this.score.toLocaleString() + ' · Up next: ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
-    this._pendingLevel = next;
+    sh.querySelector('.luSub').textContent = 'Clear bonus +' + (bonus || 0).toLocaleString()
+      + ' · Score ' + (score || 0).toLocaleString() + ' · Up next: ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
+    sh.querySelector('.luStats').innerHTML = this.statRowsHTML(rows);
+    const readyEl = sh.querySelector('.luReady'), btn = sh.querySelector('.luNext');
+    if (ready) {
+      readyEl.textContent = ready.count + ' / ' + ready.total + ' ready'
+        + (ready.secs != null ? ' · next level in ' + ready.secs + 's' : '');
+      btn.disabled = !!ready.me;
+      btn.textContent = ready.me ? 'Waiting for the others' : 'Continue';
+    } else { readyEl.textContent = ''; btn.disabled = false; btn.textContent = 'Continue'; }
     this.levelUpEl.style.display = 'grid';
+  }
+  readyForNextLevel() {
+    if (this.online) { this.sendOnline('level_ready'); this.shadowRoot.querySelector('.luNext').disabled = true; return; }
+    this.advanceLevel();
   }
   advanceLevel() {
     const next = this._pendingLevel;
@@ -780,7 +814,7 @@ class CoopBubbles extends HTMLElement {
       return;
     }
     if (this.state === 'play' && !this.online) this.update(dt);
-    else if (this.online && ['play','paused','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
+    else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
     this.render();
   }
   /* Own-launcher prediction. The server runs the same aimTick over the same input stream, so
@@ -808,7 +842,8 @@ class CoopBubbles extends HTMLElement {
     p.angle = Math.abs(gap) > 0.6 ? p.serverAngle : p.angle + gap * Math.min(1, 14 * dt);
   }
   updateOnlineVisuals(dt) {
-    if (this.state !== 'paused') {
+    // 'levelup' is a frozen board behind the scoreboard card, so it holds like a pause.
+    if (this.state !== 'paused' && this.state !== 'levelup') {
       this.now += dt;
       const own=this.players[this.activeP];
       if(own)this.predictOwnAim(own,dt);
@@ -923,17 +958,14 @@ class CoopBubbles extends HTMLElement {
   /* ---------- input ---------- */
   canvasPoint(e) { const r = this.canvas.getBoundingClientRect();
     return { x: (e.clientX - r.left) * W / Math.max(1, r.width), y: (e.clientY - r.top) * this.H / Math.max(1, r.height) }; }
-  /* Which pad control a touch belongs to. Exact hits resolve first, keeping the swap button's
-     long-standing precedence where it overlaps FIRE, so a deliberate swap tap is never stolen.
-     Only then are near misses rescued, and there FIRE outranks everything: it is the button
-     being reached for on nearly every touch, and the aim halves underneath it are transparent
-     full-height overlays that would otherwise turn the launcher instead of shooting. */
+  /* Which pad control a touch belongs to. Exact hits resolve first, then near misses, and
+     FIRE outranks everything in both passes: it is the button being reached for on nearly
+     every touch, and the aim surfaces underneath it are transparent full-height overlays
+     that would otherwise turn the launcher instead of shooting. */
   padHit(x, y) {
     const slop = this.padSlop();
-    if (this.padBoxHit('.padS', x, y, 0)) return 'swap';
     if (this.padBoxHit('.padF', x, y, 0)) return 'fire';
     if (slop && this.padBoxHit('.padF', x, y, slop)) return 'fire';
-    if (slop && this.padBoxHit('.padS', x, y, slop)) return 'swap';
     if (this.padBoxHit('.padA', x, y, 0)) return 'aim';
     if (this.padBoxHit('.padL', x, y, 0)) return 'l';
     if (this.padBoxHit('.padR', x, y, 0)) return 'r';
@@ -946,7 +978,7 @@ class CoopBubbles extends HTMLElement {
   }
   /* Forgiveness scales with the board (--u) and with the FIRE size setting, so a bigger
      button also gets a proportionally bigger halo. Only coarse pointers get it: on desktop
-     the four pad buttons sit side by side and a halo would swallow its neighbours. */
+     the pad buttons sit side by side and a halo would swallow its neighbours. */
   padSlop() {
     if (!this.gameColEl || !matchMedia('(pointer: coarse)').matches) return 0;
     const u = parseFloat(getComputedStyle(this.gameColEl).getPropertyValue('--u')) || 1;
@@ -963,11 +995,6 @@ class CoopBubbles extends HTMLElement {
     if (this.battle && this.settings.mode === 'battle' && !this.online) { this.battleFire(); return; }
     if (this.online) { this.fire(); return; }
     const p = this.firstHumanPlayer(); if (p) { this.activeP = p.i; this.fire(p.i); }
-  }
-  padSwap() {
-    if (this.battle && this.settings.mode === 'battle' && !this.online) { this.battleSwap(); return; }
-    if (this.online) { this.swapBubble(); return; }
-    const p = this.firstHumanPlayer(); if (p) { this.activeP = p.i; this.swapBubble(p.i); }
   }
   // Hold-to-turn. Returns the launcher engaged so the release hits the same one.
   padAimHold(dir, value, player) {
@@ -1010,12 +1037,13 @@ class CoopBubbles extends HTMLElement {
       a:[1,'l'], d:[1,'r'], arrowleft:[2,'l'], arrowright:[2,'r'], j:[3,'l'], l:[3,'r'],
     };
     const firemap = { w:1, ' ':1, arrowup:2, enter:2, k:3 };
-    const swapmap = { s:1, arrowdown:2, i:3 };
-    const swapKeys = ['s','arrowdown','i']; // union, for the single-launcher modes
     const kd = e => {
       if (/input|select|textarea/i.test(e.target.tagName)) return;
       this.ensureAudio();
       const k = e.key.toLowerCase();
+      // The settings panel is a drawer over the board on narrow layouts; Escape is the way
+      // out that does not require finding the gear again.
+      if (k === 'escape' && this.sideEl.classList.contains('open')) { this.closeSide(); e.preventDefault(); return; }
       if (k === 'p') { this.togglePause(); return; }
       if (this.battle && this.settings.mode === 'battle') {
         const bt = this.battle, tg = bt.targeting;
@@ -1029,27 +1057,23 @@ class CoopBubbles extends HTMLElement {
           if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
           if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
           if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
-          if (swapKeys.includes(k)) { this.swapBubble(); e.preventDefault(); }
           return;
         }
         const hp = bt.human.player;
         if (['a','arrowleft','j'].includes(k)) { hp.held.l = true; hp.aimTarget = null; e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { hp.held.r = true; hp.aimTarget = null; e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.battleFire(); e.preventDefault(); }
-        if (swapKeys.includes(k)) { this.battleSwap(); e.preventDefault(); }
         return;
       }
       if (this.online) {
         if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
-        if (swapKeys.includes(k)) { this.swapBubble(); e.preventDefault(); }
         return;
       }
       const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; p.aimTarget = null; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
-      if (swapmap[k] !== undefined) { const p = this.players[swapmap[k]]; if (p && !p.bot) { this.swapBubble(swapmap[k]); e.preventDefault(); } }
     };
     const ku = e => { const k=e.key.toLowerCase();
       if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
@@ -1990,7 +2014,6 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
    frame and then stop dead. */
 .pad .padA{display:none;position:absolute;inset:0;touch-action:none;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
-.pad .padS{font-size:19px;padding:7px 14px}
 /* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
    under the pad's z-index and takes no pointer events, so it never eats an aim drag. */
 .buildTag{position:absolute;right:8px;bottom:3px;z-index:3;pointer-events:none;user-select:none;
@@ -1998,6 +2021,12 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
 .side{width:var(--sideW);flex:none;height:100%;overflow-y:auto;background:#fff;border-radius:20px;padding:18px;box-shadow:0 8px 30px rgba(40,80,140,.12);font-size:14px}
 .side h3{margin:14px 0 8px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#7593b5}
 .side h2{margin:0 0 4px;font-size:20px}
+/* On narrow layouts the panel is a drawer over the board, and the gear that opened it is
+   behind it — so the drawer carries its own way out. Escape closes it too. */
+.sideClose{float:right;border:0;background:#f4f9ff;border-radius:50%;width:30px;height:30px;color:#7593b5;font:700 15px/1 Fredoka,sans-serif;cursor:pointer;display:none}
+.root:not(.wideLayout) .sideClose{display:block}
+.luStats{margin:10px 0 4px;text-align:left}
+.luReady{min-height:18px;color:#7593b5;font-size:13px;margin-bottom:10px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:7px 0}
 .seg{display:flex;gap:4px}
 .lvlSeg{flex-wrap:wrap}
@@ -2028,8 +2057,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .tut b{color:#2b6fd4}
 /* Overlay chrome is sized in board units (--u, published by fit()) so it stays in
    proportion on a 344px cover screen and a 900px desktop board alike, but clamped so
-   touch targets never drop below ~36px. */
-.cornerButton{position:absolute;top:var(--chromeGap);z-index:4;width:var(--chromeBtn);height:var(--chromeBtn);border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);color:#2b4a70;font:700 clamp(16px,calc(22px * var(--u,1)),28px)/1 Fredoka,sans-serif;cursor:pointer;display:grid;place-items:center;touch-action:manipulation}
+   touch targets never drop below ~36px.
+
+   It sits above .overlay (z-index 5), not below it. Underneath, the gear was unreachable
+   behind every card the game shows — pause, level complete, game over, the tutorial — which
+   is most of the moments you actually want the settings. */
+.cornerButton{position:absolute;top:var(--chromeGap);z-index:6;width:var(--chromeBtn);height:var(--chromeBtn);border-radius:50%;border:0;background:rgba(255,255,255,.92);box-shadow:0 4px 14px rgba(40,80,140,.25);color:#2b4a70;font:700 clamp(16px,calc(22px * var(--u,1)),28px)/1 Fredoka,sans-serif;cursor:pointer;display:grid;place-items:center;touch-action:manipulation}
 .gameCol{--chromeBtn:clamp(36px,calc(44px * var(--u,1)),56px);--chromeGap:clamp(6px,calc(10px * var(--u,1)),14px)}
 .fullscreenButton{left:var(--chromeGap)}.fullscreenButton[hidden]{display:none}.gear{right:var(--chromeGap);display:none;font-size:clamp(15px,calc(20px * var(--u,1)),25px)}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
@@ -2054,7 +2087,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .statusDot{width:10px;height:10px;border-radius:50%;background:#3ecf72}.statusDot.off{background:#a9b8c8}.hostTag{margin-left:auto;color:#7593b5;font-size:12px}
 .lobbySettings{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.lobbySettings label{display:grid;gap:3px;font-size:12px;color:#7593b5}.lobbySettings select,.lobbySettings input,.lobbySettings textarea{border:2px solid #d7e6f5;border-radius:8px;padding:6px;font:inherit;color:#2b4a70;background:#f8fbff;min-width:0}
 .lobbySettings .full{grid-column:1/-1}
-@container (max-width:330px){.lobbySettings{grid-template-columns:1fr}.joinFields{grid-template-columns:1fr}.roomCode{font-size:38px}}.onlineBar{position:absolute;left:calc(var(--chromeBtn) + var(--chromeGap) * 2);right:calc(var(--chromeBtn) + var(--chromeGap) * 2);top:var(--chromeGap);z-index:4;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
+@container (max-width:330px){.lobbySettings{grid-template-columns:1fr}.joinFields{grid-template-columns:1fr}.roomCode{font-size:38px}}.onlineBar{position:absolute;left:calc(var(--chromeBtn) + var(--chromeGap) * 2);right:calc(var(--chromeBtn) + var(--chromeGap) * 2);top:var(--chromeGap);z-index:6;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
 .onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
 /* Whether the side panel fits is a question about the space left beside the board, not
    about viewport width, so relayout() sets .wideLayout and this rule follows it. That is
@@ -2068,7 +2101,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .root:not(.wideLayout) .onlineBar{gap:4px}
 .root:not(.wideLayout) .onlineBar .onlineRoomLabel{display:none}
 .root:not(.wideLayout) .onlineBar button,.root:not(.wideLayout) .onlineBar span{padding:6px 7px;font-size:11px}
-.root:not(.wideLayout) .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:6;width:min(300px,80%)}
+.root:not(.wideLayout) .side.open{display:block;position:absolute;right:8px;top:60px;bottom:8px;z-index:7;width:min(300px,80%)}
 @media (hover:none) and (pointer:coarse){
  .pad{left:0;right:0;bottom:0;height:50%;transform:none;display:block;pointer-events:none}
  .pad button{pointer-events:auto}
@@ -2078,23 +2111,17 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  /* At 0% the whole pressed state goes away, arrow ink included, so "off" really is
     invisible rather than merely a fainter wash. */
  .pad .padL:active,.pad .padR:active{background:rgba(43,111,212,var(--padTint,.025));color:var(--padInk,#2b6fd4)}
- /* --fireScale multiplies the whole button, so the label and the tap target grow
-    together and the swap button slides out of the way instead of being overlapped. */
+ /* --fireScale multiplies the whole button, so the label and the tap target grow together. */
  .pad .padF{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:2;transform:translateX(-50%);padding:calc(12px * var(--u,1) * var(--fireScale,1)) calc(28px * var(--u,1) * var(--fireScale,1));font-size:calc(clamp(11px,calc(14px * var(--u,1)),19px) * var(--fireScale,1));border-radius:calc(14px * var(--fireScale,1));box-shadow:0 4px 14px rgba(40,80,140,.25)}
- /* Sits on top of the .padR aim overlay rather than beside it, so the aim halves stay
-    full width and the swap target still wins the pointer where they overlap. */
- .pad .padS{position:absolute;left:50%;bottom:calc(18px * var(--u,1));z-index:3;transform:translateX(calc(-50% + 92px * var(--u,1) * var(--fireScale,1)));padding:calc(11px * var(--u,1)) calc(15px * var(--u,1));font-size:clamp(15px,calc(19px * var(--u,1)),25px);border-radius:14px;box-shadow:0 4px 14px rgba(40,80,140,.25)}
  /* Point-to-aim replaces the two halves with one surface over the whole board: you aim by
     touching where you want the shot to go, so the surface has to reach the targets, not just
-    the thumb rest. FIRE and swap keep their z-index above it, and padHit checks them first
-    anyway, so the only thing that changes is what an otherwise-unclaimed touch means. */
+    the thumb rest. FIRE keeps its z-index above it, and padHit checks it first anyway, so the
+    only thing that changes is what an otherwise-unclaimed touch means. The chrome sits at
+    z-index 6 unconditionally, so a full-board drag cannot eat the gear here either. */
  .root[data-aim-mode="point"] .pad{top:0;height:100%}
  .root[data-aim-mode="point"] .pad .padA{display:block;pointer-events:auto;background:transparent}
  .root[data-aim-mode="point"] .pad .padA:active{background:rgba(43,111,212,var(--padTint,.025))}
  .root[data-aim-mode="point"] .pad .padL,.root[data-aim-mode="point"] .pad .padR{display:none}
- /* The aim surface reaches the top of the board, where the chrome lives, and shares the pad's
-    stacking level — so lift the chrome above it or a full-board drag would eat every button. */
- .root[data-aim-mode="point"] .cornerButton,.root[data-aim-mode="point"] .onlineBar{z-index:5}
 }
 </style>
 <div class="root">
@@ -2104,7 +2131,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="buildTag">${BUILD_LABEL}</div>
-    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padS" title="Swap loaded and next bubble">\u21c4</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
+    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
@@ -2161,7 +2188,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     </div></div>
     <div class="overlay levelUp" style="display:none"><div class="card">
       <h1 class="luTitle"></h1><p class="sub luSub"></p>
-      <button class="btn primary luNext">Next level</button>
+      <div class="luStats"></div>
+      <div class="luReady"></div>
+      <button class="btn primary luNext">Continue</button>
     </div></div>
     <div class="overlay end" style="display:none"><div class="card">
       <h1 class="endTitle"></h1><p class="sub endSub"></p>
@@ -2203,7 +2232,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       // A finished level chain leaves settings.level on the last level; restart the run.
       if (this._runStartLevel !== undefined) { this.settings.level = this._runStartLevel; this._syncSettings?.(); }
       this.state = 'play'; this.resetGame(); } };
-    sh.querySelector('.luNext').onclick = () => this.advanceLevel();
+    sh.querySelector('.luNext').onclick = () => this.readyForNextLevel();
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
     const fullscreenButton = sh.querySelector('.fullscreenButton');
     this.fullscreenButtonEl = fullscreenButton;
@@ -2251,7 +2280,6 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { if (e.target && e.target !== pad) e.target.setPointerCapture(e.pointerId); } catch (_) {}
       const hold = this._padHold = { id: e.pointerId, hit, p: null };
       if (hit === 'fire') this.padFire();
-      else if (hit === 'swap') this.padSwap();
       else if (hit === 'aim') { if (this.battleTargetActive()) this.battlePickAt(e); else this.padAimPoint(e); }
       else hold.p = this.padAimHold(hit, true);
     }, true);
@@ -2426,7 +2454,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const sh=this.shadowRoot,name=sh.querySelector('.playerName').value.trim(),code=sh.querySelector('.roomInput').value;
     const err=sh.querySelector('.home .formError');err.textContent='';
     if(!name){err.textContent='Enter a display name.';return;}if(action==='join'&&!/^\d{3}$/.test(code)){err.textContent='Enter a three-digit room code.';return;}
-    this.ensureAudio();this.online=true;this.sideEl.style.display='none';this._pendingOnline={action,name,code};this.openOnlineSocket();
+    this.ensureAudio();this.online=true;this.syncSideScope();this._pendingOnline={action,name,code};this.openOnlineSocket();
   }
   openOnlineSocket(rejoin=false){
     clearTimeout(this._reconnectTimer);const protocol=location.protocol==='https:'?'wss:':'ws:';const ws=new WebSocket(protocol+'//'+location.host+'/ws');this.ws=ws;
@@ -2444,7 +2472,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if(msg.type==='joined'){
       this._reconnectAttempts=0;this.reconnectEl.style.display='none';this.onlinePlayerId=msg.playerId;this.onlineRoom=msg.room;this._onlineCode=msg.room.code;this._onlineToken=msg.token;
       try{localStorage.setItem('bt_online_session',JSON.stringify({code:this._onlineCode,token:this._onlineToken}));}catch(_){}
-      this.sideEl.style.display='none';this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
+      this.syncSideScope();this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
     }
     if(msg.type==='lobby_state'){this.onlineRoom=msg.room;if(msg.room.phase==='lobby')this.showOnlineLobby();return;}
     if(msg.type==='host_changed'){if(this.onlineRoom)this.onlineRoom.hostId=msg.hostId;this.syncOnlineControls();return;}
@@ -2484,6 +2512,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
+    // Between levels the room sits on a scoreboard until everyone says go; the snapshot
+    // carries the summary and the ready list, so a rejoin lands on the same card.
+    if(s.levelSummary){const su=s.levelSummary,ready=s.levelReady||[];
+      this.showLevelCard({from:su.from,next:su.next,bonus:su.bonus,score:su.score,
+        rows:this.playerStatRows(su.players),
+        ready:{count:ready.length,total:(this.players||[]).filter(p=>p.connected!==false).length,secs:s.levelSecs,me:ready.includes(this.onlinePlayerId)}});}
+    else if(oldState==='levelup'&&s.state!=='levelup')this.levelUpEl.style.display='none';
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
   }
   battleBoardFromSnapshot(summary,data,old={}){
@@ -2520,7 +2555,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='swap'){const p=this.players[d.player];if(p){if(p.cur)p.cur.swapT=this.now;if(p.next)p.next.swapT=this.now;}this.sfx('swap');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at
@@ -2548,13 +2583,15 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      every local game that follows, overriding what you saved. The shipped defaults come
      first, so a room value is dropped even for a player who never saved a preference. */
   restoreLocalPrefs(){Object.assign(this.settings,{aimSpeed:2.4,padTint:0.025,fireScale:1},this.loadLocalPrefs());this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
-  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.sideEl.style.display='';this.measure();this.resetGame();this.state='home';}
+  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.closeSide();this.syncSideScope();this.measure();this.resetGame();this.state='home';}
   escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
     const S = this.settings, el = this.sideEl;
     el.innerHTML = `
+<button class="sideClose" type="button" title="Close settings" aria-label="Close settings">✕</button>
 <h2>Bubble Together</h2>
-<div style="color:#7593b5;font-size:13px">game settings</div>
+<div class="sideSub" style="color:#7593b5;font-size:13px">game settings</div>
+<div class="roomOwned">
 <h3>Mode</h3><div class="seg modeSeg">
   <button data-m="clear">Co-op Clear</button><button data-m="endless">Endless</button><button data-m="battle">Battle</button></div>
 <div class="battleNote" style="display:none;color:#9db8d4;font-size:12px;margin-top:4px">battle royale: private boards \u00b7 big clears let you dump junk on a rival \u00b7 you vs. bots locally, humans online</div>
@@ -2583,15 +2620,18 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Touch tint</span><input type="range" class="pt" min="0" max="0.3" step="0.005"><span class="val ptv"></span></div>
 <div class="row"><span>FIRE size</span><input type="range" class="fs" min="0.6" max="2.2" step="0.05"><span class="val fsv"></span></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">touch tint: how strongly the aim halves glow blue while held · in an online room the host sets aim speed, tint and FIRE size for everyone</div>
+</div>
 <div class="row"><span>Touch aiming</span><div class="seg amSeg">
   <button data-am="halves">Left / right</button><button data-am="point">Where I press</button></div></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">where I press: drag anywhere on the board and the cannon swings to your finger · FIRE still shoots · touch screens only, and it stays yours in online rooms</div>
+<div class="roomOwned">
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full path</button><button data-g="0.5">Short</button><button data-g="0.25">Tiny</button></div></div>
 <div class="row tlRow"><span>Teammate lines</span><div class="seg tlSeg"><button data-v="1">Show</button><button data-v="0">Hide</button></div></div>
 <div class="row"><span>Sound</span><div class="seg sndSeg"><button data-v="1">On</button><button data-v="0">Off</button></div></div>
 <button class="btn ghost pauseBtn">Pause (P)</button>
 <button class="btn ghost resetBtn">Reset stage</button>
+</div>
 <button class="btn ghost howBtn">How to play</button>
 <h3>Controls</h3>
 <ul class="ctrlList">${META.slice(0,4).map((m, i) => `<li${i ? '' : ' class="ctrlP1"'}><b style="color:${m.accent}">${m.name}</b> \u2014 <span class="ctrlText">${m.ctrl}</span></li>`).join('')}</ul>`;
@@ -2683,8 +2723,24 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     el.querySelector('.pauseBtn').onclick = () => this.togglePause();
     el.querySelector('.resetBtn').onclick = () => { this.state = 'play'; this.resetGame(); };
     el.querySelector('.howBtn').onclick = () => this.showTutorial();
+    el.querySelector('.sideClose').onclick = () => this.closeSide();
     this._syncSettings = syncAll;
+    this.syncSideScope();
     syncAll();
+  }
+  closeSide() { this.sideEl && this.sideEl.classList.remove('open'); }
+  /* In a room the host owns the match: mode, level, tuning, aim speed, tint, FIRE size and
+     even sound all arrive with every snapshot and overwrite whatever this device set. Showing
+     those controls online would be a lie — moving one changes nothing that survives the next
+     50 ms. So the panel narrows to what is genuinely this device's: how you aim. Hiding the
+     whole panel was the old answer, and it is what made the gear look broken mid-match. */
+  syncSideScope() {
+    const el = this.sideEl; if (!el || !el.querySelector('.sideSub')) return;
+    const online = !!this.online;
+    el.querySelectorAll('.roomOwned').forEach(b => { b.style.display = online ? 'none' : ''; });
+    el.querySelector('.sideSub').textContent = online
+      ? 'the host sets the match — these are your device’s controls'
+      : 'game settings';
   }
   syncButtons() {
     const b = this.sideEl && this.sideEl.querySelector('.pauseBtn');

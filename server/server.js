@@ -54,7 +54,7 @@ function createServer() {
       if(!current.room)throw lobbies.fail('not_joined','Join a room first.'); const {room,p}=current;
       switch(msg.type){case'update_settings':lobbies.updateSettings(room,p,msg.settings,msg.revision);break;case'start':lobbies.start(room,p);break;
         case'input':if(Number(msg.seq)>p.inputSeq){p.inputSeq=Number(msg.seq);room.game?.input(p.id,msg.held||{},msg.aim);}break;
-        case'fire':room.game?.fire(p.id);break;case'swap':room.game?.swap(p.id);break;case'target':if(room.settings.mode!=='battle')throw lobbies.fail('bad_message','Targeting is only available in battle mode.');room.game?.target(p.id,String(msg.targetId||''));break;case'pause':lobbies.pause(room,p,true);break;case'resume':lobbies.pause(room,p,false);break;
+        case'fire':room.game?.fire(p.id);break;case'level_ready':room.game?.levelReady(p.id);break;case'target':if(room.settings.mode!=='battle')throw lobbies.fail('bad_message','Targeting is only available in battle mode.');room.game?.target(p.id,String(msg.targetId||''));break;case'pause':lobbies.pause(room,p,true);break;case'resume':lobbies.pause(room,p,false);break;
         case'restart':lobbies.restart(room,p);break;case'return_to_lobby':lobbies.returnToLobby(room,p);break;case'leave':lobbies.disconnect(room,p,true);send('left');break;
         default:throw lobbies.fail('bad_message','Unknown message type.');}
     }catch(error){send('error',{code:error.code||'bad_message',message:error.message||'Invalid message.'});}});

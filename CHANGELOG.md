@@ -2,15 +2,42 @@
 
 ## Unreleased
 
+- Aiming ramps in, so a tap is a nudge and a hold is a sweep. One flat rate could not do both
+  jobs the barrel has: at the default speed the whole arc crosses in a second, which makes the
+  shortest tap a thumb can manage about fifteen degrees — several bubble columns. There was
+  nothing to aim with, only overshoot and correct, and that is what the cannon "snapping
+  between positions" actually was. A fresh press now turns at a quarter speed and eases up to
+  the full setting once you have held it long enough to mean a sweep; turning back counts as a
+  new press, so the correction at the end of a sweep starts fine again. A 110 ms tap moves
+  about one column instead of eight, and a full sweep still takes about a second and a quarter.
+  This is a ramp in, not momentum: release still stops the barrel on that frame.
+- Removed the swap button. A player shoots the colour they were dealt — the queue is a
+  constraint to play around, not one to reorder. The `next` preview stays, so you can still
+  plan the shot after this one. The keyboard swap keys (`S`, `↓`, `I`) are gone with it.
+- Fixed the settings gear doing nothing once a match started. Two separate faults. Joining a
+  room set an inline `display:none` on the panel, which outranks the stylesheet rule that
+  opens it, so the gear still toggled but nothing ever appeared — and that is exactly where a
+  player most wants it, because the aim scheme is the one control a room does not set for
+  them. The panel now stays open online and narrows to what genuinely belongs to the device;
+  everything the host owns is hidden rather than shown as a lie, since snapshots overwrite it
+  every 50 ms anyway. Separately, the chrome sat below `.overlay` in the stacking order, so
+  the gear was unclickable behind pause, game over, level complete and the tutorial. The gear
+  and the online bar now sit above the cards. The panel also gained a close button and an
+  Escape handler — until now the only way out was finding the gear again underneath it.
+- A cleared level is an intermission instead of a cut. The run stops on a scoreboard showing
+  the clear bonus, the running score, what is up next, and a row per player. Online the next
+  level does not start until every connected player has hit Continue: the card shows how many
+  are ready, a player who disconnects is never waited on, and a 60-second backstop means one
+  player walking away cannot freeze the room. Previously the server emitted `level_cleared`
+  and reset into the next board in the same tick, so nobody saw anything at all.
 - FIRE now wins the touch. The aim halves are transparent overlays covering the bottom half of
   the board, so a thumb landing a few pixels off FIRE turned the launcher instead of shooting.
   One capture-phase router on the pad decides every press in a declared order — an exact hit
-  first, so a deliberate swap tap is never stolen, then near misses, where FIRE outranks
-  everything within a halo that scales with the board and the FIRE size setting.
-- Aiming keeps the Puzzle Bobble model deliberately: hold a direction and the launcher turns
-  at one constant rate, let go and it stops on that frame. A ramp-up or a coast reads as
-  weight for about a minute and then costs you every one-degree correction, which is the only
-  kind this game is won on. Both aim modes go through one integrator that does exactly this.
+  first, then near misses, where FIRE outranks everything within a halo that scales with the
+  board and the FIRE size setting.
+- The launcher carries no momentum: let go and it stops on that frame. A coast past where you
+  stopped costs the one-degree correction this game is won on. Both aim modes go through one
+  integrator, and it is byte-identical to the server's.
 - Fixed online aiming feeling stepped. The client predicted at a hardcoded 2.4× while the
   server integrated at the room's aim speed, and every 50 ms snapshot overwrote the angle
   outright. Prediction now uses the room's setting and runs the same integrator the server

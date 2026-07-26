@@ -7,6 +7,7 @@ const { DEFAULT_SETTINGS } = require('../server/lobbies');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const root = path.resolve(__dirname, '..');
 const roster = [{id:'a',name:'Ada'},{id:'b',name:'Ben'}];
 
 test('the default world height reproduces the original fixed geometry exactly', () => {
@@ -114,38 +115,66 @@ test('fewer colours on the board means faster drops', () => {
   assert.equal(game.shotsPerDrop(),0,'zero disables the mechanic');
 });
 
-test('swap exchanges the queue without consuming a shot or beating the reload', () => {
-  const game=new OnlineGame(DEFAULT_SETTINGS,roster,777), p=game.players[0];
-  const cur={...p.cur}, next={...p.next};
-  assert.equal(game.swap('a'),true);
-  assert.deepEqual({kind:p.cur.kind,special:p.cur.special},{kind:next.kind,special:next.special});
-  assert.deepEqual({kind:p.next.kind,special:p.next.special},{kind:cur.kind,special:cur.special});
-  assert.equal(p.stats.shots,0,'a swap is not a shot');
-  assert.equal(game.pressure,0,'a swap does not push the ceiling');
-  // Firing starts the cooldown, and the cooldown must gate swapping too — otherwise it
-  // becomes a free re-roll of the bubble you just decided not to like.
-  game.fire('a');
-  assert.ok(p.reload>0);
-  assert.equal(game.swap('a'),false);
-  for(let t=0;t<180;t++)game.update(1/60);
-  assert.equal(game.swap('a'),true);
-  game.setConnected('a',false);
-  assert.equal(game.swap('a'),false,'a disconnected launcher cannot swap');
+test('there is no swap: a player shoots the colour they were dealt', () => {
+  const game=new OnlineGame(DEFAULT_SETTINGS,roster,777);
+  assert.equal(typeof game.swap,'undefined','the action is gone from the authority');
+  const component=fs.readFileSync(path.join(root,'coop-bubbles.js'),'utf8');
+  assert.doesNotMatch(component,/swapBubble|padSwap|class="padS"/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root,'server','server.js'),'utf8'),/case'swap'/);
+});
+
+test('a cleared level waits on a scoreboard until every connected player is ready', () => {
+  const game=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:0},roster,31);
+  game.players[0].stats.shots=10;game.players[0].stats.pops=5;
+  game.grid=new Map();game.batch=[];game.resolveBatch();
+  assert.equal(game.state,'levelup','the run stops on the level card');
+  assert.equal(game.settings.level,0,'the next board is not built until the gate opens');
+  assert.ok(game.levelSummary.bonus>0,'the accuracy/headroom bonus is on the card');
+  assert.equal(game.levelSummary.next,1);
+  assert.deepEqual(game.levelReadyCount(),{count:0,total:roster.length});
+  // The board is frozen behind the card: a held aim must not turn while nobody can see it.
+  const before=game.players[0].angle;
+  game.input('a',{r:true});for(let t=0;t<60;t++)game.update(1/60);
+  assert.equal(game.players[0].angle,before,'no simulation runs between levels');
+  game.levelReady('a');
+  assert.equal(game.state,'levelup','one of two ready is not enough');
+  assert.equal(game.levelReadyCount().count,1);
+  game.levelReady('b');
+  assert.equal(game.state,'play','the last ready starts the next level');
+  assert.equal(game.settings.level,1,'advanced to the next authored level');
+  assert.ok(game.grid.size>0,'the next board was built');
+  assert.equal(game.players[0].stats.shots,10,'per-player stats survive the level change');
+  assert.equal(game.missMeter,0,'the miss meter resets with the fresh board');
+  assert.ok(game.score>0,'the score carried');
+});
+
+test('the ready gate is released by a disconnect and by the backstop timer', () => {
+  const game=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:0},roster,31);
+  game.grid=new Map();game.batch=[];game.resolveBatch();
+  game.levelReady('a');
+  // A player who has left cannot be waited on, so the gate opens on the remaining one.
+  game.setConnected('b',false);
+  assert.equal(game.state,'play','a disconnect releases the gate');
+
+  const slow=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:0},roster,31);
+  slow.grid=new Map();slow.batch=[];slow.resolveBatch();
+  assert.equal(slow.state,'levelup');
+  for(let t=0;t<61*60;t++)slow.update(1/60);
+  assert.equal(slow.state,'play','nobody ready, but the room still moves on');
+  assert.equal(slow.settings.level,1);
 });
 
 test('clear mode chains the authored levels and carries the score', () => {
   const game=new OnlineGame({...DEFAULT_SETTINGS,mode:'clear',level:0},[roster[0]],31);
   game.players[0].stats.shots=10;game.players[0].stats.pops=5;
-  game.grid=new Map();game.batch=[];game.resolveBatch();
+  const clear=()=>{game.grid=new Map();game.batch=[];game.resolveBatch();if(game.state==='levelup')game.levelReady('a');};
+  clear();
   assert.equal(game.state,'play','clearing level 1 does not end the run');
   assert.equal(game.settings.level,1,'advanced to the next authored level');
-  assert.ok(game.grid.size>0,'the next board was built');
   const carried=game.score;
   assert.ok(carried>0,'the accuracy/headroom bonus was awarded');
-  assert.equal(game.players[0].stats.shots,10,'per-player stats survive the level change');
-  assert.equal(game.missMeter,0,'the miss meter resets with the fresh board');
   // Walk out the rest of the chain; only the last level ends the run.
-  for(let i=1;i<4;i++){game.grid=new Map();game.batch=[];game.resolveBatch();}
+  for(let i=1;i<4;i++)clear();
   assert.equal(game.state,'won');
   assert.equal(game.settings.level,3,'stops on the last authored level');
   assert.ok(game.score>carried,'score accumulated across levels');
