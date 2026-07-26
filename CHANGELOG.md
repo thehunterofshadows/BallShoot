@@ -7,9 +7,10 @@
   One capture-phase router on the pad decides every press in a declared order — an exact hit
   first, so a deliberate swap tap is never stolen, then near misses, where FIRE outranks
   everything within a halo that scales with the board and the FIRE size setting.
-- Aiming carries momentum instead of switching between full speed and stopped. The barrel
-  ramps up over about a tenth of a second and brakes four times harder, so it has weight
-  without losing precision, and it no longer winds up against the launcher's limits.
+- Aiming keeps the Puzzle Bobble model deliberately: hold a direction and the launcher turns
+  at one constant rate, let go and it stops on that frame. A ramp-up or a coast reads as
+  weight for about a minute and then costs you every one-degree correction, which is the only
+  kind this game is won on. Both aim modes go through one integrator that does exactly this.
 - Fixed online aiming feeling stepped. The client predicted at a hardcoded 2.4× while the
   server integrated at the room's aim speed, and every 50 ms snapshot overwrote the angle
   outright. Prediction now uses the room's setting and runs the same integrator the server
@@ -19,10 +20,16 @@
 - Touch tint and FIRE size join aim speed as room settings: the host sets one set of controls
   for everyone in the lobby, and leaving hands each device its own saved values back.
 - Added a second way to aim on touch screens. `Touch aiming: Where I press` replaces the two
-  halves with a surface over the whole board — drag and the cannon swings to your finger,
-  FIRE still shoots. Online it ships an absolute angle at the server's own snapshot rate
-  rather than two held directions. Which scheme you like is a device preference, so unlike
-  the rest of the control feel it is never overridden by a room.
+  halves with a surface over the whole board: the cannon points wherever you press and follows
+  a drag exactly, the way a stylus port aims, and FIRE still shoots. Online it ships an
+  absolute angle at the server's own snapshot rate rather than two held directions. Which
+  scheme you like is a device preference, so unlike the rest of the control feel it is never
+  overridden by a room.
+- Added `scripts/touch-controls-probe.mjs`, which drives the pad with real touch events in a
+  mobile browser. Synthetic mouse input does not go through touch-action or gesture handling,
+  so it cannot see the two bugs that actually broke drag-to-aim: the aim surface was missing
+  `touch-action:none`, and the pointer was captured to the pad, which is `pointer-events:none`
+  on touch layouts. Either one made the browser cancel the pointer one move into a drag.
 
 - Shortened aim guides are now a fixed-length stub off the barrel instead of a share of the
   flight path. A percentage grew and shrank with how far the shot had to travel, which

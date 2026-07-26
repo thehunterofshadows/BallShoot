@@ -128,32 +128,25 @@ const trimPath = (pts, maxLen) => {
   return out;
 };
 /* Shared aim integrator, mirrored verbatim in server/game.js so the client's prediction and
-   the server's authority agree frame for frame. The barrel carries angular velocity instead
-   of snapping between "turning at full speed" and "stopped": it ramps up over AIM_RAMP and
-   brakes AIM_BRAKE times harder, which reads as weight without costing precision. With
-   p.aimTarget set (point-to-aim) the same velocity glides onto the target and stops there;
-   the glide speed is derived from the braking rate, so it lands rather than overshooting. */
-const AIM_MAX = 1.22, AIM_RAMP = 0.12, AIM_BRAKE = 4;
+   the server's authority agree frame for frame.
+
+   Aiming works the way Puzzle Bobble has always done it: hold a direction and the launcher
+   turns at one constant rate, let go and it stops on that frame. No ramp to wait through and
+   no coast past where you stopped — a bubble shooter is won on one-degree corrections, and
+   any momentum in the barrel takes those away from the player.
+
+   With p.aimTarget set (point-to-aim) the barrel simply points where the finger is, the way
+   a stylus port works: the aim line follows the touch rather than chasing it. */
+const AIM_MAX = 1.22;
 /* 'halves' holds the lower-left or lower-right of the board to turn; 'point' aims the barrel
    at wherever the finger is. Both feed the same integrator below. */
 const AIM_MODES = ['halves', 'point'];
 const aimTick = (p, dt, aimSpeed) => {
-  if (!(dt > 0)) return;
-  const spd = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4, accel = spd / AIM_RAMP;
-  let want;
-  if (p.aimTarget == null) want = (p.held && p.held.r ? spd : 0) - (p.held && p.held.l ? spd : 0);
-  else {
-    const gap = clamp(p.aimTarget, -AIM_MAX, AIM_MAX) - p.angle;
-    // Never ask for more than this frame's remaining gap, or the last frame overshoots and
-    // the barrel hunts back and forth across the target forever.
-    const glide = Math.min(Math.sqrt(2 * accel * AIM_BRAKE * Math.abs(gap)), Math.abs(gap) / dt);
-    want = clamp(gap < 0 ? -glide : glide, -spd, spd);
-  }
-  const vel = p.aimVel || 0;
-  const rate = (Math.abs(want) < Math.abs(vel) || want * vel < 0) ? accel * AIM_BRAKE : accel;
-  const next = vel + clamp(want - vel, -rate * dt, rate * dt);
-  const raw = p.angle + next * dt, angle = clamp(raw, -AIM_MAX, AIM_MAX);
-  p.angle = angle; p.aimVel = raw === angle ? next : 0; // no winding up against the stops
+  if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); return; }
+  if (!(dt > 0) || !p.held) return;
+  const spd = (Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4) * dt;
+  if (p.held.l) p.angle = clamp(p.angle - spd, -AIM_MAX, AIM_MAX);
+  if (p.held.r) p.angle = clamp(p.angle + spd, -AIM_MAX, AIM_MAX);
 };
 /* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
    a fold animation mid-frame — cannot churn the world height on every resize tick. */
@@ -805,7 +798,7 @@ class CoopBubbles extends HTMLElement {
     aimTick(p, dt, this.settings.aimSpeed);
     if (p.serverAngle === undefined || p.held.l || p.held.r || p.aimTarget != null) return;
     const gap = p.serverAngle - p.angle;
-    if (Math.abs(gap) > 0.35) { p.angle = p.serverAngle; p.aimVel = 0; }
+    if (Math.abs(gap) > 0.35) p.angle = p.serverAngle;
     else p.angle = clamp(p.angle + clamp(gap, -3 * dt, 3 * dt), -AIM_MAX, AIM_MAX);
   }
   // Everyone else's barrel: interpolate toward the last snapshot rather than teleporting to it.
@@ -813,7 +806,6 @@ class CoopBubbles extends HTMLElement {
     if (p.serverAngle === undefined) return;
     const gap = p.serverAngle - p.angle;
     p.angle = Math.abs(gap) > 0.6 ? p.serverAngle : p.angle + gap * Math.min(1, 14 * dt);
-    p.aimVel = 0;
   }
   updateOnlineVisuals(dt) {
     if (this.state !== 'paused') {
@@ -1619,7 +1611,7 @@ class CoopBubbles extends HTMLElement {
     const locked = tg && tg.by === b.i && !p.bot;
     if (p.bot) this.botUpdate(p, rdt);
     else if (!locked) aimTick(p, rdt, this.settings.aimSpeed);
-    else { p.aimVel = 0; p.aimTarget = null; } // choosing a target parks the barrel where it is
+    else p.aimTarget = null; // choosing a target parks the barrel where it is
     this.stepFlights(rdt);
     if (this.resolveAt && this.now >= this.resolveAt) this.battleResolve(b);
     const perDrop = this.shotsPerDrop();
@@ -1992,8 +1984,11 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
 .pad button{border:0;border-radius:12px;background:rgba(255,255,255,.94);box-shadow:0 4px 14px rgba(40,80,140,.25);font:inherit;font-weight:700;color:#2b4a70;cursor:pointer;padding:7px 20px;font-size:17px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 .pad button:active{background:#2b6fd4;color:#fff}
 /* The point-to-aim surface only exists on touch layouts in that mode; everywhere else it is
-   absent from hit-testing entirely rather than merely transparent. */
-.pad .padA{display:none;position:absolute;inset:0}
+   absent from hit-testing entirely rather than merely transparent. touch-action:none is what
+   makes a drag work at all: without it the browser claims the gesture as a possible scroll
+   and cancels the pointer one move in, so the barrel would follow the finger for a single
+   frame and then stop dead. */
+.pad .padA{display:none;position:absolute;inset:0;touch-action:none;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
 .pad .padS{font-size:19px;padding:7px 14px}
 /* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
@@ -2248,7 +2243,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     pad.addEventListener('pointerdown', e => {
       const hit = this.padHit(e.clientX, e.clientY); if (!hit) return;
       e.preventDefault(); e.stopPropagation(); this.ensureAudio();
-      try { pad.setPointerCapture(e.pointerId); } catch (_) {}
+      /* Capture on the control that was actually hit, never on .pad: the pad is
+         pointer-events:none on touch layouts, and capturing to it makes the browser drop the
+         pointer with a cancel on the first move — which killed every aim drag one frame in.
+         Touch pointers are implicitly captured to their target anyway, so this is really for
+         mouse and pen; either way the listeners below are ancestors of the capture target. */
+      try { if (e.target && e.target !== pad) e.target.setPointerCapture(e.pointerId); } catch (_) {}
       const hold = this._padHold = { id: e.pointerId, hit, p: null };
       if (hit === 'fire') this.padFire();
       else if (hit === 'swap') this.padSwap();
@@ -2474,7 +2474,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   playerFromSnapshot(p,i,old){
     const keep=old&&old.id===p.id;
     return {...p,i,meta:META[i],bot:false,held:keep?old.held:{},serverAngle:p.angle,
-      angle:keep?old.angle:p.angle,aimVel:keep?old.aimVel:0,aimTarget:keep?old.aimTarget:null};
+      angle:keep?old.angle:p.angle,aimTarget:keep?old.aimTarget:null};
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
@@ -2489,7 +2489,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   battleBoardFromSnapshot(summary,data,old={}){
     const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},wasPlayer=old.player?.id===summary.id?old.player:null;
     const player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:wasPlayer?wasPlayer.held:{},
-      serverAngle:rawPlayer.angle,angle:wasPlayer?wasPlayer.angle:rawPlayer.angle??0,aimVel:wasPlayer?wasPlayer.aimVel:0,aimTarget:wasPlayer?wasPlayer.aimTarget:null,
+      serverAngle:rawPlayer.angle,angle:wasPlayer?wasPlayer.angle:rawPlayer.angle??0,aimTarget:wasPlayer?wasPlayer.aimTarget:null,
       stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
     const rawGrid=data&&Array.isArray(data.grid)?data.grid:(old.grid?[...old.grid.values()]:[]);
     return {i:seat,id:summary.id,name:summary.name,meta:META[seat],connected:summary.connected,alive:summary.alive,place:summary.place,

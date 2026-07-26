@@ -85,49 +85,55 @@ const run = (p, seconds, speed = 2.4, dt = 1 / 60) => {
   return p;
 };
 
-test('held aim ramps up to speed instead of stepping on at full rate', () => {
+test('held aim turns at one constant rate and stops the frame it is released', () => {
+  // Puzzle Bobble's launcher has no inertia. Momentum in either direction — a ramp on the way
+  // in or a coast on the way out — costs the one-degree correction the whole game is aimed at.
   const p = { angle: 0, held: { l: false, r: true } };
-  aimTick(p, 1 / 60, 2.4);
-  assert.ok(p.aimVel > 0 && p.aimVel < 2.4 * 0.5, 'the first frame is a fraction of full speed');
-  run(p, 0.2);
-  assert.ok(Math.abs(p.aimVel - 2.4) < 1e-6, 'full speed within a fifth of a second');
-  // And it coasts to a stop rather than freezing mid-sweep.
+  const step = [];
+  for (let i = 0; i < 12; i++) { const was = p.angle; aimTick(p, 1/60, 2.4); step.push(p.angle - was); }
+  for (const d of step) assert.ok(Math.abs(d - 2.4/60) < 1e-12, 'every frame moves the same amount');
+  // Release: it stops exactly where it was, with nothing carried into later frames.
   p.held.r = false;
   const atRelease = p.angle;
-  run(p, 0.5);
-  assert.equal(p.aimVel, 0);
-  assert.ok(p.angle - atRelease > 0 && p.angle - atRelease < 0.06, 'a short, controllable coast');
+  run(p, 1);
+  assert.equal(p.angle, atRelease, 'no coast past where you let go');
 });
 
-test('aim stops at the launcher limits without winding up against them', () => {
+test('aim stops at the launcher limits and turns back immediately', () => {
   const p = { angle: 0, held: { l: false, r: true } };
   run(p, 5);
   assert.ok(Math.abs(p.angle - 1.22) < 1e-9);
-  assert.equal(p.aimVel, 0, 'no stored velocity to fling the barrel back on release');
   p.held = { l: true, r: false };
-  aimTick(p, 1 / 60, 2.4);
-  assert.ok(p.angle < 1.22, 'turning the other way responds immediately');
+  aimTick(p, 1/60, 2.4);
+  assert.ok(Math.abs(p.angle - (1.22 - 2.4/60)) < 1e-12, 'full rate on the first frame back');
 });
 
-test('point-to-aim glides onto the target and stays there', () => {
+test('point-to-aim puts the barrel exactly where the finger is', () => {
+  // A stylus port aims where you touch; anything that chases the touch is a lag the player
+  // has to lead, which is precisely what makes drag aiming feel broken.
   const p = { angle: -0.9, held: { l: false, r: false }, aimTarget: 0.7 };
-  run(p, 2);
-  assert.ok(Math.abs(p.angle - 0.7) < 0.01, 'lands on the target');
-  assert.ok(Math.abs(p.aimVel) < 0.05, 'and does not oscillate around it');
-  // Out-of-range targets clamp to the launcher's limit rather than being chased.
-  p.aimTarget = 9;
-  run(p, 3);
-  assert.ok(Math.abs(p.angle - 1.22) < 1e-6);
+  aimTick(p, 1/60, 2.4);
+  assert.equal(p.angle, 0.7, 'the first frame is already there');
+  for (const target of [-1.1, 0, 0.35]) { p.aimTarget = target; aimTick(p, 1/60, 2.4); assert.equal(p.angle, target); }
+  // Out of range clamps to the launcher's limit rather than being chased past it.
+  p.aimTarget = 9; aimTick(p, 1/60, 2.4);
+  assert.equal(p.angle, 1.22);
   // Clearing the target hands the launcher back to the held-direction stream.
   p.aimTarget = null; p.held = { l: true, r: false };
-  const before = p.angle;
   run(p, 0.3);
-  assert.ok(p.angle < before);
+  assert.ok(p.angle < 1.22);
 });
 
-test('a faster aim speed setting is a faster sweep, not a different feel', () => {
-  const slow = run({ angle: 0, held: { l: false, r: true } }, 0.3, 1.2);
-  const fast = run({ angle: 0, held: { l: false, r: true } }, 0.3, 4.8);
-  assert.ok(fast.angle > slow.angle * 2);
-  assert.ok(Math.abs(fast.aimVel - 4.8) < 1e-6 && Math.abs(slow.aimVel - 1.2) < 1e-6);
+test('a faster aim speed setting is a faster sweep, and only affects held aiming', () => {
+  // Short enough that the faster sweep has not yet reached the launcher's limit.
+  const slow = run({ angle: 0, held: { l: false, r: true } }, 0.2, 1.2);
+  const fast = run({ angle: 0, held: { l: false, r: true } }, 0.2, 4.8);
+  assert.ok(fast.angle < 1.22 && Math.abs(fast.angle - 4 * slow.angle) < 1e-12,
+    'four times the setting, four times the sweep');
+  // Pointing is a position, not a speed, so the setting cannot slow it down.
+  for (const speed of [0.6, 6]) {
+    const p = { angle: 0, held: { l: false, r: false }, aimTarget: -0.5 };
+    aimTick(p, 1/60, speed);
+    assert.equal(p.angle, -0.5);
+  }
 });
