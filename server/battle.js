@@ -78,7 +78,7 @@ class BattleGame {
   }
   preview(board) {
     const g=board.game,p=g.players[0];return {...this.summary(board),gridTop:g.gridTop,parityFlip:g.parityFlip,anchorRow:g.anchorRow,grid:[...g.grid.values()].map(({r,c,kind,special})=>({r,c,kind,special})),
-      flights:g.flights.map(({x,y,kind,special})=>({x,y,kind,special})),player:{x:p.x,angle:p.angle,cur:p.cur},events:g.events.slice(-8),eventId:g.eventId};
+      flights:g.flights.map(({p,x,y,vx,vy,kind,special})=>({p,x,y,vx,vy,kind,special})),player:{x:p.x,angle:p.angle,cur:p.cur},events:g.events.slice(-8),eventId:g.eventId};
   }
   stateFor(id) {
     if(this.state==='ended')return id===this.winnerId?'won':'lost';

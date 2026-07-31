@@ -66,3 +66,10 @@ test('battle snapshots separate full self state from periodic arena previews', (
   assert.equal(regular.boards.length,3);assert.equal(overview.overview.length,3);
   assert.ok(!('grid' in regular.boards[1]));assert.ok(overview.overview[1].grid.length);
 });
+
+test('battle previews include enough motion and launcher state to animate between overviews', () => {
+  const game=new BattleGame(settings,roster,21);game.fire('b');
+  const ben=game.snapshotFor('a',true).overview.find(board=>board.id==='b');
+  assert.ok(ben.player);assert.equal(Number.isFinite(ben.player.x),true);assert.ok(ben.player.cur);
+  assert.equal(ben.flights.length,1);assert.equal(Number.isFinite(ben.flights[0].vx),true);assert.equal(Number.isFinite(ben.flights[0].vy),true);
+});

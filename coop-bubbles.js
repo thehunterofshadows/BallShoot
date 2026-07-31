@@ -106,6 +106,25 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rnd = (a,b) => a + Math.random() * (b - a);
+/* Online snapshots replace authoritative positions, while these two helpers only carry
+   transient visuals between packets. They deliberately refuse flights without velocity:
+   an incomplete preview should freeze for one packet, never turn coordinates into NaN. */
+const stepOnlineFlights = (flights, dt, left, right) => {
+  for (const f of flights) {
+    if (!Number.isFinite(f.vx) || !Number.isFinite(f.vy)) continue;
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    if (f.x < left) { f.x = 2 * left - f.x; f.vx = Math.abs(f.vx); }
+    else if (f.x > right) { f.x = 2 * right - f.x; f.vx = -Math.abs(f.vx); }
+  }
+};
+const stepOnlineFalling = (falling, dt, floor) => {
+  for (let i = falling.length - 1; i >= 0; i--) {
+    const f = falling[i];
+    f.vy = (f.vy || 0) + 1900 * dt; f.x += (f.vx || 0) * dt; f.y += f.vy * dt; f.a = (f.a || 0) + (f.spin || 0) * dt;
+    if (f.y > floor) { f.y = floor; f.fade = (f.fade ?? 1) - 2.5 * dt; }
+    if ((f.fade ?? 1) <= 0) falling.splice(i, 1);
+  }
+};
 /* Short aim guides are a fixed stub off the barrel, not a share of the flight path. A
    share grew and shrank with how far the shot had to travel, which leaks exactly the
    distance information the shortened setting exists to withhold — and made the 25% guide
@@ -848,10 +867,10 @@ class CoopBubbles extends HTMLElement {
       const own=this.players[this.activeP];
       if(own)this.predictOwnAim(own,dt);
       for(const p of this.players){p.reload=Math.max(0,p.reload-dt);if(p!==own)this.followServerAim(p,dt);}
-      for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>this.WW-X0-R)f.vx=-f.vx;}
+      stepOnlineFlights(this.flights,dt,X0+R,this.WW-X0-R);
       if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
       const floor=92+this.LAUNCH_Y-60-R+6;
-      for(let i=this.falling.length-1;i>=0;i--){const f=this.falling[i];f.vy+=1900*dt;f.x+=f.vx*dt;f.y+=f.vy*dt;f.a+=f.spin*dt;if(f.y>floor){f.y=floor;f.fade=(f.fade??1)-2.5*dt;}if((f.fade??1)<=0)this.falling.splice(i,1);}
+      stepOnlineFalling(this.falling,dt,floor);
       const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX+=(target-this.camX)*Math.min(1,6*dt);}
     }
     this.fxTick();
@@ -860,9 +879,10 @@ class CoopBubbles extends HTMLElement {
     const bt=this.battle;if(!bt)return;
     if(this.state!=='paused'){
       this.now+=dt;if(bt.targeting)bt.targeting.t=Math.max(0,bt.targeting.t-dt);
-      const b=bt.human;if(b){this.bindBoard(b);const p=b.player;
-        if(this.state==='play'&&!bt.targeting)this.predictOwnAim(p,dt);else this.followServerAim(p,dt);
-        p.reload=Math.max(0,(p.reload||0)-dt);for(const f of this.flights){f.x+=f.vx*dt;f.y+=f.vy*dt;if(f.x<X0+R||f.x>W-X0-R)f.vx=-f.vx;}
+      for(const b of bt.boards){this.bindBoard(b);const p=b.player;
+        if(b===bt.human&&this.state==='play'&&!bt.targeting)this.predictOwnAim(p,dt);else this.followServerAim(p,dt);
+        p.reload=Math.max(0,(p.reload||0)-dt);stepOnlineFlights(this.flights,dt,X0+R,W-X0-R);
+        stepOnlineFalling(this.falling,dt,92+this.LAUNCH_Y-60-R+6);
         if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);this.fxTick();this.unbindBoard(b);}
     }
     const want=!!bt.targeting||bt.spectate;bt.zoom=clamp(bt.zoom+(want?6:-6)*dt,0,1);
@@ -1336,6 +1356,7 @@ class CoopBubbles extends HTMLElement {
     ctx.globalAlpha = 1;
   }
   drawGuide(ctx, p, alpha) {
+    if (!p.cur) return;
     const sim = this.simulate(p.x, clamp(p.angle, -1.22, 1.22));
     const meta = p.meta;
     const frac = this.settings.guide;
@@ -1399,17 +1420,21 @@ class CoopBubbles extends HTMLElement {
     }
     // current bubble in pod (dim while reloading)
     ctx.globalAlpha = p.reload > 0 ? 0.45 : 1;
-    const pulse = p.cur.swapT && this.now - p.cur.swapT < 0.5 ? 1 + Math.sin((this.now - p.cur.swapT) * 20) * 0.12 : 1;
-    this.drawBubble(ctx, x + ox, y - 44 + oy, 22 * pulse, p.cur.kind, p.cur.special, false, false);
+    const cur = p.cur;
+    const pulse = cur?.swapT && this.now - cur.swapT < 0.5 ? 1 + Math.sin((this.now - cur.swapT) * 20) * 0.12 : 1;
+    if (cur) this.drawBubble(ctx, x + ox, y - 44 + oy, 22 * pulse, cur.kind, cur.special, false, false);
     ctx.globalAlpha = 1;
     // glass dome gloss
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.beginPath(); ctx.ellipse(x + ox - 8, y - 58 + oy, 16, 9, -0.5, 0, 7); ctx.fill();
     // next preview
-    const npulse = p.next.swapT && this.now - p.next.swapT < 0.5 ? 1 + Math.sin((this.now - p.next.swapT) * 20) * 0.12 : 1;
-    this.drawBubble(ctx, x + 40, y + 6, 13 * npulse, p.next.kind, p.next.special, false, false);
-    ctx.font = '600 12px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5'; ctx.textAlign = 'center';
-    ctx.fillText('next', x + 40, y + 34);
+    const next = p.next;
+    const npulse = next?.swapT && this.now - next.swapT < 0.5 ? 1 + Math.sin((this.now - next.swapT) * 20) * 0.12 : 1;
+    if (next) {
+      this.drawBubble(ctx, x + 40, y + 6, 13 * npulse, next.kind, next.special, false, false);
+      ctx.font = '600 12px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5'; ctx.textAlign = 'center';
+      ctx.fillText('next', x + 40, y + 34);
+    }
     // identity icon + label
     ctx.fillStyle = meta.accent; ctx.strokeStyle = meta.accent;
     const iy = y + 12;
@@ -2522,9 +2547,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
   }
   battleBoardFromSnapshot(summary,data,old={}){
-    const seat=summary.seat,rawPlayer=(data?.players||[])[0]||data?.player||{},wasPlayer=old.player?.id===summary.id?old.player:null;
-    const player={...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:wasPlayer?wasPlayer.held:{},
-      serverAngle:rawPlayer.angle,angle:wasPlayer?wasPlayer.angle:rawPlayer.angle??0,aimTarget:wasPlayer?wasPlayer.aimTarget:null,
+    const seat=summary.seat,wirePlayer=(data?.players||[])[0]||data?.player||null,wasPlayer=old.player?.id===summary.id?old.player:null;
+    const rawPlayer=wirePlayer||wasPlayer||{x:W/2,angle:0,cur:null,next:null,reload:0};
+    const player={...(wasPlayer||{}),...rawPlayer,i:0,id:summary.id,name:summary.name,meta:META[seat],bot:false,held:wasPlayer?wasPlayer.held:{},
+      serverAngle:Number.isFinite(wirePlayer?.angle)?wirePlayer.angle:wasPlayer?.serverAngle,
+      angle:wasPlayer?wasPlayer.angle:rawPlayer.angle??0,aimTarget:wasPlayer?wasPlayer.aimTarget:null,
       stats:summary.stats||rawPlayer.stats||old.player?.stats||{}};
     const rawGrid=data&&Array.isArray(data.grid)?data.grid:(old.grid?[...old.grid.values()]:[]);
     return {i:seat,id:summary.id,name:summary.name,meta:META[seat],connected:summary.connected,alive:summary.alive,place:summary.place,
@@ -2539,9 +2566,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if(s.tick===0){this._lastOnlineBattleEvent=0;this._lastBattleOverviewEvent={};this._battlePreviews=new Map();}
     const oldState=this.state,oldBattle=this.battle,oldById=new Map((oldBattle?.boards||[]).map(b=>[b.id,b]));
     this.settings={...this.settings,...s.settings,mode:'battle',field:'classic'};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.now=s.now;this.state=s.state;this.WW=W;this.cols=COLS;this.camX=0;
-    this._battlePreviews=this._battlePreviews||new Map();if(s.overview)for(const preview of s.overview)this._battlePreviews.set(preview.id,preview);
+    this._battlePreviews=this._battlePreviews||new Map();const freshPreviews=new Map((s.overview||[]).map(preview=>[preview.id,preview]));
+    for(const preview of freshPreviews.values())this._battlePreviews.set(preview.id,preview);
     const summaries=[...(s.boards||[])].sort((a,b)=>a.seat-b.seat),boards=summaries.map(summary=>{
-      const data=summary.id===this.onlinePlayerId?s.self:this._battlePreviews.get(summary.id),old=oldById.get(summary.id)||{};
+      const old=oldById.get(summary.id)||{},data=summary.id===this.onlinePlayerId?s.self:(freshPreviews.get(summary.id)||(old.id?null:this._battlePreviews.get(summary.id)));
       const board=this.battleBoardFromSnapshot(summary,data,old),last=this._lastBattleOverviewEvent?.[summary.id]||0;
       for(const event of data?.events||[])if(event.id>last){if(event.kind==='garbage')board.attackFlash=this.now;if(event.kind==='attack_ready')board.chargeFlash=this.now;}
       return board;
