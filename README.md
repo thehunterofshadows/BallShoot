@@ -11,9 +11,10 @@ two to eight. The host chooses every lobby setting and starts the match. Co-op
 players share one server-authoritative field, while Battle gives each person a
 private field.
 
-Aim with the arrow keys or the touch halves, fire, and swap the loaded bubble with the
-on-deck one (`S`, or the `⇄` button) when the one you drew is no use. Swapping is free but
-obeys the same reload timer as firing.
+Aim with the arrow keys or the touch halves and fire; you shoot the colour you were dealt,
+with the `next` preview for planning. In two-player Co-op Clear either player can **PASS**
+(`E`, or the PASS button) to swap both players' loaded bubbles — `next` bubbles stay put,
+specials travel with their bubble, and a shared 5-second cooldown follows each pass.
 
 Co-op Clear plays the four authored levels as a chain: clearing one carries your score and
 stats into the next, pays an accuracy bonus, and only the last level ends the run. Beating

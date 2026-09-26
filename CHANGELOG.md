@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Two-player Co-op Clear gets a **PASS** (#2): either human can swap the two players'
+  *current* bubbles in one step — "send me your red". It is a swap, not a gift, so the bubble
+  economy is untouched and both launchers stay loaded; the `next` bubbles never move, and a
+  bomb or rainbow travels with its bubble. One 5-second cooldown (`PASS.cooldown`) is shared
+  by the pair, so two presses at the same moment still make a single swap. A pass is not a
+  shot: shots, misses, pressure, score and the chain are unaffected. Online the server is the
+  authority — the client sends `{ type: "pass" }` with no bubble in it, the server's
+  `requestPass()` validates and swaps, and the client animates the resulting `pass` event
+  rather than predicting it; snapshots carry `passCd` so a rejoin shows the right cooldown.
+  The rules live in one `pass-rules` block that is byte-identical in `server/game.js` and
+  `coop-bubbles.js`. Controls: the new PASS pad button (touch and mouse; it sits in the
+  corner on your launcher's side, clear of FIRE, and shows the cooldown as a shrinking wedge
+  and a seconds count), **E** online and for local P2, **/** for local P3 and **I** for local
+  P4. A pass arcs each bubble to the partner over a streak in the giver's colour, pulses both
+  launcher rings, pops a small **PASS!** and plays a swoosh; pressing early only clicks and
+  shakes the button. Solo, Endless, Battle and 3-4 player rooms have no PASS.
+
 - Two-player Co-op Clear now scores teamwork (#1). Every bubble remembers who placed it and
   when, and a shot that clears or drops bubbles your teammate placed *before* you fired is a
   **TEAM ASSIST**: +100 to the team, once per resolving shot however many of their bubbles go

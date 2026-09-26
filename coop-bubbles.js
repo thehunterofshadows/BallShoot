@@ -88,9 +88,9 @@ const AIM_HINT = {
 };
 const META = [
   { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:AIM_HINT.halves.ctrl },
-  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire' },
-  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire' },
-  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire' },
+  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · E pass' },
+  { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire · / pass' },
+  { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire · I pass' },
   { name:'P5', accent:'#5fb7ff', trail:'solid', icon:'tri',    ctrl:'battle royale · bot or online' },
   { name:'P6', accent:'#9ad34d', trail:'dots',  icon:'square', ctrl:'battle royale · bot or online' },
   { name:'P7', accent:'#ff8a75', trail:'rings', icon:'ring',   ctrl:'battle royale · bot or online' },
@@ -103,6 +103,7 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   win:[620,.6,'triangle',400], lose:[220,.7,'sawtooth',-140], swap:[430,.08,'sine',120], ceiling:[190,.3,'square',-50],
   attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
   teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
+  pass:[340,.3,'sine',560], passNo:[150,.04,'square',0],
 };
 /* team-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so local co-op and an online room qualify the same moments the same way.
@@ -151,6 +152,28 @@ const teamPlay = (T, humans, shots, dropped, rescued) => {
   return out;
 };
 /* team-rules:end */
+/* pass-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so a local pass and an online one are allowed at exactly the same moments.
+
+   Two-player Co-op Clear lets either human PASS: the two players' *current* bubbles swap
+   in one step. A swap rather than a gift keeps the bubble economy untouched and leaves both
+   launchers loaded; the `next` bubbles never move, and a bomb or rainbow travels with its
+   bubble. One cooldown is shared by the pair, so whoever asks first spends it for both and
+   a near-simultaneous second request is simply refused. A pass is not a shot: it touches
+   no shot count, miss meter, pressure, score or chain. `passPair` answers whether a pass
+   may happen and between whom — it returns the two launchers to swap, or null. */
+const PASS = {
+  cooldown: 5, // seconds of shared cooldown after a pass
+};
+const passPair = (humans, players, by, state, cd) => {
+  if (state !== 'play' || cd > 0 || !humans || humans.length !== 2 || !humans.includes(by)) return null;
+  const pair = humans.map(i => players[i]);
+  if (pair.some(p => !p || p.connected === false || !p.cur)) return null;
+  return pair;
+};
+const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
+/* pass-rules:end */
+const PASS_FX = 0.45; // seconds a passed bubble spends in the air (presentation only)
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rnd = (a,b) => a + Math.random() * (b - a);
@@ -335,7 +358,7 @@ class CoopBubbles extends HTMLElement {
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
-    this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.dispScore = carry ? carry.score : 0;
+    this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.passFx = null; this.passCd = 0; this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
     this.score = carry ? carry.score : 0;
     this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
@@ -816,6 +839,74 @@ class CoopBubbles extends HTMLElement {
     }
     if (!a || team.rescue || team.drop) this.addPopup({ x: at.x, y: at.y + 40 }, '+' + team.bonus + ' TEAM', col(a ? a.by : 0));
   }
+  /* ---------- PASS ----------
+     Local play runs passPair right here. Online the request only asks: the swap arrives as
+     the server's `pass` event with the snapshot that already holds the traded bubbles, so a
+     pass is never predicted and two partners pressing together still see one swap. */
+  // Which launcher this device's PASS button speaks for, or -1 when no pass is possible.
+  passPlayer() {
+    const h = this.teamHumans(); if (h.length !== 2) return -1;
+    if (this.online) return h.includes(this.activeP) ? this.activeP : -1;
+    const p = this.firstHumanPlayer(); return p && h.includes(p.i) ? p.i : -1;
+  }
+  padPass() { const i = this.passPlayer(); if (i >= 0) this.requestPass(i); }
+  requestPass(i) {
+    const h = this.teamHumans();
+    if (h.length !== 2 || !h.includes(i)) return; // no pass in this game at all: stay silent
+    const pair = passPair(h, this.players, i, this.state, this.passCd || 0);
+    if (!pair) { this.passRefused(); return; }
+    if (this.online) { this.sendOnline('pass'); return; }
+    passSwap(pair); this.passCd = PASS.cooldown;
+    this.showPass({ by: i, players: pair.map(p => p.i) });
+  }
+  // Not ready: a muted click and a shake of the button, never a line of text over the board.
+  passRefused() { this.passShakeT = performance.now() / 1000; this.sfx('passNo'); }
+  showPass(d) {
+    const [a, b] = (d.players || []).map(i => this.players[i]); if (!a || !b) return;
+    const col = (META[d.by] || META[0]).accent;
+    this.passFx = { t: this.now, a: a.i, b: b.i };
+    this.passFlashT = performance.now() / 1000;
+    this.addPopup({ x: (a.x + b.x) / 2, y: this.LAUNCH_Y - 170 }, 'PASS!', col);
+    this.sfx('pass');
+  }
+  /* Each bubble arcs from the launcher that gave it up to the one that holds it now, over a
+     streak in the giver's accent. The swap has already happened; this only shows it. */
+  drawPassFx(ctx) {
+    const fx = this.passFx; if (!fx) return;
+    const k = (this.now - fx.t) / PASS_FX, fade = clamp(1 - (k - 1) / 0.6, 0, 1);
+    if (fade <= 0) return;
+    const e = Math.min(1, k), u = e * e * (3 - 2 * e), y = this.LAUNCH_Y - 44;
+    for (const [from, to] of [[fx.a, fx.b], [fx.b, fx.a]]) {
+      const pf = this.players[from], pt = this.players[to]; if (!pf || !pt) continue;
+      const x0 = pf.x, x1 = pt.x, lift = 140 + Math.abs(x1 - x0) * 0.2;
+      const at = v => ({ x: x0 + (x1 - x0) * v, y: y - Math.sin(v * Math.PI) * lift });
+      const u0 = Math.max(0, u - 0.4);
+      ctx.globalAlpha = 0.55 * fade; ctx.strokeStyle = (META[from] || META[0]).accent;
+      ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.beginPath();
+      for (let s = 0; s <= 14; s++) { const q = at(u0 + (u - u0) * s / 14); if (s) ctx.lineTo(q.x, q.y); else ctx.moveTo(q.x, q.y); }
+      ctx.stroke(); ctx.lineCap = 'butt'; ctx.globalAlpha = 1;
+      if (k < 1 && pt.cur) { const q = at(u); this.drawBubble(ctx, q.x, q.y, 22, pt.cur.kind, pt.cur.special, false, false); }
+    }
+    ctx.globalAlpha = 1;
+  }
+  /* The PASS button exists only while this device could pass. Its fill is the shared
+     cooldown, so both partners watch the same clock; it flashes on a pass and shakes when
+     pressed early. Button timers run on the wall clock so a pause cannot freeze them on. */
+  syncPassButton() {
+    const el = this.passBtn; if (!el) return;
+    const i = this.passPlayer(), on = i >= 0 && (this.state === 'play' || this.state === 'paused');
+    if (on !== this._passOn) { this._passOn = on; el.classList.toggle('on', on); }
+    if (!on) return;
+    const cd = this.passCd || 0, q = Math.round(clamp(cd / PASS.cooldown, 0, 1) * 100) / 100;
+    if (q !== this._passK) { this._passK = q; el.style.setProperty('--passK', q); el.classList.toggle('cooling', q > 0); }
+    const label = cd > 0 ? 'PASS ' + Math.ceil(cd) : 'PASS';
+    if (el.textContent !== label) el.textContent = label;
+    const t = performance.now() / 1000;
+    el.classList.toggle('flash', t - (this.passFlashT ?? -9) < 0.45);
+    el.classList.toggle('shake', t - (this.passShakeT ?? -9) < 0.3);
+    const p = this.players[i], side = p && p.x - (this.camX || 0) < W / 2 ? 'left' : 'right';
+    if (el.dataset.side !== side) el.dataset.side = side;
+  }
   centerOf(keys) {
     let sx = 0, sy = 0, n = 0;
     keys.forEach(k => { const [r,c] = k.split(',').map(Number); sx += this.cellX(r,c); sy += this.cellY(r); n++; });
@@ -943,6 +1034,7 @@ class CoopBubbles extends HTMLElement {
     }
     if (this.state === 'play' && !this.online) this.update(dt);
     else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
+    this.syncPassButton();
     this.render();
   }
   /* Own-launcher prediction. The server runs the same aimTick over the same input stream, so
@@ -975,6 +1067,7 @@ class CoopBubbles extends HTMLElement {
       this.now += dt;
       const own=this.players[this.activeP];
       if(own)this.predictOwnAim(own,dt);
+      if(this.passCd>0)this.passCd=Math.max(0,this.passCd-dt);
       for(const p of this.players){p.reload=Math.max(0,p.reload-dt);if(p!==own)this.followServerAim(p,dt);}
       stepOnlineFlights(this.flights,dt,X0+R,this.WW-X0-R);
       if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
@@ -1000,6 +1093,7 @@ class CoopBubbles extends HTMLElement {
     const ts = this.danger ? 0.55 : 1; // dramatic slow-mo during rescue window
     const dt = rdt * ts;
     this.now += rdt;
+    if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - rdt); // real time, like the chain window
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*rdt, 80*rdt);
     // player input streams
     for (const p of this.players) {
@@ -1061,6 +1155,7 @@ class CoopBubbles extends HTMLElement {
     this.callouts = this.callouts.filter(c => this.now - c.t < 1.5);
     this.popups = (this.popups || []).filter(p => this.now - p.t < 1.1);
     this.teamFx = (this.teamFx || []).filter(f => this.now - f.t < 1.6);
+    if (this.passFx && this.now - this.passFx.t > PASS_FX * 1.8) this.passFx = null;
     this.sfxLog = this.sfxLog.filter(s => this.now - s.t < 1.6);
   }
   callout(text, color) { this.callouts.push({ text, color, t: this.now }); }
@@ -1096,6 +1191,7 @@ class CoopBubbles extends HTMLElement {
     const slop = this.padSlop();
     if (this.padBoxHit('.padF', x, y, 0)) return 'fire';
     if (slop && this.padBoxHit('.padF', x, y, slop)) return 'fire';
+    if (this.padBoxHit('.padP', x, y, 0)) return 'pass';
     if (this.padBoxHit('.padA', x, y, 0)) return 'aim';
     if (this.padBoxHit('.padL', x, y, 0)) return 'l';
     if (this.padBoxHit('.padR', x, y, 0)) return 'r';
@@ -1167,6 +1263,7 @@ class CoopBubbles extends HTMLElement {
       a:[1,'l'], d:[1,'r'], arrowleft:[2,'l'], arrowright:[2,'r'], j:[3,'l'], l:[3,'r'],
     };
     const firemap = { w:1, ' ':1, arrowup:2, enter:2, k:3 };
+    const passmap = { e:1, '/':2, i:3 }; // P1 passes from the pad's PASS button
     const kd = e => {
       if (/input|select|textarea/i.test(e.target.tagName)) return;
       this.ensureAudio();
@@ -1199,11 +1296,13 @@ class CoopBubbles extends HTMLElement {
         if (['a','arrowleft','j'].includes(k)) { this.setOnlineHeld('l', true); e.preventDefault(); }
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
+        if (k === 'e') { this.requestPass(this.activeP); e.preventDefault(); }
         return;
       }
       const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; p.aimTarget = null; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
+      if (passmap[k] !== undefined) { const p = this.players[passmap[k]]; if (p && !p.bot) { this.requestPass(p.i); e.preventDefault(); } }
     };
     const ku = e => { const k=e.key.toLowerCase();
       if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
@@ -1353,6 +1452,7 @@ class CoopBubbles extends HTMLElement {
       this.drawBubble(ctx, 0, 0, R - 1, f.kind, f.special, false, false); ctx.restore(); }
     // launchers
     for (const p of this.players) this.drawLauncher(ctx, p);
+    this.drawPassFx(ctx);
     this.drawTeamFx(ctx);
     // score popups (world-anchored)
     for (const p of (this.popups || [])) {
@@ -1593,8 +1693,15 @@ class CoopBubbles extends HTMLElement {
     }
     // current bubble in pod (dim while reloading)
     ctx.globalAlpha = p.reload > 0 ? 0.45 : 1;
-    const cur = p.cur;
-    const pulse = cur?.swapT && this.now - cur.swapT < 0.5 ? 1 + Math.sin((this.now - cur.swapT) * 20) * 0.12 : 1;
+    // A passed bubble is in the air until PASS_FX; the pod refills when it lands.
+    const pk = this.passFx && (p.i === this.passFx.a || p.i === this.passFx.b) ? (this.now - this.passFx.t) / PASS_FX : 9;
+    const cur = pk < 1 ? null : p.cur;
+    const pulse = pk < 1.6 ? 1 + Math.sin((pk - 1) / 0.6 * Math.PI) * 0.18
+      : cur?.swapT && this.now - cur.swapT < 0.5 ? 1 + Math.sin((this.now - cur.swapT) * 20) * 0.12 : 1;
+    if (pk < 1.8) {
+      ctx.save(); ctx.globalAlpha = clamp(1 - pk / 1.8, 0, 1); ctx.strokeStyle = meta.accent; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(x, y - 44, 38 + pk * 16, 0, 7); ctx.stroke(); ctx.restore();
+    }
     if (cur) this.drawBubble(ctx, x + ox, y - 44 + oy, 22 * pulse, cur.kind, cur.special, false, false);
     ctx.globalAlpha = 1;
     // glass dome gloss
@@ -2214,6 +2321,15 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
    frame and then stop dead. */
 .pad .padA{display:none;position:absolute;inset:0;touch-action:none;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
 .pad .padF{background:#ff6fb1;color:#fff;font-size:14px;letter-spacing:.06em}
+/* PASS only exists in two-human Co-op Clear (syncPassButton adds .on). While cooling, the
+   violet wedge is the share of the shared cooldown still to run. */
+.pad .padP{display:none;color:#7a5cd6;font-size:14px;letter-spacing:.06em;min-width:6.4em;text-align:center}
+.pad .padP.on{display:inline-block}
+.pad .padP.cooling{color:#9db8d4;background:conic-gradient(rgba(167,139,250,.38) calc(var(--passK,0) * 360deg),rgba(255,255,255,.94) 0)}
+.pad .padP.flash{animation:passFlash .45s ease-out}
+.pad .padP.shake{animation:passShake .3s linear}
+@keyframes passFlash{0%{background:#a78bfa;color:#fff;box-shadow:0 0 0 8px rgba(167,139,250,.45)}}
+@keyframes passShake{25%{translate:-5px 0}50%{translate:5px 0}75%{translate:-3px 0}}
 /* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
    under the pad's z-index and takes no pointer events, so it never eats an aim drag. */
 .buildTag{position:absolute;right:8px;bottom:3px;z-index:3;pointer-events:none;user-select:none;
@@ -2319,6 +2435,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     the thumb rest. FIRE keeps its z-index above it, and padHit checks it first anyway, so the
     only thing that changes is what an otherwise-unclaimed touch means. The chrome sits at
     z-index 6 unconditionally, so a full-board drag cannot eat the gear here either. */
+ /* PASS sits in the outer corner on the side of this player's launcher, clear of FIRE's
+    near-miss halo and above the aim-half arrows; padHit ranks it over the aim surfaces. */
+ .pad .padP{position:absolute;bottom:calc(64px * var(--u,1));z-index:2;padding:calc(12px * var(--u,1)) calc(16px * var(--u,1));font-size:clamp(11px,calc(14px * var(--u,1)),19px);min-width:6.4em;min-height:40px;border-radius:14px}
+ .pad .padP[data-side="left"]{left:calc(10px * var(--u,1))}
+ .pad .padP:not([data-side="left"]){right:calc(10px * var(--u,1))}
  .root[data-aim-mode="point"] .pad{top:0;height:100%}
  .root[data-aim-mode="point"] .pad .padA{display:block;pointer-events:auto;background:transparent}
  .root[data-aim-mode="point"] .pad .padA:active{background:rgba(43,111,212,var(--padTint,.025))}
@@ -2332,7 +2453,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="buildTag">${BUILD_LABEL}</div>
-    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button></div>
+    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button><button class="padP" aria-label="Pass your bubble to your teammate">PASS</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
@@ -2470,6 +2591,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
        full-height overlays, so before this a thumb landing a few pixels off FIRE turned the
        launcher instead of shooting — the commonest mis-hit on a phone. */
     const pad = this.padEl = sh.querySelector('.pad');
+    this.passBtn = sh.querySelector('.padP');
     pad.addEventListener('pointerdown', e => {
       const hit = this.padHit(e.clientX, e.clientY); if (!hit) return;
       e.preventDefault(); e.stopPropagation(); this.ensureAudio();
@@ -2481,6 +2603,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { if (e.target && e.target !== pad) e.target.setPointerCapture(e.pointerId); } catch (_) {}
       const hold = this._padHold = { id: e.pointerId, hit, p: null };
       if (hit === 'fire') this.padFire();
+      else if (hit === 'pass') this.padPass();
       else if (hit === 'aim') { if (this.battleTargetActive()) this.battlePickAt(e); else this.padAimPoint(e); }
       else hold.p = this.padAimHold(hit, true);
     }, true);
@@ -2706,7 +2829,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
+    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
@@ -2757,7 +2880,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at

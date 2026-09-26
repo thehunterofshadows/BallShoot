@@ -103,6 +103,27 @@ const teamPlay = (T, humans, shots, dropped, rescued) => {
   return out;
 };
 /* team-rules:end */
+/* pass-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so a local pass and an online one are allowed at exactly the same moments.
+
+   Two-player Co-op Clear lets either human PASS: the two players' *current* bubbles swap
+   in one step. A swap rather than a gift keeps the bubble economy untouched and leaves both
+   launchers loaded; the `next` bubbles never move, and a bomb or rainbow travels with its
+   bubble. One cooldown is shared by the pair, so whoever asks first spends it for both and
+   a near-simultaneous second request is simply refused. A pass is not a shot: it touches
+   no shot count, miss meter, pressure, score or chain. `passPair` answers whether a pass
+   may happen and between whom — it returns the two launchers to swap, or null. */
+const PASS = {
+  cooldown: 5, // seconds of shared cooldown after a pass
+};
+const passPair = (humans, players, by, state, cd) => {
+  if (state !== 'play' || cd > 0 || !humans || humans.length !== 2 || !humans.includes(by)) return null;
+  const pair = humans.map(i => players[i]);
+  if (pair.some(p => !p || p.connected === false || !p.cur)) return null;
+  return pair;
+};
+const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
+/* pass-rules:end */
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -153,6 +174,7 @@ class OnlineGame {
     this.dispScore = carry ? carry.score : 0; this.missMeter = 0; this.danger = null;
     this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
     this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
+    this.passCd = 0;
     if (!carry) { this.now = 0; this.events = []; this.eventId = 0; this.paused = false; }
     const prior = carry ? new Map(carry.players.map(p => [p.id, p])) : null;
     this.players = this.roster.map((member, i) => {
@@ -279,7 +301,20 @@ class OnlineGame {
     return true;
   }
   /* There is no swap: a player shoots the colour they were dealt. The queue is a constraint
-     to play around rather than one to reorder. */
+     to play around rather than one to reorder. PASS is a different thing — it trades the
+     loaded bubble with your teammate and leaves both queues otherwise alone. */
+  /* The client only asks. What each launcher ends up holding is whatever this authority
+     already had, never a bubble the request carried, and the shared cooldown is what makes a
+     second request in the same instant a no-op rather than a swap back. */
+  requestPass(id) {
+    const p = this.players.find(q => q.id === id);
+    if (!p || this.inputLocked) return false;
+    const pair = passPair(this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state, this.passCd);
+    if (!pair) return false;
+    passSwap(pair); this.passCd = PASS.cooldown;
+    this.emit('pass', { by: p.i, players: pair.map(q => q.i), cur: pair.map(q => ({ ...q.cur })), cooldown: PASS.cooldown });
+    return true;
+  }
   emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
 
   update(dt) {
@@ -292,6 +327,7 @@ class OnlineGame {
     }
     if (this.state !== 'play' || this.paused) return;
     dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
+    if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - dt);
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*dt, 80*dt);
     for (const p of this.players) {
       p.reload = Math.max(0, p.reload - dt);
@@ -504,6 +540,7 @@ class OnlineGame {
       players:this.players.map(p=>({...p,held:undefined,aimTarget:undefined})), score:this.score, dispScore:this.dispScore,
       missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,
+      passCd:this.passCd, passMax:PASS.cooldown,
       levelSummary:this.levelSummary||null,
       levelReady:this.levelSummary?[...this.levelReadyIds]:null,
       levelSecs:this.levelSummary?Math.max(0,Math.ceil(this.levelTimer)):null,
@@ -512,4 +549,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, normalizeViewH: vh => geom(vh).H };
