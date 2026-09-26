@@ -88,7 +88,7 @@ const AIM_HINT = {
 };
 const META = [
   { name:'P1', accent:'#ff6fb1', trail:'solid', icon:'tri',    ctrl:AIM_HINT.halves.ctrl },
-  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · E pass' },
+  { name:'P2', accent:'#a78bfa', trail:'dots',  icon:'square', ctrl:'A / D aim · W or Space fire · E pass · Q power' },
   { name:'P3', accent:'#35d3c8', trail:'rings', icon:'ring',   ctrl:'← / → aim · ↑ or Enter fire · / pass' },
   { name:'P4', accent:'#ffb054', trail:'spark', icon:'star',   ctrl:'J / L aim · K fire · I pass' },
   { name:'P5', accent:'#5fb7ff', trail:'solid', icon:'tri',    ctrl:'battle royale · bot or online' },
@@ -104,6 +104,7 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
   teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
   pass:[340,.3,'sine',560], passNo:[150,.04,'square',0],
+  powerReady:[660,.35,'triangle',440], teamPower:[520,.8,'triangle',780], powerEnd:[420,.3,'sine',-180],
 };
 /* team-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so local co-op and an online room qualify the same moments the same way.
@@ -173,6 +174,51 @@ const passPair = (humans, players, by, state, cd) => {
 };
 const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
 /* pass-rules:end */
+/* power-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so local co-op and an online room charge and fire Team Power identically.
+
+   Two-player Co-op Clear shares one Team Power meter. It fills from the resolved teamwork
+   events the team rules already decide — one amount per event, never per bubble, so a big
+   cascade cannot farm it — and a clear with no teammate involvement adds nothing. At full
+   either human may cash it in for the equipped power; the meter empties on the spot, so a
+   second request in the same instant finds nothing to spend. The meter does not fill while
+   a power runs. Powers are plain definitions: a duration, which clocks they hold, and what
+   they do to the pair at the moment they start. A later power is one more entry in POWERS
+   and a different `equipped`. `powerPair` answers whether a power may start and on whom —
+   it returns the two launchers, or null. */
+const TEAM_POWER = {
+  max: 100,
+  charge: { assist: 15, chain: 10, rescue: 25, drop: 10, hugeDrop: 20 }, // per resolved event
+  chargeWhileActive: false,
+  equipped: 'synergy',
+};
+const POWERS = {
+  synergy: {
+    name: 'SYNERGY BURST', secs: 8,
+    holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
+    holdRescue: true,   // a running rescue countdown stops where it is
+    start: pair => { for (const p of pair) if (p.cur) p.cur = { kind: p.cur.kind, special: 'rainbow' }; },
+  },
+};
+const powerCharge = (T, team, handoffs, active) => {
+  const reasons = [];
+  if (active && !T.chargeWhileActive) return { amount: 0, reasons };
+  if (team) {
+    for (let i = 0; i < team.assists.length; i++) reasons.push('assist');
+    if (team.rescue) reasons.push('rescue');
+    if (team.drop) reasons.push(team.drop.huge ? 'hugeDrop' : 'drop');
+  }
+  for (let i = 0; i < handoffs; i++) reasons.push('chain');
+  return { amount: reasons.reduce((s, r) => s + T.charge[r], 0), reasons };
+};
+const powerPair = (T, humans, players, by, state, charge, active) => {
+  if (state !== 'play' || active || charge < T.max || !humans || humans.length !== 2 || !humans.includes(by)) return null;
+  const me = players[by];
+  if (!me || me.connected === false || me.bot) return null;
+  return humans.map(i => players[i]).filter(Boolean);
+};
+const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
+/* power-rules:end */
 const PASS_FX = 0.45; // seconds a passed bubble spends in the air (presentation only)
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
@@ -358,7 +404,9 @@ class CoopBubbles extends HTMLElement {
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
-    this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.passFx = null; this.passCd = 0; this.dispScore = carry ? carry.score : 0;
+    this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.passFx = null; this.passCd = 0;
+    this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0; this.teamPowerActive = null; this.teamPowerTimer = 0; this.powerFx = null;
+    this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
     this.score = carry ? carry.score : 0;
     this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
@@ -492,7 +540,8 @@ class CoopBubbles extends HTMLElement {
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
     p.cur = p.next; p.next = this.genBubble();
-    p.reload = this.settings.reload; p.stats.shots++; this.pressure++; p.recoilT = this.now;
+    p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now;
+    if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
       vx: Math.sin(a) * rnd(60, 180) + rnd(-40, 40), vy: -Math.cos(a) * rnd(60, 180) + rnd(-40, 40),
       g: 0, t: this.now, life: 0.35, color: 'rgba(255,255,255,0.85)', sz: rnd(4, 8), soft: true });
@@ -617,10 +666,10 @@ class CoopBubbles extends HTMLElement {
     const humans = this.teamHumans(), teamOn = humans.length === 2;
     const where = popN + dropped.n ? { x: (this.centerOf(allPopped).x * popN + (dropped.x || 0) * dropped.n) / (popN + dropped.n),
       y: (this.centerOf(allPopped).y * popN + (dropped.y || 0) * dropped.n) / (popN + dropped.n) } : null;
-    let team = teamPlay(TEAM, humans, shots, dropped.bubbles || [], false);
+    let team = teamPlay(TEAM, humans, shots, dropped.bubbles || [], false), handoffs = 0;
     // scoring / chain / meters
     if (popN > 0) {
-      clearers.forEach(s => this.registerClear(s));
+      clearers.forEach(s => { if (this.registerClear(s)) handoffs++; });
       const mult = this.chain.mult;
       const pts = this.popPoints(popN) * mult;
       this.score += pts; this.addPopup(this.centerOf(allPopped, this.pops), '+' + pts, '#17335c');
@@ -631,9 +680,10 @@ class CoopBubbles extends HTMLElement {
       this.sfx(popN >= 6 ? 'bigpop' : 'pop');
       if (results.some(r => r.bomb && r.popped)) this.callout('KABOOM!', '#ff8a3c');
     }
-    // misses: every landed shot that didn't pop counts one miss (per spec), even if a teammate popped in the same batch
+    // misses: every landed shot that didn't pop counts one miss (per spec), even if a teammate popped in the same batch.
+    // A power that holds the pressure holds the miss meter too, as OnlineGame does.
     let misses = 0;
-    for (const r of results) if (!r.popped && !r.gone && !r.bomb) misses++;
+    if (!powerHolds(this.teamPowerActive, 'holdPressure')) for (const r of results) if (!r.popped && !r.gone && !r.bomb) misses++;
     if (misses) {
       this.missMeter += misses;
       if (this.missMeter >= this.settings.missMax * 0.6) { this.chain.mult = 1; this.chain.players.clear(); }
@@ -660,6 +710,7 @@ class CoopBubbles extends HTMLElement {
       this.sfx('rescue');
     }
     if (team.bonus) { this.score += team.bonus; this.showTeamPlay(team, where); }
+    if (teamOn) this.chargeTeamPower(team, handoffs, where);
     this.refreshQueues();
     // victory (coop clear)
     if (this.settings.mode === 'clear' && this.grid.size === 0 && this.state === 'play') this.clearLevel();
@@ -735,7 +786,7 @@ class CoopBubbles extends HTMLElement {
     this._pendingLevel = null;
     this.settings.level = next;
     this.state = 'play';
-    this.resetGame({ score: this.score });
+    this.resetGame({ score: this.score, teamPowerCharge: this.teamPowerCharge });
     this._syncSettings?.();
   }
   /* Furthest authored level reached. Progress, not score — score lives on the server. */
@@ -785,11 +836,12 @@ class CoopBubbles extends HTMLElement {
     // Solo runs have no second clearer to hand the chain to, so consecutive clears by
     // the only player must build the multiplier instead of resetting it.
     const solo = this.players.length <= 1, team = this.teamHumans().length === 2, from = ch.last;
+    let handoff = false;
     if (solo || ch.last !== pi) {
       ch.mult = Math.min(ch.mult + 1, 4); ch.same = 0;
       // Mirrors OnlineGame.registerClear: in two-player Co-op Clear each clear that grows
       // the chain is a contribution, and a handoff is what the HUD celebrates.
-      const handoff = team && from >= 0 && from !== pi;
+      handoff = team && from >= 0 && from !== pi;
       if (team) { const p = this.players[pi]; if (p) p.stats.chains = (p.stats.chains || 0) + 1; }
       this.chainFx = { pulseT: this.now, handoffT: handoff ? this.now : (this.chainFx?.handoffT ?? -9), by: pi };
     }
@@ -798,10 +850,11 @@ class CoopBubbles extends HTMLElement {
     if (ch.mult >= 2) {
       if (ch.players.size >= 4) { this.callout('FOUR-PLAYER BURST!', '#ff6fb1'); this.score += 400; ch.players.clear(); }
       else if (ch.players.size === 3) this.callout('THREE-PLAYER CHAIN!', '#35d3c8');
-      else if (team && TEAM.feedback) { this.teamChainCallout(pi, from, ch.mult); return; }
+      else if (team && TEAM.feedback) { this.teamChainCallout(pi, from, ch.mult); return handoff; }
       else this.callout((solo ? 'CHAIN ×' : 'TEAM CHAIN ×') + ch.mult, '#a78bfa');
       this.sfx('chain');
     }
+    return handoff; // a handoff is a Team Power chain step
   }
   /* ---------- two-player co-op feedback ----------
      Local and online both land here: locally from resolveBatch, online from the server's
@@ -906,6 +959,138 @@ class CoopBubbles extends HTMLElement {
     el.classList.toggle('shake', t - (this.passShakeT ?? -9) < 0.3);
     const p = this.players[i], side = p && p.x - (this.camX || 0) < W / 2 ? 'left' : 'right';
     if (el.dataset.side !== side) el.dataset.side = side;
+  }
+  /* ---------- TEAM POWER ----------
+     Local play charges the meter from the same resolved team events the bonuses come from
+     and runs powerPair right here. Online the server owns the meter, the check and the
+     effect: the client only asks, then renders the snapshot fields and team_power_* events.
+     The control speaks for the same launcher PASS does. */
+  padTeamPower() { const i = this.passPlayer(); if (i >= 0) this.requestTeamPower(i); }
+  requestTeamPower(i) {
+    const h = this.teamHumans();
+    if (h.length !== 2 || !h.includes(i)) return; // no Team Power in this game at all
+    const pair = powerPair(TEAM_POWER, h, this.players, i, this.state, this.teamPowerCharge || 0, this.teamPowerActive);
+    if (!pair) { this.powerShakeT = performance.now() / 1000; this.sfx('passNo'); return; }
+    if (this.online) { this.sendOnline('team_power'); return; }
+    const power = TEAM_POWER.equipped, def = POWERS[power];
+    this.teamPowerCharge = 0; this.teamPowerActive = power; this.teamPowerTimer = def.secs;
+    def.start(pair);
+    this.showTeamPowerActivated({ by: i, power, name: def.name, secs: def.secs, players: pair.map(p => p.i) });
+  }
+  // Local only; mirrors OnlineGame.chargeTeamPower.
+  chargeTeamPower(team, handoffs, where) {
+    const { amount, reasons } = powerCharge(TEAM_POWER, team, handoffs, this.teamPowerActive);
+    if (!amount || this.teamPowerCharge >= TEAM_POWER.max) return;
+    const was = this.teamPowerCharge;
+    this.teamPowerCharge = Math.min(TEAM_POWER.max, was + amount);
+    this.showTeamPowerCharge({ amount: this.teamPowerCharge - was, charge: this.teamPowerCharge, reasons, ...(where || {}) });
+    if (this.teamPowerCharge >= TEAM_POWER.max) this.showTeamPowerReady();
+  }
+  endTeamPower() {
+    if (!this.teamPowerActive) return;
+    this.teamPowerActive = null; this.teamPowerTimer = 0;
+    this.showTeamPowerEnded();
+  }
+  showTeamPowerCharge(d) { const fx = this.powerFx ||= {}; fx.chargeT = this.now; fx.gain = d.amount; }
+  showTeamPowerReady() {
+    (this.powerFx ||= {}).readyT = this.now;
+    this.callout('TEAM POWER READY!', '#7b61d9'); this.sfx('powerReady');
+  }
+  showTeamPowerActivated(d) {
+    const fx = this.powerFx ||= {};
+    fx.actT = this.now; fx.by = d.by; fx.players = d.players || this.teamHumans();
+    this.callout((d.name || 'SYNERGY BURST') + '!', (META[d.by] || META[0]).accent);
+    this.sfx('teamPower');
+  }
+  showTeamPowerEnded() { (this.powerFx ||= {}).endT = this.now; this.sfx('powerEnd'); }
+  /* The TEAM POWER button exists whenever this device could use it. Charging it fills
+     quietly; full, it goes rainbow and breathes; running, it counts the burst down. */
+  syncPowerButton() {
+    const el = this.powerBtn; if (!el) return;
+    const on = this.passPlayer() >= 0 && (this.state === 'play' || this.state === 'paused');
+    if (on !== this._powerOn) { this._powerOn = on; el.classList.toggle('on', on); }
+    if (!on) return;
+    const charge = this.teamPowerCharge || 0, active = this.teamPowerActive, ready = !active && charge >= TEAM_POWER.max;
+    const q = active ? 0 : Math.round(clamp(charge / TEAM_POWER.max, 0, 1) * 100) / 100;
+    if (q !== this._powerK) { this._powerK = q; el.style.setProperty('--powerK', q); }
+    el.classList.toggle('ready', ready); el.classList.toggle('active', !!active);
+    const label = active ? 'BURST ' + Math.ceil(this.teamPowerTimer || 0) : ready ? 'TEAM POWER!' : 'POWER ' + Math.floor(q * 100) + '%';
+    if (el.textContent !== label) el.textContent = label;
+    el.classList.toggle('shake', performance.now() / 1000 - (this.powerShakeT ?? -9) < 0.3);
+    const p = this.players[this.passPlayer()], side = p && p.x - (this.camX || 0) < W / 2 ? 'right' : 'left';
+    if (el.dataset.side !== side) el.dataset.side = side; // the corner PASS does not use
+  }
+  /* The shared meter, centred under the score row where both players look. It fills in the
+     two players' colours, turns rainbow and pulses when READY, and becomes the burst's
+     countdown while one runs. */
+  drawTeamPower(ctx) {
+    const max = TEAM_POWER.max, charge = this.teamPowerCharge || 0, active = this.teamPowerActive;
+    const def = active ? POWERS[active] : null, ready = !active && charge >= max, fx = this.powerFx || {};
+    const w = 236, h = 24, x = W / 2 - w / 2, y = 78;
+    const frac = def ? clamp((this.teamPowerTimer || 0) / def.secs, 0, 1) : clamp(charge / max, 0, 1);
+    const ck = fx.chargeT !== undefined ? clamp((this.now - fx.chargeT) / 0.6, 0, 1) : 1;
+    const beat = Math.sin(this.now * 6);
+    ctx.save();
+    const s = ready ? 1 + 0.05 * beat : 1 + (1 - ck) * 0.08;
+    ctx.translate(W / 2, y + h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(y + h / 2));
+    ctx.shadowColor = ready || active ? 'rgba(123,97,217,0.6)' : 'rgba(40,80,140,0.18)';
+    ctx.shadowBlur = ready ? 14 + 8 * beat : 10; ctx.shadowOffsetY = 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)'; this.rrect(ctx, x, y, w, h, h / 2); ctx.fill();
+    ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    if (frac > 0) {
+      const g = ctx.createLinearGradient(x, 0, x + w, 0);
+      if (ready || active) { const o = (this.now * 90) % 360; for (let i = 0; i <= 4; i++) g.addColorStop(i / 4, 'hsl(' + ((o + i * 72) % 360) + ',85%,64%)'); }
+      else { g.addColorStop(0, META[0].accent); g.addColorStop(1, META[1].accent); }
+      ctx.save(); this.rrect(ctx, x, y, w, h, h / 2); ctx.clip();
+      ctx.fillStyle = g; ctx.fillRect(x, y, w * frac, h); ctx.restore();
+    }
+    ctx.strokeStyle = ready || active ? '#7b61d9' : 'rgba(123,97,217,0.45)'; ctx.lineWidth = 2;
+    this.rrect(ctx, x, y, w, h, h / 2); ctx.stroke();
+    this._coarse ??= typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const label = def ? def.name + '  ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
+      : ready ? 'TEAM POWER READY' + (this._coarse ? '' : ' \u00b7 Q') : 'TEAM POWER ' + Math.floor(charge) + '%';
+    ctx.textAlign = 'center'; ctx.font = '700 14px Fredoka, sans-serif';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.strokeText(label, W / 2, y + 17);
+    ctx.fillStyle = '#3b2a7a'; ctx.fillText(label, W / 2, y + 17);
+    ctx.restore();
+    if (ck < 1 && fx.gain) {
+      ctx.globalAlpha = 1 - ck; ctx.fillStyle = '#7b61d9'; ctx.font = '700 16px Fredoka, sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText('+' + fx.gain + '%', x + w + 8, y + 18 - ck * 10); ctx.globalAlpha = 1;
+    }
+  }
+  /* World-space burst presentation. While the power runs both launchers wear one ring that
+     cycles through the rainbow in step; for a moment after it fires a rainbow arc links them. */
+  drawPowerFx(ctx) {
+    const fx = this.powerFx, duo = this.teamHumans(); if (duo.length !== 2) return;
+    const [a, b] = duo.map(i => this.players[i]); if (!a || !b) return;
+    const y = this.LAUNCH_Y - 44;
+    if (this.teamPowerActive) {
+      ctx.lineWidth = 5;
+      for (const p of [a, b]) {
+        ctx.strokeStyle = 'hsl(' + ((this.now * 200) % 360) + ',85%,62%)';
+        ctx.beginPath(); ctx.arc(p.x, y, 41 + Math.sin(this.now * 8) * 3, 0, 7); ctx.stroke();
+      }
+    }
+    const k = fx && fx.actT !== undefined ? (this.now - fx.actT) / 1.4 : 9;
+    if (k < 0 || k >= 1) return;
+    const lift = 120 + Math.abs(b.x - a.x) * 0.15, reach = Math.min(1, k * 3), n = 24;
+    ctx.globalAlpha = 1 - k; ctx.lineWidth = 9 * (1 - k * 0.5); ctx.lineCap = 'round';
+    for (let i = 0; i < n * reach; i++) {
+      const at = v => ({ x: a.x + (b.x - a.x) * v, y: y - Math.sin(v * Math.PI) * lift });
+      const p0 = at(i / n), p1 = at(Math.min(1, (i + 1) / n));
+      ctx.strokeStyle = 'hsl(' + ((i * 15 + this.now * 240) % 360) + ',90%,62%)';
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+    }
+    ctx.lineCap = 'butt'; ctx.globalAlpha = 1;
+  }
+  // Screen-space: a soft edge glow in the two players' colours, breathing while a power runs.
+  drawPowerGlow(ctx) {
+    const fx = this.powerFx || {}, flash = fx.actT !== undefined ? clamp(1 - (this.now - fx.actT) / 0.6, 0, 1) : 0;
+    const a = 0.08 + 0.05 * Math.sin(this.now * 5) + flash * 0.14;
+    const col = META[Math.sin(this.now * 2.5) > 0 ? 0 : 1].accent;
+    const g = ctx.createRadialGradient(W / 2, this.H / 2, this.H * 0.32, W / 2, this.H / 2, this.H * 0.75);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, col);
+    ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.fillRect(0, 0, W, this.H); ctx.globalAlpha = 1;
   }
   centerOf(keys) {
     let sx = 0, sy = 0, n = 0;
@@ -1035,6 +1220,7 @@ class CoopBubbles extends HTMLElement {
     if (this.state === 'play' && !this.online) this.update(dt);
     else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
     this.syncPassButton();
+    this.syncPowerButton();
     this.render();
   }
   /* Own-launcher prediction. The server runs the same aimTick over the same input stream, so
@@ -1068,9 +1254,10 @@ class CoopBubbles extends HTMLElement {
       const own=this.players[this.activeP];
       if(own)this.predictOwnAim(own,dt);
       if(this.passCd>0)this.passCd=Math.max(0,this.passCd-dt);
+      if(this.teamPowerActive)this.teamPowerTimer=Math.max(0,this.teamPowerTimer-dt);
       for(const p of this.players){p.reload=Math.max(0,p.reload-dt);if(p!==own)this.followServerAim(p,dt);}
       stepOnlineFlights(this.flights,dt,X0+R,this.WW-X0-R);
-      if(this.danger)this.danger.t=Math.max(0,this.danger.t-dt);
+      if(this.danger&&!powerHolds(this.teamPowerActive,'holdRescue'))this.danger.t=Math.max(0,this.danger.t-dt);
       const floor=92+this.LAUNCH_Y-60-R+6;
       stepOnlineFalling(this.falling,dt,floor);
       const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX+=(target-this.camX)*Math.min(1,6*dt);}
@@ -1094,6 +1281,7 @@ class CoopBubbles extends HTMLElement {
     const dt = rdt * ts;
     this.now += rdt;
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - rdt); // real time, like the chain window
+    if (this.teamPowerActive && (this.teamPowerTimer -= rdt) <= 0) this.endTeamPower();
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*rdt, 80*rdt);
     // player input streams
     for (const p of this.players) {
@@ -1111,7 +1299,7 @@ class CoopBubbles extends HTMLElement {
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
     const perDrop = this.shotsPerDrop();
-    if (perDrop && this.pressure >= perDrop && !this.resolveAt) this.pressureDescend();
+    if (perDrop && this.pressure >= perDrop && !this.resolveAt && !powerHolds(this.teamPowerActive, 'holdPressure')) this.pressureDescend();
     // falling bubbles (bounce once on the floor edge, splash, fade)
     const FLOOR = 92 + this.LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
@@ -1138,7 +1326,7 @@ class CoopBubbles extends HTMLElement {
     const inDanger = this.anyDangerCells();
     if (inDanger && !this.danger) { this.danger = { t: this.settings.rescueDur, max: this.settings.rescueDur }; this.callout('DANGER! CLEAR THE LINE!', '#ff5b6b'); this.sfx('warn'); }
     else if (!inDanger && this.danger) { this.danger = null; }
-    if (this.danger) { this.danger.t -= rdt; if (this.danger.t <= 0) return this.endGame(false); }
+    if (this.danger && !powerHolds(this.teamPowerActive, 'holdRescue')) { this.danger.t -= rdt; if (this.danger.t <= 0) return this.endGame(false); }
     // endless rows
     if (this.settings.mode === 'endless') {
       this.rowTimer += rdt;
@@ -1192,6 +1380,7 @@ class CoopBubbles extends HTMLElement {
     if (this.padBoxHit('.padF', x, y, 0)) return 'fire';
     if (slop && this.padBoxHit('.padF', x, y, slop)) return 'fire';
     if (this.padBoxHit('.padP', x, y, 0)) return 'pass';
+    if (this.padBoxHit('.padT', x, y, 0)) return 'power';
     if (this.padBoxHit('.padA', x, y, 0)) return 'aim';
     if (this.padBoxHit('.padL', x, y, 0)) return 'l';
     if (this.padBoxHit('.padR', x, y, 0)) return 'r';
@@ -1297,12 +1486,15 @@ class CoopBubbles extends HTMLElement {
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
         if (k === 'e') { this.requestPass(this.activeP); e.preventDefault(); }
+        if (k === 'q') { this.requestTeamPower(this.activeP); e.preventDefault(); }
         return;
       }
       const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p && !p.bot) { p.held[am[1]] = true; p.aimTarget = null; e.preventDefault(); } }
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
       if (passmap[k] !== undefined) { const p = this.players[passmap[k]]; if (p && !p.bot) { this.requestPass(p.i); e.preventDefault(); } }
+      // Team Power belongs to the team, so Q is shared by both local players.
+      if (k === 'q') { const i = this.passPlayer(); if (i >= 0) { this.requestTeamPower(i); e.preventDefault(); } }
     };
     const ku = e => { const k=e.key.toLowerCase();
       if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
@@ -1453,6 +1645,7 @@ class CoopBubbles extends HTMLElement {
     // launchers
     for (const p of this.players) this.drawLauncher(ctx, p);
     this.drawPassFx(ctx);
+    this.drawPowerFx(ctx);
     this.drawTeamFx(ctx);
     // score popups (world-anchored)
     for (const p of (this.popups || [])) {
@@ -1466,6 +1659,7 @@ class CoopBubbles extends HTMLElement {
     const vg = ctx.createRadialGradient(W/2, this.H/2, this.H*0.35, W/2, this.H/2, this.H*0.75);
     vg.addColorStop(0, 'rgba(40,70,120,0)'); vg.addColorStop(1, 'rgba(40,70,120,0.10)');
     ctx.fillStyle = vg; ctx.fillRect(0, 0, W, this.H);
+    if (this.teamPowerActive) this.drawPowerGlow(ctx);
     if (this.danger && this.state === 'play') {
       ctx.fillStyle = 'rgba(140,160,200,0.10)'; ctx.fillRect(0, 0, W, this.H);
       const dp = 0.22 + Math.sin(this.now * 8) * 0.12;
@@ -1807,8 +2001,10 @@ class CoopBubbles extends HTMLElement {
     if (left !== null) {
       ctx.font = '700 13px Fredoka, sans-serif';
       ctx.fillStyle = left <= 1 ? '#ff5b6b' : left <= 3 ? '#ffb054' : '#7593b5';
-      ctx.fillText('ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - hx - 14, my + 30);
+      ctx.fillText(this.teamPowerActive && powerHolds(this.teamPowerActive, 'holdPressure') ? 'ROW PUSH HELD'
+        : 'ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - hx - 14, my + 30);
     }
+    if (this.teamHumans().length === 2) this.drawTeamPower(ctx);
   }
   // shots remaining before the field pushes down; null when the mechanic is off.
   // Online snapshots sync both the grid and the settings, so the threshold
@@ -2330,6 +2526,14 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
 .pad .padP.shake{animation:passShake .3s linear}
 @keyframes passFlash{0%{background:#a78bfa;color:#fff;box-shadow:0 0 0 8px rgba(167,139,250,.45)}}
 @keyframes passShake{25%{translate:-5px 0}50%{translate:5px 0}75%{translate:-3px 0}}
+/* TEAM POWER only exists in two-human Co-op Clear (syncPowerButton adds .on). The violet
+   fill is the shared meter; READY turns it rainbow and makes it breathe. */
+.pad .padT{display:none;color:#7b61d9;font-size:13px;letter-spacing:.04em;min-width:8.6em;text-align:center;background:linear-gradient(90deg,rgba(167,139,250,.35) calc(var(--powerK,0) * 100%),rgba(255,255,255,.94) 0)}
+.pad .padT.on{display:inline-block}
+.pad .padT.ready{color:#fff;text-shadow:0 1px 2px rgba(40,20,90,.5);background:linear-gradient(90deg,#ff5b6b,#ffc233,#3ecf72,#3f9dff,#a78bfa,#ff5b6b);background-size:200% 100%;box-shadow:0 0 0 4px rgba(123,97,217,.35),0 4px 14px rgba(40,80,140,.25);animation:powerReady 1.2s linear infinite}
+.pad .padT.active{color:#fff;background:#7b61d9}
+.pad .padT.shake{animation:passShake .3s linear}
+@keyframes powerReady{0%{background-position:0 0;scale:1}50%{scale:1.07}100%{background-position:200% 0;scale:1}}
 /* Which build is on screen, for telling a stale cached bundle from a fresh one. Sits
    under the pad's z-index and takes no pointer events, so it never eats an aim drag. */
 .buildTag{position:absolute;right:8px;bottom:3px;z-index:3;pointer-events:none;user-select:none;
@@ -2440,6 +2644,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  .pad .padP{position:absolute;bottom:calc(64px * var(--u,1));z-index:2;padding:calc(12px * var(--u,1)) calc(16px * var(--u,1));font-size:clamp(11px,calc(14px * var(--u,1)),19px);min-width:6.4em;min-height:40px;border-radius:14px}
  .pad .padP[data-side="left"]{left:calc(10px * var(--u,1))}
  .pad .padP:not([data-side="left"]){right:calc(10px * var(--u,1))}
+ /* TEAM POWER takes PASS's row in the opposite corner: stacked above PASS it would sit on
+    top of this player's own launcher pod. */
+ .pad .padT{position:absolute;bottom:calc(64px * var(--u,1));z-index:2;padding:calc(12px * var(--u,1)) calc(14px * var(--u,1));font-size:clamp(11px,calc(13px * var(--u,1)),18px);min-width:8.6em;min-height:40px;border-radius:14px}
+ .pad .padT[data-side="left"]{left:calc(10px * var(--u,1))}
+ .pad .padT:not([data-side="left"]){right:calc(10px * var(--u,1))}
  .root[data-aim-mode="point"] .pad{top:0;height:100%}
  .root[data-aim-mode="point"] .pad .padA{display:block;pointer-events:auto;background:transparent}
  .root[data-aim-mode="point"] .pad .padA:active{background:rgba(43,111,212,var(--padTint,.025))}
@@ -2453,7 +2662,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
     <div class="buildTag">${BUILD_LABEL}</div>
-    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button><button class="padP" aria-label="Pass your bubble to your teammate">PASS</button></div>
+    <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button><button class="padP" aria-label="Pass your bubble to your teammate">PASS</button><button class="padT" aria-label="Activate Team Power">TEAM POWER</button></div>
     <div class="overlay home"><div class="card">
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
@@ -2592,6 +2801,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
        launcher instead of shooting — the commonest mis-hit on a phone. */
     const pad = this.padEl = sh.querySelector('.pad');
     this.passBtn = sh.querySelector('.padP');
+    this.powerBtn = sh.querySelector('.padT');
     pad.addEventListener('pointerdown', e => {
       const hit = this.padHit(e.clientX, e.clientY); if (!hit) return;
       e.preventDefault(); e.stopPropagation(); this.ensureAudio();
@@ -2604,6 +2814,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       const hold = this._padHold = { id: e.pointerId, hit, p: null };
       if (hit === 'fire') this.padFire();
       else if (hit === 'pass') this.padPass();
+      else if (hit === 'power') this.padTeamPower();
       else if (hit === 'aim') { if (this.battleTargetActive()) this.battlePickAt(e); else this.padAimPoint(e); }
       else hold.p = this.padAimHold(hit, true);
     }, true);
@@ -2829,7 +3040,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.now=s.now;this.state=s.state;
+    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
@@ -2880,7 +3091,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at

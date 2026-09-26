@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Two-player Co-op Clear gets a shared **Team Power** meter and its first power, **SYNERGY
+  BURST** (#3). The meter fills only from the teamwork events the co-op rules already
+  resolve, once per event and never per bubble: setup assist +15, alternating team-chain
+  handoff +10, team rescue +25, team drop +10 / huge team drop +20. A clear with no teammate
+  involvement adds nothing, the meter caps at 100, does not fill while a power runs, and
+  carries into the next level. At 100 it reads **TEAM POWER READY** and either human can
+  fire it with **Q** or the TEAM POWER pad button, which turns rainbow when ready. Nothing
+  fires it automatically, and bots never do. The first request empties the meter, so two
+  presses at once fire one burst. For 8 seconds both loaded bubbles become rainbows, shots
+  add no pressure or misses, the ceiling holds and a running rescue countdown stops; all
+  of it resumes from where it stopped. The meter becomes the burst's countdown, both
+  launchers wear a matching rainbow ring, a rainbow arc links them, the board edges pulse
+  in both players' colours, and the burst has its own sound. Online the server owns the
+  charge, the check and the effect: the client sends `{ type: "team_power" }` with nothing
+  else in it and renders `team_power_charge` / `team_power_ready` / `team_power_activated`
+  / `team_power_ended`, and snapshots carry the meter and the burst timer for rejoins. The
+  rules live in one `power-rules` block (`TEAM_POWER` tunables, `POWERS` definitions) that
+  is byte-identical in `server/game.js` and `coop-bubbles.js`, so another power is a new
+  `POWERS` entry. Solo, Endless, Battle and 3-4 player rooms have no Team Power.
+
 - Two-player Co-op Clear gets a **PASS** (#2): either human can swap the two players'
   *current* bubbles in one step — "send me your red". It is a swap, not a gift, so the bubble
   economy is untouched and both launchers stay loaded; the `next` bubbles never move, and a

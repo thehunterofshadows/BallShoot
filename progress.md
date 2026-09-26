@@ -1,24 +1,25 @@
-# Issue #2 — Co-op: 2-player Pass Bubble
+# Issue #3 - Co-op Team Power meter and Synergy Burst
 
 **Status:** ✅ Complete
 
 ## Implementation Plan
 
-- [x] Review issue, AGENTS.md, server/game.js, server/server.js, coop-bubbles.js and tests
-- [x] Add shared `PASS` constants + pure `passPair()`/`passSwap()` rules, mirrored verbatim in server and client
-- [x] Server: `passCd` state, `requestPass(id)`, cooldown tick, `pass` event, snapshot field; `pass` protocol message
-- [x] Client local: `requestPass(i)` with the same rules, cooldown tick, E / `/` / I keys
-- [x] Client online: send `pass`, never predict the swap, render the server `pass` event, sync cooldown from snapshots
-- [x] Client presentation: arcing bubbles tinted by sender, launcher ring pulse, PASS! popup, swoosh + muted-click SFX
-- [x] PASS pad button: visible only when a pass is possible, cooldown ring, flash on pass, shake when not ready, never under FIRE
-- [x] Tests: P1/P2 swap, next unchanged, specials intact, cooldown start/reject, simultaneous requests, non-co-op / disconnected rejected, snapshot, no side effects, mirror guard, protocol
-- [x] Run `docker compose run --rm --no-deps test` (100/100 pass)
-- [x] Browser smoke check of local PASS (Playwright touch layout: tap swaps, E refused on cooldown then swaps, no page errors)
-- [x] Update CHANGELOG and README controls
-- [x] `./rebuild.sh` (dev serves `coop-bubbles.js?v=aa54646cc5f9`, build 2026-09-26 22:27 UTC), review diff, commit and push
+- [x] Review issue #3, AGENTS.md and the co-op team/pass code paths
+- [x] Add a `power-rules` block (TEAM_POWER tunables, POWERS definitions, charge-from-team-events, activation check) mirrored verbatim in `server/game.js` and `coop-bubbles.js`
+- [x] Server: charge/active/timer state, charge from authoritative team events, `activateTeamPower(id)`, pressure/miss/rescue pause, events, snapshot fields, `{type:"team_power"}` protocol
+- [x] Client local play: same state machine and charge rules, pause pressure/rescue while active
+- [x] Client online: send request only, apply snapshot fields and render `team_power_*` events
+- [x] Client HUD/controls: shared meter (fill / READY / SYNERGY BURST countdown), TEAM POWER pad button, Q key, activation FX + SFX
+- [x] Tests in `tests/coop-power.test.js` (charge, cap, activation, duplicates, rainbow, pauses, snapshots, battle/solo) and update pad-order test
+- [x] Run `docker compose run --rm --no-deps test` (118/118 pass)
+- [x] Render the co-op HUD in a headless browser (desktop Q and touch button): no page errors; TEAM POWER moved to the corner opposite PASS so it clears the player's launcher
+- [x] Update CHANGELOG and README
+- [x] Rebuild the dev environment with `./rebuild.sh` (build `2026-09-26 22:36 UTC`, `?v=1579ca148a0c`)
+- [x] Review the final diff, commit referencing #3 and push `dev`
 
 ## Notes
 
-- PASS exists only in Co-op Clear with exactly two humans; local bots never take part, and Endless, Solo, Battle and 3-4 player rooms are unchanged.
-- Local keys: PASS button = first human (P1), E = P2, / = P3, I = P4. Online: E or the button, always for your own seat.
-- The swap is authoritative immediately; the arc animation (0.45 s) is presentation only.
+- Charge comes only from the existing team rules, which run for exactly two humans. A local
+  one-human-plus-bot game therefore has no team events and no Team Power.
+- The meter does not fill while a burst runs (`TEAM_POWER.chargeWhileActive`), and a burst
+  also holds the miss meter, since misses are the other thing that drops the ceiling.

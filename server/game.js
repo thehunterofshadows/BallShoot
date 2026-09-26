@@ -124,6 +124,51 @@ const passPair = (humans, players, by, state, cd) => {
 };
 const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
 /* pass-rules:end */
+/* power-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so local co-op and an online room charge and fire Team Power identically.
+
+   Two-player Co-op Clear shares one Team Power meter. It fills from the resolved teamwork
+   events the team rules already decide — one amount per event, never per bubble, so a big
+   cascade cannot farm it — and a clear with no teammate involvement adds nothing. At full
+   either human may cash it in for the equipped power; the meter empties on the spot, so a
+   second request in the same instant finds nothing to spend. The meter does not fill while
+   a power runs. Powers are plain definitions: a duration, which clocks they hold, and what
+   they do to the pair at the moment they start. A later power is one more entry in POWERS
+   and a different `equipped`. `powerPair` answers whether a power may start and on whom —
+   it returns the two launchers, or null. */
+const TEAM_POWER = {
+  max: 100,
+  charge: { assist: 15, chain: 10, rescue: 25, drop: 10, hugeDrop: 20 }, // per resolved event
+  chargeWhileActive: false,
+  equipped: 'synergy',
+};
+const POWERS = {
+  synergy: {
+    name: 'SYNERGY BURST', secs: 8,
+    holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
+    holdRescue: true,   // a running rescue countdown stops where it is
+    start: pair => { for (const p of pair) if (p.cur) p.cur = { kind: p.cur.kind, special: 'rainbow' }; },
+  },
+};
+const powerCharge = (T, team, handoffs, active) => {
+  const reasons = [];
+  if (active && !T.chargeWhileActive) return { amount: 0, reasons };
+  if (team) {
+    for (let i = 0; i < team.assists.length; i++) reasons.push('assist');
+    if (team.rescue) reasons.push('rescue');
+    if (team.drop) reasons.push(team.drop.huge ? 'hugeDrop' : 'drop');
+  }
+  for (let i = 0; i < handoffs; i++) reasons.push('chain');
+  return { amount: reasons.reduce((s, r) => s + T.charge[r], 0), reasons };
+};
+const powerPair = (T, humans, players, by, state, charge, active) => {
+  if (state !== 'play' || active || charge < T.max || !humans || humans.length !== 2 || !humans.includes(by)) return null;
+  const me = players[by];
+  if (!me || me.connected === false || me.bot) return null;
+  return humans.map(i => players[i]).filter(Boolean);
+};
+const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
+/* power-rules:end */
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -175,6 +220,9 @@ class OnlineGame {
     this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
     this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
     this.passCd = 0;
+    // The meter is the team's, so it carries into the next level; a running power does not.
+    this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0;
+    this.teamPowerActive = null; this.teamPowerTimer = 0;
     if (!carry) { this.now = 0; this.events = []; this.eventId = 0; this.paused = false; }
     const prior = carry ? new Map(carry.players.map(p => [p.id, p])) : null;
     this.players = this.roster.map((member, i) => {
@@ -296,7 +344,8 @@ class OnlineGame {
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; this.pressure++;
+    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++;
+    if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a });
     return true;
   }
@@ -315,6 +364,36 @@ class OnlineGame {
     this.emit('pass', { by: p.i, players: pair.map(q => q.i), cur: pair.map(q => ({ ...q.cur })), cooldown: PASS.cooldown });
     return true;
   }
+  /* Team Power, like PASS, is only ever asked for. The charge, the check and the effect are
+     all this authority's, and emptying the meter as it fires is what makes a partner's
+     request in the same instant a no-op. */
+  activateTeamPower(id) {
+    const p = this.players.find(q => q.id === id);
+    if (!p || this.inputLocked) return false;
+    const pair = powerPair(TEAM_POWER, this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state,
+      this.teamPowerCharge, this.teamPowerActive);
+    if (!pair) return false;
+    const power = TEAM_POWER.equipped, def = POWERS[power];
+    this.teamPowerCharge = 0; this.teamPowerActive = power; this.teamPowerTimer = def.secs;
+    def.start(pair);
+    this.emit('team_power_activated', { by: p.i, power, name: def.name, secs: def.secs,
+      players: pair.map(q => q.i), cur: pair.map(q => q.cur && { ...q.cur }) });
+    return true;
+  }
+  // Charge from what resolveBatch already decided; never from anything a client said.
+  chargeTeamPower(team, handoffs, where) {
+    const { amount, reasons } = powerCharge(TEAM_POWER, team, handoffs, this.teamPowerActive);
+    if (!amount || this.teamPowerCharge >= TEAM_POWER.max) return;
+    const was = this.teamPowerCharge;
+    this.teamPowerCharge = Math.min(TEAM_POWER.max, was + amount);
+    this.emit('team_power_charge', { amount: this.teamPowerCharge - was, charge: this.teamPowerCharge, reasons, ...where });
+    if (this.teamPowerCharge >= TEAM_POWER.max) this.emit('team_power_ready', { charge: this.teamPowerCharge });
+  }
+  endTeamPower() {
+    const power = this.teamPowerActive; if (!power) return;
+    this.teamPowerActive = null; this.teamPowerTimer = 0;
+    this.emit('team_power_ended', { power });
+  }
   emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
 
   update(dt) {
@@ -328,6 +407,8 @@ class OnlineGame {
     if (this.state !== 'play' || this.paused) return;
     dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - dt);
+    if (this.teamPowerActive && (this.teamPowerTimer -= dt) <= 0) this.endTeamPower();
+    const holdPressure = powerHolds(this.teamPowerActive, 'holdPressure');
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*dt, 80*dt);
     for (const p of this.players) {
       p.reload = Math.max(0, p.reload - dt);
@@ -337,14 +418,14 @@ class OnlineGame {
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
     const perDrop = this.shotsPerDrop();
-    if (perDrop && this.pressure >= perDrop && !this.resolveAt) {
+    if (perDrop && this.pressure >= perDrop && !this.resolveAt && !holdPressure) {
       this.pressure = 0; this.descendRow(); this.emit('ceiling');
     }
     if (this.chain.t > 0 && (this.chain.t -= dt) <= 0) this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
     const danger = this.anyDangerCells();
     if (danger && !this.danger) { this.danger = { t:this.settings.rescueDur, max:this.settings.rescueDur }; this.emit('warn'); }
     else if (!danger && this.danger) this.danger = null;
-    if (this.danger && (this.danger.t -= dt) <= 0) return this.end(false);
+    if (this.danger && !powerHolds(this.teamPowerActive, 'holdRescue') && (this.danger.t -= dt) <= 0) return this.end(false);
     if (this.settings.mode === 'endless') {
       this.rowTimer += dt;
       if (this.rowTimer > Math.max(10, 24 - this.now/30) && !this.resolveAt) { this.rowTimer = 0; this.addRow(); }
@@ -402,13 +483,15 @@ class OnlineGame {
     // where the rescue itself is, after any ceiling descent. Solo, Battle and 3-4 player
     // rooms get no team events at all.
     const humans=this.teamHumans(), teamOn=humans.length===2, where=this.centerOf(popped.concat(dropped));
-    let team=teamPlay(TEAM,humans,shots,dropped,false);
-    if(popped.length){if(!this.battle)clearers.forEach(i=>this.registerClear(i));const pts=this.popPoints(popped.length)*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}(teamOn?new Set(team.assists.flatMap(a=>a.setup)):owners).forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts,shooters:clearers,team:teamOn?team:undefined});}
-    const misses=results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
+    let team=teamPlay(TEAM,humans,shots,dropped,false),handoffs=0;
+    if(popped.length){if(!this.battle)clearers.forEach(i=>{if(this.registerClear(i))handoffs++;});const pts=this.popPoints(popped.length)*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}(teamOn?new Set(team.assists.flatMap(a=>a.setup)):owners).forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts,shooters:clearers,team:teamOn?team:undefined});}
+    // A power that holds the pressure holds the miss meter too: both are the ceiling's clock.
+    const misses=powerHolds(this.teamPowerActive,'holdPressure')?0:results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
     if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax*0.6){this.chain.mult=1;this.chain.players.clear();}if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
     if(dropped.length){const pts=this.dropPoints(dropped.length,this.countComponents(dropped))*(this.battle?1:this.chain.mult);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts,shooters:clearers,team:teamOn?team:undefined});}
     if(this.danger&&!this.anyDangerCells()){if(team.assists.length)team=teamPlay(TEAM,humans,shots,dropped,true);this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue',{team:!!team.rescue});}
     if(team.bonus){this.score+=team.bonus;this.emit('team_play',{...team,...where});}
+    if(teamOn)this.chargeTeamPower(team,handoffs,where);
     this.refreshQueues();
     const total=popped.length+dropped.length;
     if(this.battle&&total>=6){const amount=clamp(2+Math.round(total*.7),3,14);this.emit('attack_ready',{amount});this.hooks.onAttack?.(amount);}
@@ -471,7 +554,7 @@ class OnlineGame {
     this.levelSummary = null; this.levelReadyIds = new Set(); this.levelTimer = 0;
     this.state = 'play';
     this.settings.level = next;
-    this.reset({ score: this.score, players: this.players });
+    this.reset({ score: this.score, players: this.players, teamPowerCharge: this.teamPowerCharge });
     this.emit('level_started', { level: next });
   }
   refillBattleBoard(){
@@ -509,7 +592,8 @@ class OnlineGame {
      the only player must build the multiplier instead of resetting it. */
   /* In two-player Co-op Clear every clear that grows the chain is a contribution, and a
      handoff (the other player keeping it alive) is announced so the client can flash it. */
-  registerClear(i){const c=this.chain,solo=this.players.length<=1,team=this.teamHumans().length===2,from=c.last;if(solo||c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;if(team&&this.players[i]){this.players[i].stats.chains=(this.players[i].stats.chains||0)+1;this.emit('team_chain',{by:i,from,mult:c.mult,handoff:from>=0&&from!==i});}}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=TEAM.chainSecs;}
+  // Returns whether this clear was a handoff: the teammate keeping the chain alive.
+  registerClear(i){const c=this.chain,solo=this.players.length<=1,team=this.teamHumans().length===2,from=c.last;let handoff=false;if(solo||c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;if(team&&this.players[i]){handoff=from>=0&&from!==i;this.players[i].stats.chains=(this.players[i].stats.chains||0)+1;this.emit('team_chain',{by:i,from,mult:c.mult,handoff});}}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=TEAM.chainSecs;return handoff;}
   teamHumans(){return !this.battle&&this.settings.mode==='clear'&&this.players.length===2?[0,1]:[];}
   centerOf(bubbles){if(!bubbles.length)return{x:this.WW/2,y:300};let x=0,y=0;for(const b of bubbles){x+=this.cellX(b.r,b.c);y+=this.cellY(b.r);}return{x:Math.round(x/bubbles.length),y:Math.round(y/bubbles.length)};}
   anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>this.DANGER_Y)hit=true;});return hit;}
@@ -541,6 +625,9 @@ class OnlineGame {
       missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,
       passCd:this.passCd, passMax:PASS.cooldown,
+      teamPowerOn:this.teamHumans().length===2, teamPowerCharge:this.teamPowerCharge, teamPowerMax:TEAM_POWER.max,
+      teamPowerActive:this.teamPowerActive, teamPowerTimer:this.teamPowerTimer,
+      teamPowerSecs:this.teamPowerActive?POWERS[this.teamPowerActive].secs:0,
       levelSummary:this.levelSummary||null,
       levelReady:this.levelSummary?[...this.levelReadyIds]:null,
       levelSecs:this.levelSummary?Math.max(0,Math.ceil(this.levelTimer)):null,
@@ -549,4 +636,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };

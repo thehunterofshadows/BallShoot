@@ -70,8 +70,8 @@ test('FIRE outranks the aim halves, and a near miss still fires', () => {
   const order = component.match(/padHit\(x, y\) \{[\s\S]*?\n  \}/);
   assert.ok(order, 'padHit not found');
   const picks = [...order[0].matchAll(/return '(\w+)'/g)].map(m => m[1]);
-  assert.deepEqual(picks, ['fire','fire','pass','aim','l','r'],
-    'an exact FIRE hit, then a near miss, then PASS, and only then the aim surfaces underneath');
+  assert.deepEqual(picks, ['fire','fire','pass','power','aim','l','r'],
+    'an exact FIRE hit, then a near miss, then PASS and TEAM POWER, and only then the aim surfaces underneath');
   // Slop grows with the button and only exists where the overlays do.
   assert.match(component, /padSlop\(\) \{[\s\S]*?pointer: coarse[\s\S]*?22 \* u \* \(this\.settings\.fireScale \|\| 1\)/);
   // A single capture-phase listener owns the pad; the per-button pointerdown wiring is gone.

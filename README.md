@@ -15,6 +15,10 @@ Aim with the arrow keys or the touch halves and fire; you shoot the colour you w
 with the `next` preview for planning. In two-player Co-op Clear either player can **PASS**
 (`E`, or the PASS button) to swap both players' loaded bubbles — `next` bubbles stay put,
 specials travel with their bubble, and a shared 5-second cooldown follows each pass.
+Teamwork there also fills a shared **Team Power** meter (setup assists, chain handoffs, team
+rescues and team drops — solo-style clears add nothing). At 100% either player presses `Q`
+or the TEAM POWER button for **SYNERGY BURST**: both loaded bubbles turn rainbow and shot
+pressure, the ceiling and any rescue countdown hold for 8 seconds.
 
 Co-op Clear plays the four authored levels as a chain: clearing one carries your score and
 stats into the next, pays an accuracy bonus, and only the last level ends the run. Beating
