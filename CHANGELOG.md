@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Two-player Co-op Clear now scores teamwork (#1). Every bubble remembers who placed it and
+  when, and a shot that clears or drops bubbles your teammate placed *before* you fired is a
+  **TEAM ASSIST**: +100 to the team, once per resolving shot however many of their bubbles go
+  with it, an assist on the setup player's line, and a burst in both players' colours. If that
+  shot also clears the danger line it is a **TEAM RESCUE** (+250 on top of the usual +500), and
+  a cut that drops 5+ / 10+ bubbles with the teammate's among them is a **TEAM DROP** /
+  **HUGE TEAM DROP** (+150 / +300). Starting-board bubbles, your own bubbles, and a teammate
+  bubble that landed while your shot was in the air never count. The chain gets a proper HUD:
+  **TEAM CHAIN ×N** with a countdown ring in the colour of the player whose clear keeps it
+  alive, and a flash on every handoff. The rules sit in one `teamPlay()` block that is
+  byte-identical in `server/game.js` and `coop-bubbles.js` (a test holds them equal); online
+  the server decides every bonus and the client only renders its `team_play` / `team_chain`
+  events. The tunables live in `TEAM`. Level and end cards lead with a team total row and add
+  shots and chain contributions per player. Solo, Battle, Endless and 3-4 player rooms get no
+  team events and score exactly as before.
+
 - Aiming ramps in, so a tap is a nudge and a hold is a sweep. One flat rate could not do both
   jobs the barrel has: at the default speed the whole arc crosses in a second, which makes the
   shortest tap a thumb can manage about fifteen degrees — several bubble columns. There was

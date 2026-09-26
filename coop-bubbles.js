@@ -102,7 +102,55 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   chain:[880,.14,'triangle',220], warn:[240,.3,'square',-60], rescue:[720,.4,'triangle',300],
   win:[620,.6,'triangle',400], lose:[220,.7,'sawtooth',-140], swap:[430,.08,'sine',120], ceiling:[190,.3,'square',-50],
   attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
+  teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
 };
+/* team-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so local co-op and an online room qualify the same moments the same way.
+
+   Two-player Co-op Clear makes teamwork the scoring, not a side effect. Every bubble
+   remembers who placed it (`placedBy`) and when (`at`); every resolving shot knows when it
+   was fired. A shot that clears or drops bubbles the teammate placed *before* it was fired
+   is a setup assist: one flat bonus per resolving shot, however many of the teammate's
+   bubbles went with it, so a giant cascade cannot run the score away. Starting-board
+   bubbles (placedBy -1), your own bubbles, and a teammate's bubble that landed after you
+   fired are never a setup. If an assisted shot is also the one that clears the danger
+   line it is a team rescue, and a support cut that drops the teammate's bubbles in bulk is
+   a team drop. Anything other than exactly two humans gets no team events at all, which
+   is how Solo, Battle and 3-4 player rooms stay exactly as they were. */
+const TEAM = {
+  assistBonus: 100,   // per resolving shot with at least one setup assist
+  rescueBonus: 250,   // on top of the ordinary +500 rescue, when the rescue was set up
+  dropBonus: 150, hugeDropBonus: 300,
+  dropMin: 5, hugeDropMin: 10, // dropped bubbles, with teammate ownership among them
+  chainSecs: 8,       // chain window; the chain lapses when it runs out
+  feedback: true,     // enhanced co-op presentation (client only; scoring ignores it)
+};
+const teamPlay = (T, humans, shots, dropped, rescued) => {
+  const out = { assists: [], rescue: null, drop: null, bonus: 0 };
+  if (!humans || humans.length !== 2) return out;
+  const setup = (s, list) => [...new Set(list.filter(b => b.placedBy >= 0 && b.placedBy !== s.shooter &&
+    humans.includes(b.placedBy) && b.at < s.at).map(b => b.placedBy))];
+  for (const s of shots) {
+    if (!humans.includes(s.shooter)) continue;
+    const from = setup(s, s.bubbles.concat(dropped));
+    if (from.length) { out.assists.push({ by: s.shooter, setup: from }); out.bonus += T.assistBonus; }
+  }
+  if (rescued && out.assists.length) {
+    out.rescue = { by: out.assists[0].by, setup: out.assists[0].setup };
+    out.bonus += T.rescueBonus;
+  }
+  if (dropped.length >= T.dropMin) for (const s of shots) {
+    if (!humans.includes(s.shooter)) continue;
+    const from = setup(s, dropped);
+    if (!from.length) continue;
+    const huge = dropped.length >= T.hugeDropMin;
+    out.drop = { by: s.shooter, setup: from, n: dropped.length, huge };
+    out.bonus += huge ? T.hugeDropBonus : T.dropBonus;
+    break;
+  }
+  return out;
+};
+/* team-rules:end */
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rnd = (a,b) => a + Math.random() * (b - a);
@@ -287,7 +335,7 @@ class CoopBubbles extends HTMLElement {
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
-    this.sparks = []; this.ripples = []; this.dispScore = carry ? carry.score : 0;
+    this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
     this.score = carry ? carry.score : 0;
     this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
@@ -310,7 +358,7 @@ class CoopBubbles extends HTMLElement {
       this.players.push({ i, meta: META[i], x, angle: old ? old.angle : rnd(-0.3,0.3),
         cur: this.genBubble(), next: this.genBubble(), reload: 0,
         bot: !this.settings.human[i], think: rnd(0.4,1.2), plan: null, held: {},
-        stats: (carry && old) ? old.stats : { shots:0, pops:0, bubbles:0, assists:0, drops:0, rescues:0 } });
+        stats: (carry && old) ? old.stats : { shots:0, pops:0, bubbles:0, assists:0, drops:0, rescues:0, chains:0 } });
     }
     this.activeP = this.players.findIndex(p => !p.bot); if (this.activeP < 0) this.activeP = 0;
   }
@@ -419,7 +467,7 @@ class CoopBubbles extends HTMLElement {
     const a = clamp(p.angle, -1.22, 1.22);
     const sx = p.x, sy = this.LAUNCH_Y - 44, sp = 1150;
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
-      kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0 });
+      kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
     p.cur = p.next; p.next = this.genBubble();
     p.reload = this.settings.reload; p.stats.shots++; this.pressure++; p.recoilT = this.now;
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
@@ -486,7 +534,7 @@ class CoopBubbles extends HTMLElement {
         if (d < 2.7 * R && this.hypoSize(nr,nc,f.kind) >= 3 && Math.random() < this.settings.assist) { cell = { r:nr, c:nc }; break; }
       }
     }
-    const b = { r: cell.r, c: cell.c, kind: f.kind, special: f.special, placedBy: f.p,
+    const b = { r: cell.r, c: cell.c, kind: f.kind, special: f.special, placedBy: f.p, at: this.now, fired: f.at,
       snapFrom: { x: f.x, y: f.y }, snapT: this.now };
     this.grid.set(key(cell.r, cell.c), b);
     this.ripples.push({ x: this.cellX(cell.r, cell.c), y: this.cellY(cell.r), t: this.now });
@@ -501,11 +549,11 @@ class CoopBubbles extends HTMLElement {
     const landed = this.batch; this.batch = []; this.resolveAt = 0;
     const results = []; // {shooter, popped:Set|null}
     for (const b of landed) {
-      if (!this.grid.get(key(b.r, b.c))) { results.push({ shooter: b.placedBy, popped: null, gone: true }); continue; }
+      if (!this.grid.get(key(b.r, b.c))) { results.push({ shooter: b.placedBy, at: b.fired, popped: null, gone: true }); continue; }
       if (b.special === 'bomb') {
         const bx = this.cellX(b.r, b.c), by = this.cellY(b.r), blast = new Set([key(b.r,b.c)]);
         this.grid.forEach((g,k) => { if (Math.hypot(this.cellX(g.r,g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(k); });
-        results.push({ shooter: b.placedBy, popped: blast, bomb: true });
+        results.push({ shooter: b.placedBy, at: b.fired, popped: blast, bomb: true });
       } else {
         let kind = b.kind;
         if (b.special === 'rainbow') { // adopt the biggest adjacent color group
@@ -514,24 +562,24 @@ class CoopBubbles extends HTMLElement {
             const nb = this.grid.get(key(nr,nc));
             if (nb && !nb.special) { const s = this.matchGroup(b.r, b.c, nb.kind).size; if (s > bs) { bs = s; best = nb.kind; } }
           }
-          if (best) kind = best; else { results.push({ shooter: b.placedBy, popped: null }); continue; }
+          if (best) kind = best; else { results.push({ shooter: b.placedBy, at: b.fired, popped: null }); continue; }
         }
         const g = this.matchGroup(b.r, b.c, kind);
-        results.push({ shooter: b.placedBy, popped: g.size >= 3 ? g : null });
+        results.push({ shooter: b.placedBy, at: b.fired, popped: g.size >= 3 ? g : null });
       }
     }
     // pop everything, collect owners
-    const allPopped = new Set(); let popN = 0; const owners = new Set(); const clearers = [];
+    const allPopped = new Set(); let popN = 0; const owners = new Set(); const clearers = [], shots = [];
     for (const r of results) {
       if (!r.popped) continue;
-      let fresh = 0;
+      const fresh = [];
       r.popped.forEach(k => { if (!allPopped.has(k) && this.grid.has(k)) {
         const b = this.grid.get(k);
         if (b.placedBy >= 0 && b.placedBy !== r.shooter) owners.add(b.placedBy);
-        allPopped.add(k); fresh++;
+        allPopped.add(k); fresh.push(b);
       }});
-      if (fresh > 0) clearers.push(r.shooter);
-      popN += fresh;
+      if (fresh.length) { clearers.push(r.shooter); shots.push({ shooter: r.shooter, at: r.at, bubbles: fresh }); }
+      popN += fresh.length;
     }
     allPopped.forEach(k => {
       const b = this.grid.get(k); this.grid.delete(k);
@@ -541,6 +589,12 @@ class CoopBubbles extends HTMLElement {
     // unsupported drop check
     const dropped = this.supportCheck();
     this.updateLowest();
+    // Same rules as OnlineGame.resolveBatch: what the shot removed and who placed it. The
+    // rescue half is decided at the rescue, after any ceiling descent.
+    const humans = this.teamHumans(), teamOn = humans.length === 2;
+    const where = popN + dropped.n ? { x: (this.centerOf(allPopped).x * popN + (dropped.x || 0) * dropped.n) / (popN + dropped.n),
+      y: (this.centerOf(allPopped).y * popN + (dropped.y || 0) * dropped.n) / (popN + dropped.n) } : null;
+    let team = teamPlay(TEAM, humans, shots, dropped.bubbles || [], false);
     // scoring / chain / meters
     if (popN > 0) {
       clearers.forEach(s => this.registerClear(s));
@@ -548,8 +602,8 @@ class CoopBubbles extends HTMLElement {
       const pts = this.popPoints(popN) * mult;
       this.score += pts; this.addPopup(this.centerOf(allPopped, this.pops), '+' + pts, '#17335c');
       clearers.forEach(s => { const p = this.players[s]; if (p) { p.stats.pops++; p.stats.bubbles += popN; } });
-      owners.forEach(o => { const p = this.players[o]; if (p) p.stats.assists++; });
-      if (owners.size >= 1) this.callout(owners.size + clearers.length >= 3 ? 'TEAM POP!' : 'ASSIST!', '#a78bfa');
+      (teamOn ? new Set(team.assists.flatMap(a => a.setup)) : owners).forEach(o => { const p = this.players[o]; if (p) p.stats.assists++; });
+      if (!teamOn && owners.size >= 1) this.callout(owners.size + clearers.length >= 3 ? 'TEAM POP!' : 'ASSIST!', '#a78bfa');
       this.missMeter = Math.max(0, this.missMeter - 1);
       this.sfx(popN >= 6 ? 'bigpop' : 'pop');
       if (results.some(r => r.bomb && r.popped)) this.callout('KABOOM!', '#ff8a3c');
@@ -569,17 +623,20 @@ class CoopBubbles extends HTMLElement {
       clearers.forEach(s => { const p = this.players[s]; if (p) p.stats.drops += dropped.n; });
       this.addPopup({ x: dropped.x, y: dropped.y }, '+' + pts, '#ff8a3c');
       if (dropped.comps >= 2) this.callout('DOUBLE CUT!', '#35d3c8');
-      else if (dropped.n >= 5) this.callout('HUGE DROP!', '#ff8a3c');
+      else if (dropped.n >= 5 && !(team.drop && TEAM.feedback)) this.callout('HUGE DROP!', '#ff8a3c');
       this.missMeter = dropped.n >= 8 ? 0 : Math.max(0, this.missMeter - 3);
       this.shake = Math.min(14, 4 + dropped.n * 1.2);
       this.sfx('drop');
     }
     // rescue?
     if (this.danger && !this.anyDangerCells()) {
+      if (team.assists.length) team = teamPlay(TEAM, humans, shots, dropped.bubbles || [], true);
       this.danger = null; this.score += 500; this.missMeter = Math.max(0, this.missMeter - 3);
       clearers.forEach(s => { const p = this.players[s]; if (p) p.stats.rescues++; });
-      this.callout('TEAM RESCUE! +500', '#3ecf72'); this.sfx('rescue');
+      if (!(team.rescue && TEAM.feedback)) this.callout('TEAM RESCUE! +500', '#3ecf72');
+      this.sfx('rescue');
     }
+    if (team.bonus) { this.score += team.bonus; this.showTeamPlay(team, where); }
     this.refreshQueues();
     // victory (coop clear)
     if (this.settings.mode === 'clear' && this.grid.size === 0 && this.state === 'play') this.clearLevel();
@@ -610,15 +667,23 @@ class CoopBubbles extends HTMLElement {
   /* One row per player, the same shape the game-over card uses. It takes plain rows rather
      than players because online the numbers come from the server's summary. */
   statRowsHTML(rows) {
-    return rows.map(r => `<div class="statRow"><span class="who" style="color:${r.accent}">${r.name}</span>
+    return rows.map(r => `<div class="statRow${r.team ? ' team' : ''}"><span class="who" style="color:${r.accent}">${r.name}</span>
        <span class="nums">${r.nums}</span></div>`).join('');
   }
+  /* Co-op leads with what the team did together; the rows under it are who did what.
+     Solo has no team to total, so it keeps its single row. */
   playerStatRows(players) {
-    return (players || []).map(p => {
-      const meta = p.meta || META[p.i] || META[0], s = p.stats || {};
-      return { name: meta.name, accent: meta.accent,
-        nums: `${s.pops || 0} pops · ${s.bubbles || 0} bubbles · ${s.assists || 0} assists · ${s.drops || 0} dropped · ${s.rescues || 0} rescues` };
+    const list = players || [], nums = s => `${s.shots || 0} shots · ${s.pops || 0} pops · ${s.bubbles || 0} cleared · ${s.drops || 0} dropped · `
+      + `${s.assists || 0} setups · ${s.rescues || 0} rescues · ${s.chains || 0} chain`;
+    const rows = list.map(p => {
+      const meta = p.meta || META[p.i] || META[0];
+      return { name: meta.name, accent: meta.accent, nums: nums(p.stats || {}) };
     });
+    if (list.length < 2) return rows;
+    const sum = {};
+    for (const p of list) for (const [k, v] of Object.entries(p.stats || {})) sum[k] = (sum[k] || 0) + (Number(v) || 0);
+    // The team line is the rows added up; it leads because the run was played together.
+    return [{ name: 'TEAM', accent: '#2b6fd4', team: true, nums: nums(sum) }, ...rows];
   }
   /* The level card. `ready` is only present online, where the next level does not start
      until every connected player has said so (or the room's timer runs out). */
@@ -684,7 +749,7 @@ class CoopBubbles extends HTMLElement {
       this.grid.delete(k);
       this.falling.push({ x, y, vx: rnd(-60,60), vy: rnd(-140,-40), kind: b.kind, special: b.special, spin: rnd(-3,3), a: 0 });
     }
-    return { n: doomed.length, comps, x: sx / doomed.length, y: sy / doomed.length };
+    return { n: doomed.length, comps, x: sx / doomed.length, y: sy / doomed.length, bubbles: doomed.map(d => d[1]) };
   }
   /* Superlinear so a patient 12-bubble cut beats four hurried 3s: 10/bubble plus a
      quadratic bonus on everything past the minimum match. Mirrors OnlineGame. */
@@ -696,16 +761,60 @@ class CoopBubbles extends HTMLElement {
     const ch = this.chain;
     // Solo runs have no second clearer to hand the chain to, so consecutive clears by
     // the only player must build the multiplier instead of resetting it.
-    const solo = this.players.length <= 1;
-    if (solo || ch.last !== pi) { ch.mult = Math.min(ch.mult + 1, 4); ch.same = 0; ch.pulseT = this.now; }
+    const solo = this.players.length <= 1, team = this.teamHumans().length === 2, from = ch.last;
+    if (solo || ch.last !== pi) {
+      ch.mult = Math.min(ch.mult + 1, 4); ch.same = 0;
+      // Mirrors OnlineGame.registerClear: in two-player Co-op Clear each clear that grows
+      // the chain is a contribution, and a handoff is what the HUD celebrates.
+      const handoff = team && from >= 0 && from !== pi;
+      if (team) { const p = this.players[pi]; if (p) p.stats.chains = (p.stats.chains || 0) + 1; }
+      this.chainFx = { pulseT: this.now, handoffT: handoff ? this.now : (this.chainFx?.handoffT ?? -9), by: pi };
+    }
     else if (++ch.same >= 3) { ch.mult = 1; ch.players.clear(); ch.same = 0; }
-    ch.last = pi; ch.players.add(pi); ch.t = 8;
+    ch.last = pi; ch.players.add(pi); ch.t = TEAM.chainSecs;
     if (ch.mult >= 2) {
       if (ch.players.size >= 4) { this.callout('FOUR-PLAYER BURST!', '#ff6fb1'); this.score += 400; ch.players.clear(); }
       else if (ch.players.size === 3) this.callout('THREE-PLAYER CHAIN!', '#35d3c8');
+      else if (team && TEAM.feedback) { this.teamChainCallout(pi, from, ch.mult); return; }
       else this.callout((solo ? 'CHAIN ×' : 'TEAM CHAIN ×') + ch.mult, '#a78bfa');
       this.sfx('chain');
     }
+  }
+  /* ---------- two-player co-op feedback ----------
+     Local and online both land here: locally from resolveBatch, online from the server's
+     team_play / team_chain events, so the client never decides a bonus for itself. */
+  teamHumans() {
+    if (this.battle || this.settings.mode !== 'clear' || !this.players) return [];
+    const h = this.online ? (this.players.length === 2 ? [0, 1] : []) : this.players.filter(p => !p.bot).map(p => p.i);
+    return h.length === 2 ? h : [];
+  }
+  teamChainCallout(by, from, mult) {
+    const handoff = from >= 0 && from !== by;
+    this.callout((handoff ? 'HANDOFF! ' : '') + 'TEAM CHAIN \u00d7' + mult, (META[by] || META[0]).accent);
+    this.sfx(handoff ? 'handoff' : 'chain');
+  }
+  showTeamPlay(team, where) {
+    const at = where || { x: this.WW / 2, y: 320 }, name = i => (META[i] || META[0]).name, col = i => (META[i] || META[0]).accent;
+    if (!TEAM.feedback) { this.callout('ASSIST!', '#a78bfa'); this.addPopup(at, '+' + team.bonus, '#a78bfa'); return; }
+    const a = team.assists[0];
+    if (a) {
+      const from = a.setup[0], to = a.by;
+      // A rescue or team drop already names the pair in its callout, so its burst goes
+      // wordless rather than stacking a third line of text over the cluster.
+      const big = !!(team.rescue || team.drop);
+      this.teamFx.push({ x: at.x, y: at.y, c1: col(from), c2: col(to), t: this.now, big,
+        text: big ? '' : 'TEAM ASSIST! ' + a.setup.map(name).join('+') + ' \u2192 ' + name(to) + '  +' + team.bonus });
+      this.sfx('teamAssist');
+    }
+    if (team.rescue) {
+      this.callout('TEAM RESCUE! ' + team.rescue.setup.map(name).join('+') + ' \u2192 ' + name(team.rescue.by), col(team.rescue.by));
+      this.sfx('teamRescue'); this.shake = Math.max(this.shake || 0, 10);
+    }
+    if (team.drop) {
+      this.callout((team.drop.huge ? 'HUGE TEAM DROP! ' : 'TEAM DROP! ') + team.drop.setup.map(name).join('+') + ' \u2192 ' + name(team.drop.by), col(team.drop.setup[0]));
+      this.sfx('teamDrop');
+    }
+    if (!a || team.rescue || team.drop) this.addPopup({ x: at.x, y: at.y + 40 }, '+' + team.bonus + ' TEAM', col(a ? a.by : 0));
   }
   centerOf(keys) {
     let sx = 0, sy = 0, n = 0;
@@ -951,6 +1060,7 @@ class CoopBubbles extends HTMLElement {
     this.ripples = this.ripples.filter(r => this.now - r.t < 0.45);
     this.callouts = this.callouts.filter(c => this.now - c.t < 1.5);
     this.popups = (this.popups || []).filter(p => this.now - p.t < 1.1);
+    this.teamFx = (this.teamFx || []).filter(f => this.now - f.t < 1.6);
     this.sfxLog = this.sfxLog.filter(s => this.now - s.t < 1.6);
   }
   callout(text, color) { this.callouts.push({ text, color, t: this.now }); }
@@ -1243,6 +1353,7 @@ class CoopBubbles extends HTMLElement {
       this.drawBubble(ctx, 0, 0, R - 1, f.kind, f.special, false, false); ctx.restore(); }
     // launchers
     for (const p of this.players) this.drawLauncher(ctx, p);
+    this.drawTeamFx(ctx);
     // score popups (world-anchored)
     for (const p of (this.popups || [])) {
       const k = (this.now - p.t) / 1.1;
@@ -1278,6 +1389,68 @@ class CoopBubbles extends HTMLElement {
       ctx.globalAlpha = Math.max(0, 1 - (this.now - s.t) / 1.6) * 0.55;
       ctx.fillStyle = '#3a5a80'; ctx.fillText('\u266a ' + s.name, X0 + 6, this.LAUNCH_Y - 78 - i * 20);
     });
+    ctx.globalAlpha = 1;
+  }
+  /* TEAM CHAIN ×N for two-player Co-op Clear. The ring is the time left in the chain
+     window, drawn in the colour of the player whose clear keeps it alive next; the badge
+     breathes in that colour, and a handoff flashes a burst in the colour of whoever made it. */
+  drawTeamChain(ctx, duo) {
+    const ch = this.chain, fx = this.chainFx, k = clamp(ch.t / TEAM.chainSecs, 0, 1);
+    const next = duo.includes(ch.last) ? duo.find(h => h !== ch.last) : duo[0];
+    const nextCol = (META[next] || META[0]).accent;
+    const pk = fx ? clamp((this.now - fx.pulseT) / 0.35, 0, 1) : 1, s = 1 + (1 - pk) * 0.22;
+    const hk = fx ? (this.now - fx.handoffT) / 0.6 : 9;
+    ctx.save(); ctx.translate(W/2, 40);
+    if (hk >= 0 && hk < 1) {
+      ctx.globalAlpha = 1 - hk; ctx.strokeStyle = (META[fx.by] || META[0]).accent; ctx.lineWidth = 6 * (1 - hk);
+      this.rrect(ctx, -80 - hk * 40, -28 - hk * 18, 160 + hk * 80, 54 + hk * 36, 27 + hk * 18); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.scale(s, s);
+    ctx.shadowColor = 'rgba(120,90,220,0.35)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 3;
+    // Same footprint as the solo badge: it sits between the score and meter boxes, which
+    // leave no more room than that on a narrow board.
+    ctx.fillStyle = '#7b61d9';
+    this.rrect(ctx, -74, -24, 148, 46, 23); ctx.fill();
+    ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    ctx.globalAlpha = 0.55 + 0.45 * Math.sin(this.now * 7) ** 2;
+    ctx.strokeStyle = nextCol; ctx.lineWidth = 3; this.rrect(ctx, -74, -24, 148, 46, 23); ctx.stroke();
+    ctx.globalAlpha = 1;
+    // countdown ring, filled with the next player's colour
+    ctx.fillStyle = nextCol; ctx.beginPath(); ctx.arc(-50, -1, 15, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(-50, -1, 15, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke(); ctx.lineCap = 'butt';
+    ctx.fillStyle = '#fff'; ctx.font = '700 12px Fredoka, sans-serif';
+    ctx.fillText((META[next] || META[0]).name, -50, 3);
+    ctx.font = '700 11px Fredoka, sans-serif'; ctx.fillText('TEAM CHAIN', 16, -5);
+    ctx.font = '700 22px Fredoka, sans-serif'; ctx.fillText('\u00d7' + ch.mult, 16, 16);
+    ctx.restore();
+  }
+  /* World-anchored assist burst: two rings and a spray of dots in the setup player's and
+     the resolver's accents, with the TEAM ASSIST line filled in a blend of both. */
+  drawTeamFx(ctx) {
+    for (const f of this.teamFx || []) {
+      const k = (this.now - f.t) / 1.6, e = 1 - (1 - Math.min(1, k * 2.2)) ** 3, big = f.big ? 1.6 : 1;
+      ctx.globalAlpha = Math.max(0, 1 - k);
+      ctx.lineWidth = 6 * (1 - k);
+      ctx.strokeStyle = f.c1; ctx.beginPath(); ctx.arc(f.x, f.y, (30 + 90 * e) * big, 0, 7); ctx.stroke();
+      ctx.strokeStyle = f.c2; ctx.beginPath(); ctx.arc(f.x, f.y, (18 + 64 * e) * big, 0, 7); ctx.stroke();
+      for (let i = 0; i < 14; i++) {
+        const a = i / 14 * Math.PI * 2 + (i & 1) * 0.2, d = (24 + 120 * e) * big;
+        ctx.fillStyle = i & 1 ? f.c2 : f.c1;
+        ctx.beginPath(); ctx.arc(f.x + Math.cos(a) * d, f.y + Math.sin(a) * d, 6 * (1 - k) + 1, 0, 7); ctx.fill();
+      }
+      if (!f.text) continue;
+      // Above the cluster, unless that would run it into the HUD along the ceiling.
+      const pop = Math.min(1, k * 7), ty = f.y < 200 ? f.y + 90 + k * 20 : f.y - 60 - k * 30;
+      ctx.save(); ctx.translate(clamp(f.x, 200, this.WW - 200), ty); ctx.scale(0.6 + pop * 0.4, 0.6 + pop * 0.4);
+      ctx.font = '700 34px Fredoka, sans-serif'; ctx.textAlign = 'center';
+      const w = ctx.measureText(f.text).width, g = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+      g.addColorStop(0, f.c1); g.addColorStop(1, f.c2);
+      ctx.lineWidth = 8; ctx.strokeStyle = '#fff'; ctx.strokeText(f.text, 0, 0);
+      ctx.fillStyle = g; ctx.fillText(f.text, 0, 0);
+      ctx.restore();
+    }
     ctx.globalAlpha = 1;
   }
   rrect(ctx, x, y, w, h, r) {
@@ -1486,9 +1659,11 @@ class CoopBubbles extends HTMLElement {
     ctx.fillText('TEAM SCORE', hx + 14, 65);
     // chain badge
     ctx.textAlign = 'center';
-    if (this.chain.mult > 1) {
-      const k = clamp(this.chain.t / 8, 0, 1);
-      const pk = this.chain.pulseT !== undefined ? clamp((this.now - this.chain.pulseT) / 0.35, 0, 1) : 1;
+    const duo = TEAM.feedback ? this.teamHumans() : [];
+    if (this.chain.mult > 1 && duo.length === 2) this.drawTeamChain(ctx, duo);
+    else if (this.chain.mult > 1) {
+      const k = clamp(this.chain.t / TEAM.chainSecs, 0, 1);
+      const pk = this.chainFx ? clamp((this.now - this.chainFx.pulseT) / 0.35, 0, 1) : 1;
       const s = 1 + (1 - pk) * 0.22;
       ctx.save(); ctx.translate(W/2, 40); ctx.scale(s, s);
       ctx.shadowColor = 'rgba(120,90,220,0.35)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 3;
@@ -2092,6 +2267,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .fullscreenButton{left:var(--chromeGap)}.fullscreenButton[hidden]{display:none}.gear{right:var(--chromeGap);display:none;font-size:clamp(15px,calc(20px * var(--u,1)),25px)}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
 .statRow .who{font-weight:700;width:34px}
+.statRow.team{background:#e6f0ff;font-size:15px}.statRow.team .who{width:auto;min-width:34px}.statRow.team .nums{color:#17335c;font-weight:600}
 .statRow .nums{color:#5b7997;font-size:12.5px}
 .hiscore{margin:14px 0 4px;text-align:left}
 .hiscore h3{margin:0 0 8px;font-size:15px;color:#2b4a70}
@@ -2405,9 +2581,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.endTitle').textContent = won ? '\u2b50 Field cleared!' : 'The bubbles won\u2026';
     sh.querySelector('.endTitle').style.color = won ? '#2b6fd4' : '#ff5b6b';
     sh.querySelector('.endSub').textContent = 'Team score: ' + this.score.toLocaleString();
-    sh.querySelector('.endStats').innerHTML = this.players.map(p =>
-      `<div class="statRow"><span class="who" style="color:${p.meta.accent}">${p.meta.name}</span>
-       <span class="nums">${p.stats.pops} pops \u00b7 ${p.stats.bubbles} bubbles \u00b7 ${p.stats.assists} assists \u00b7 ${p.stats.drops} dropped \u00b7 ${p.stats.rescues} rescues</span></div>`).join('');
+    sh.querySelector('.endStats').innerHTML = this.statRowsHTML(this.playerStatRows(this.players));
     const againBtn = sh.querySelector('.again'); if (!this.online) { againBtn.textContent = 'Play again'; againBtn.disabled = false; }
     this.endEl.style.display = 'grid';
     this.showHighScores(this.score);
@@ -2533,7 +2707,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
     this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.now=s.now;this.state=s.state;
-    this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.shake=this.shake||0;
+    this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
@@ -2583,7 +2757,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at
