@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- New **TV / couch Display Mode** (#6). A Display setting — **Auto / Desktop / TV** on the
+  home card, the pause card and the settings panel, saved with the device prefs — switches
+  presentation only; rules, world and input streams are unchanged. TV composes the game on a
+  fixed **1920×1080 logical stage** scaled whole into the viewport, so 1080p, 1440p and 4K
+  show the same picture and 21:9 / 4:3 screens pillar- or letterbox instead of stretching.
+  Critical UI stays inside a 5% **safe area**; the new stage art and the playfield bleed
+  past it. **Two-player co-op gets its own layout**: a full-height centred playfield framed by
+  team score and round (with the row-push countdown) across the top, Team Power, and one
+  large card per player with their loaded and next bubbles and live status (Ready,
+  Reloading, HURRY UP!). The canvas co-op HUD and sound log step aside; secondary details
+  (miss meter, tuning, per-player stats) only show once play stops. Menus, the settings
+  drawer and corner buttons scale by `menuScale` with a thick gold focus ring. **Gamepads**
+  (standard mapping) now work everywhere: pad *n* drives the *n*th human launcher (stick /
+  d-pad aim, A or RT fire, X or LB pass, Y or RB Team Power, Start pause, Back settings), and
+  in menus the stick moves focus, left/right steps pickers and sliders, A presses and B backs
+  out. TV prefers fullscreen: an obvious **Play fullscreen** button, plus a one-time request
+  on the clicks that start play; a refusal or leaving fullscreen keeps TV mode. Auto picks TV
+  for a large near-16:9 screen driven by a gamepad or no pointer. All tuning lives in one
+  `TV` block (`safeArea`, `hudScale`, `menuScale`, `playfieldScale`, `hideSecondaryHud`,
+  `preferFullscreen`), and future modes add a `TV_LAYOUTS` spec (3-4 player co-op and Battle
+  already use generic ones). `scripts/tv-probe.mjs` checks the composition in Chromium.
+
 - Co-op Clear levels now play like **Puzzle Bobble** (#5). The four dense walls became **52
   named rounds** in five tiers, drawn as small symmetric pictures with open space, stems to
   cut and bank-shot pockets: rounds 1-10 use three colours, 11-22 four, 23-34 five (new

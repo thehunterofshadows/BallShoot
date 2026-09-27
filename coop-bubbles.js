@@ -798,6 +798,91 @@ const geom = vh => {
   return { H, LAUNCH_Y, DANGER_Y: LAUNCH_Y - DANGER_GAP };
 };
 
+/* tv-display:begin — TV / couch display. A presentation profile, never a game mode: the
+   world, rules and input streams are identical, only how the page is composed changes.
+
+   Everything is placed on one fixed 1920×1080 logical stage that is scaled whole into the
+   viewport, so 1080p, 1440p and 4K show the same picture and anything that is not 16:9
+   letterboxes or pillarboxes instead of stretching. Critical UI stays inside the safe area
+   (`safeArea` of each edge) to survive TV overscan; the stage background and the playfield
+   may bleed past it. Every tuning value lives here — nothing downstream hard-codes a TV
+   dimension. A mode gets its own composition by adding a spec to TV_LAYOUTS; the stage,
+   safe area, typography, menu scale, fullscreen and controller focus come for free. */
+const DISPLAY_MODES = ['auto', 'desktop', 'tv'];
+const TV = {
+  logicalW: 1920, logicalH: 1080,
+  safeArea: 0.05,        // share of each edge kept clear of critical UI
+  hudScale: 1.35,        // HUD type and launcher labels, relative to desktop
+  menuScale: 1.40,       // cards, drawer, corner buttons, relative to desktop
+  playfieldScale: 1.15,  // playfield height as a multiple of the safe height (capped at the stage)
+  hideSecondaryHud: true,
+  preferFullscreen: true,
+  gap: 40,               // logical px between the playfield and the columns framing it
+  chrome: 84,            // logical px square for the fullscreen / settings buttons
+  headH: 180, rowGap: 24, powerH: 104, padH: 96,
+  // Auto picks TV for a couch-shaped screen (large, near 16:9) that is being driven by a
+  // controller or by no pointer at all — a desktop monitor with a mouse stays Desktop.
+  auto: { minW: 960, minH: 540, minAspect: 1.55, maxAspect: 1.95 },
+};
+const resolveDisplayMode = (pref, env = {}) => {
+  if (pref === 'tv' || pref === 'desktop') return pref;
+  const a = TV.auto, w = env.w || 0, h = env.h || 0, aspect = h ? w / h : 0;
+  const couch = w >= a.minW && h >= a.minH && aspect >= a.minAspect && aspect <= a.maxAspect;
+  return couch && (env.gamepad || env.noPointer) ? 'tv' : 'desktop';
+};
+// The stage in real pixels: one uniform scale, centred, with the safe rect in logical px.
+const tvStage = (vw, vh, cfg = TV) => {
+  const scale = Math.max(1e-4, Math.min(vw / cfg.logicalW, vh / cfg.logicalH));
+  const w = cfg.logicalW * scale, h = cfg.logicalH * scale;
+  const sx = Math.round(cfg.logicalW * cfg.safeArea), sy = Math.round(cfg.logicalH * cfg.safeArea);
+  return { scale, w, h, x: (vw - w) / 2, y: (vh - h) / 2,
+    safe: { x: sx, y: sy, w: cfg.logicalW - 2 * sx, h: cfg.logicalH - 2 * sy } };
+};
+/* Layout specs. `cards` is how many player cards frame the field (alternating left/right,
+   filled from the bottom), `cardH` their height, and `hud` whether the co-op HUD replaces the
+   canvas one. Battle keeps its own canvas strip, so it only borrows the stage. */
+const TV_LAYOUTS = {
+  coop2:  { cards: 2, cardH: 300, hud: true },
+  coop:   { cards: 4, cardH: 196, hud: true },
+  battle: { cards: 0, cardH: 0,   hud: false },
+};
+const tvLayoutKey = (mode, players) => mode === 'battle' ? 'battle' : players === 2 ? 'coop2' : 'coop';
+/* Logical rects for one layout. `aspect` is the world's width / height, so an online room
+   with a taller shared field just narrows the playfield and widens the columns. */
+const tvLayout = (key, aspect, players, cfg = TV) => {
+  const spec = TV_LAYOUTS[key] || TV_LAYOUTS.coop, safe = tvStage(cfg.logicalW, cfg.logicalH, cfg).safe;
+  const ph = Math.min(cfg.logicalH, safe.h * cfg.playfieldScale), pw = ph * aspect;
+  const playfield = { x: (cfg.logicalW - pw) / 2, y: (cfg.logicalH - ph) / 2, w: pw, h: ph };
+  const top = safe.y, bottom = safe.y + safe.h, g = cfg.rowGap, c = cfg.chrome;
+  const L = { x: safe.x, w: playfield.x - cfg.gap - safe.x };
+  const Rx = playfield.x + pw + cfg.gap, Rc = { x: Rx, w: safe.x + safe.w - Rx };
+  const n = Math.min(spec.cards, players), rows = Math.ceil(n / 2);
+  const cards = [];
+  for (let i = 0; i < n; i++) {
+    const col = i % 2 ? Rc : L, row = Math.floor(i / 2);
+    cards.push({ x: col.x, y: bottom - (rows - row) * spec.cardH - (rows - row - 1) * g, w: col.w, h: spec.cardH });
+  }
+  const cardsTop = n ? bottom - rows * spec.cardH - (rows - 1) * g : bottom;
+  const below = top + cfg.headH + g;
+  return { key, hud: spec.hud, playfield, safe, cards,
+    chromeL: { x: L.x, y: top, w: c, h: c },
+    chromeR: { x: Rc.x + Rc.w - c, y: top, w: c, h: c },
+    score: { x: L.x + c + 16, y: top, w: L.w - c - 16, h: cfg.headH },
+    round: { x: Rc.x, y: top, w: Rc.w - c - 16, h: cfg.headH },
+    power: { x: L.x, y: below, w: L.w, h: cfg.powerH },
+    pad: { x: L.x, y: below + cfg.powerH + g, w: L.w, h: cfg.padH },
+    info: { x: Rc.x, y: below, w: Rc.w, h: Math.max(0, cardsTop - g - below) },
+  };
+};
+/* Standard-mapping gamepad buttons. In play: stick / d-pad aims, A or RT fires, X or LB
+   passes, Y or RB fires Team Power, Start pauses, Back opens settings. In menus the same
+   stick moves focus (left / right also steps a picker or slider), A presses, B backs out. */
+const GAMEPAD = {
+  btn: { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, back: 8, start: 9, up: 12, down: 13, left: 14, right: 15 },
+  dead: 0.35, repeatFirst: 0.42, repeat: 0.16,
+};
+/* tv-display:end */
+
 class CoopBubbles extends HTMLElement {
   connectedCallback() {
     if (this._init) return; this._init = true;
@@ -805,7 +890,7 @@ class CoopBubbles extends HTMLElement {
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
       reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
-      aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves' };
+      aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves', displayMode:'auto' };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
     this.resetGame();
@@ -829,12 +914,13 @@ class CoopBubbles extends HTMLElement {
       if (Number.isFinite(p.padTint)) out.padTint = clamp(p.padTint, 0, 0.3);
       if (Number.isFinite(p.fireScale)) out.fireScale = clamp(p.fireScale, 0.6, 2.2);
       if (AIM_MODES.includes(p.aimMode)) out.aimMode = p.aimMode;
+      if (DISPLAY_MODES.includes(p.displayMode)) out.displayMode = p.displayMode;
       return out;
     } catch (_) { return {}; }
   }
   saveLocalPrefs() {
-    const { aimSpeed, padTint, fireScale, aimMode } = this.settings;
-    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale, aimMode })); } catch (_) {}
+    const { aimSpeed, padTint, fireScale, aimMode, displayMode } = this.settings;
+    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale, aimMode, displayMode })); } catch (_) {}
   }
   applyTouchStyle() {
     const root = this.rootEl; if (!root) return;
@@ -1725,6 +1811,8 @@ class CoopBubbles extends HTMLElement {
   frame(t) {
     this._raf = requestAnimationFrame(tt => this.frame(tt));
     const dt = Math.min(0.033, (t - (this._t || t)) / 1000); this._t = t;
+    this.pollGamepads();
+    this.syncTvHud();
     if (this.battle && this.settings.mode === 'battle') {
       if (!this.online && this.state === 'play') this.battleUpdate(dt);
       else if (this.online && ['play','paused','spectating','won','lost'].includes(this.state)) this.updateOnlineBattleVisuals(dt);
@@ -1887,6 +1975,131 @@ class CoopBubbles extends HTMLElement {
   ensureAudio() {
     if (!this._ac) { try { this._ac = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {} }
     if (this._ac && this._ac.state === 'suspended') this._ac.resume();
+  }
+
+  /* ---------- gamepads ----------
+     Pad n drives the nth human launcher, the same stream a key pair would; online it is this
+     device's launcher. Held directions are written only when the stick changes, so a pad
+     and a keyboard can share a player without the pad stomping the keys every frame. */
+  connectedPads() {
+    if (typeof navigator === 'undefined' || !navigator.getGamepads) return [];
+    try { return [...navigator.getGamepads()].filter(g => g && g.connected); } catch (_) { return []; }
+  }
+  padOwner(i) { return (this._padPlayers || []).includes(i); }
+  pollGamepads() {
+    const pads = this.connectedPads();
+    if (pads.length !== (this._padCount || 0)) {
+      this._padCount = pads.length;
+      if (this.settings.displayMode === 'auto') this.measure(); // a controller can make this the TV
+    }
+    if (!pads.length) { this._padPrev = null; this._padPlayers = []; return; }
+    const prev = this._padPrev || (this._padPrev = new Map()), menu = this.menuRoot();
+    const humans = (this.players || []).filter(p => !p.bot).map(p => p.i);
+    this._padPlayers = pads.map((_, n) => humans[n]).filter(i => i !== undefined);
+    pads.forEach((g, n) => {
+      const was = prev.get(g.index) || { b: [], h: 0, nav: '', navT: 0 };
+      const b = g.buttons.map(x => !!(x && x.pressed));
+      const down = k => b[GAMEPAD.btn[k]], hit = k => down(k) && !was.b[GAMEPAD.btn[k]];
+      const ax = g.axes[0] || 0, ay = g.axes[1] || 0;
+      const h = down('left') || ax < -GAMEPAD.dead ? -1 : down('right') || ax > GAMEPAD.dead ? 1 : 0;
+      const v = down('up') || ay < -GAMEPAD.dead ? -1 : down('down') || ay > GAMEPAD.dead ? 1 : 0;
+      const now = performance.now() / 1000;
+      let nav = was.nav, navT = was.navT;
+      if (hit('start')) this.padStart();
+      else if (hit('back')) this.sideEl.classList.toggle('open');
+      else if (menu) {
+        const dir = v ? 'v' + v : h ? 'h' + h : '';
+        if (dir && (dir !== was.nav || now >= was.navT)) {
+          this.menuMove(menu, dir[0], +dir.slice(1));
+          navT = now + (dir !== was.nav ? GAMEPAD.repeatFirst : GAMEPAD.repeat);
+        }
+        nav = dir;
+        if (hit('a')) this.menuActivate(menu);
+        if (hit('b')) this.menuBack();
+      } else this.padPlay(n, h, h !== was.h, hit);
+      prev.set(g.index, { b, h, nav, navT });
+    });
+  }
+  padPlay(n, h, turned, hit) {
+    const fire = hit('a') || hit('rt'), pass = hit('x') || hit('lb'), power = hit('y') || hit('rb');
+    if (this.battle && this.settings.mode === 'battle') {
+      if (n) return;
+      const bt = this.battle, tg = bt.targeting;
+      // Picking a rival: left / right walks the living boards, A dumps the junk.
+      if (tg && bt.human && tg.by === bt.human.i) {
+        const alive = bt.boards.filter(x => x.alive && x.i !== tg.by);
+        if (turned && h && alive.length) {
+          const at = alive.findIndex(x => x.i === tg.hover);
+          tg.hover = alive[(at + h + alive.length) % alive.length].i;
+        }
+        if (fire) this.chooseBattleTarget(bt.boards[tg.hover] || alive[0]);
+        return;
+      }
+      if (this.online) { if (turned) { this.setOnlineHeld('l', h < 0); this.setOnlineHeld('r', h > 0); } if (fire) this.fire(); return; }
+      const hp = bt.human && bt.human.player; if (!hp) return;
+      if (turned) { hp.held.l = h < 0; hp.held.r = h > 0; hp.aimTarget = null; }
+      if (fire) this.battleFire();
+      return;
+    }
+    if (this.online) {
+      if (n) return;
+      if (turned) { this.setOnlineHeld('l', h < 0); this.setOnlineHeld('r', h > 0); }
+      if (fire) this.fire();
+      if (pass) this.requestPass(this.activeP);
+      if (power) this.requestTeamPower(this.activeP);
+      return;
+    }
+    const i = this._padPlayers[n], p = this.players[i]; if (!p || p.bot) return;
+    if (turned) { p.held.l = h < 0; p.held.r = h > 0; p.aimTarget = null; }
+    if (fire) { this.activeP = i; this.fire(i); }
+    if (pass) this.requestPass(i);
+    if (power) this.requestTeamPower(i);
+  }
+  padStart() {
+    if (this.sideEl.classList.contains('open')) { this.closeSide(); return; }
+    if (this.state === 'play' || this.state === 'paused') { this.togglePause(); return; }
+    const menu = this.menuRoot(); if (menu) this.menuActivate(menu);
+  }
+  /* The surface a controller is navigating: the settings drawer if it is open, otherwise
+     the top-most visible card. Null during active play. */
+  menuRoot() {
+    if (this.sideEl && this.sideEl.classList.contains('open') && this.sideEl.offsetParent !== null) return this.sideEl;
+    const cards = [this.homeEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
+    for (let k = cards.length - 1; k >= 0; k--) {
+      const el = cards[k]; if (el && el.style.display !== 'none' && getComputedStyle(el).display !== 'none') return el;
+    }
+    return null;
+  }
+  menuFocusables(root) {
+    return [...root.querySelectorAll('button,select,input,textarea,summary')]
+      .filter(el => !el.disabled && !el.hidden && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+  }
+  menuMove(root, axis, d) {
+    const list = this.menuFocusables(root); if (!list.length) return;
+    const cur = this.shadowRoot.activeElement, at = list.indexOf(cur);
+    if (at < 0) { (list.find(el => el.classList.contains('primary')) || list[0]).focus(); return; }
+    // Left / right adjusts a picker or slider in place; everywhere else it walks like up / down.
+    if (axis === 'h' && cur.tagName === 'SELECT') {
+      cur.selectedIndex = clamp(cur.selectedIndex + d, 0, cur.options.length - 1);
+      cur.dispatchEvent(new Event('change', { bubbles: true })); return;
+    }
+    if (axis === 'h' && cur.type === 'range') {
+      d > 0 ? cur.stepUp() : cur.stepDown();
+      cur.dispatchEvent(new Event('input', { bubbles: true })); cur.dispatchEvent(new Event('change', { bubbles: true })); return;
+    }
+    const next = list[(at + d + list.length) % list.length];
+    next.focus(); next.scrollIntoView?.({ block: 'nearest' });
+  }
+  menuActivate(root) {
+    const cur = this.shadowRoot.activeElement;
+    if (!cur || !root.contains(cur)) { this.menuMove(root, 'v', 1); return; }
+    if (cur.tagName === 'SELECT') { cur.selectedIndex = (cur.selectedIndex + 1) % cur.options.length; cur.dispatchEvent(new Event('change', { bubbles: true })); return; }
+    if (cur.tagName === 'INPUT' && cur.type !== 'range') { this.menuMove(root, 'v', 1); return; }
+    cur.click();
+  }
+  menuBack() {
+    if (this.sideEl.classList.contains('open')) { this.closeSide(); return; }
+    if (this.state === 'paused') this.togglePause();
   }
 
   /* ---------- input ---------- */
@@ -2203,7 +2416,7 @@ class CoopBubbles extends HTMLElement {
       ctx.restore(); ctx.globalAlpha = 1;
     });
     ctx.font = '600 15px ui-monospace, monospace'; ctx.textAlign = 'left';
-    this.sfxLog.slice(-3).forEach((s, i) => {
+    if (!(this.tvActive && TV.hideSecondaryHud)) this.sfxLog.slice(-3).forEach((s, i) => {
       ctx.globalAlpha = Math.max(0, 1 - (this.now - s.t) / 1.6) * 0.55;
       ctx.fillStyle = '#3a5a80'; ctx.fillText('\u266a ' + s.name, X0 + 6, this.LAUNCH_Y - 78 - i * 20);
     });
@@ -2544,7 +2757,7 @@ class CoopBubbles extends HTMLElement {
         ctx.lineTo(x + Math.cos(a)*10, iy + Math.sin(a)*10); ctx.stroke();
       }
     }
-    ctx.font = '700 16px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
+    ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
     ctx.textAlign = 'center';
     ctx.fillText(meta.name + (p.bot ? ' · bot' : ''), x, y + 44);
     return true;
@@ -2598,8 +2811,8 @@ class CoopBubbles extends HTMLElement {
     const next = p.next;
     const npulse = next?.swapT && this.now - next.swapT < 0.5 ? 1 + Math.sin((this.now - next.swapT) * 20) * 0.12 : 1;
     if (next) {
-      this.drawBubble(ctx, x + 40, y + 6, 13 * npulse, next.kind, next.special, false, false);
-      ctx.font = '600 12px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5'; ctx.textAlign = 'center';
+      this.drawBubble(ctx, x + 40, y + 6, 13 * npulse * this.tvTextScale(), next.kind, next.special, false, false);
+      ctx.font = '600 ' + Math.round(12 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5'; ctx.textAlign = 'center';
       ctx.fillText('next', x + 40, y + 34);
     }
     // identity icon + label
@@ -2611,7 +2824,7 @@ class CoopBubbles extends HTMLElement {
     else if (meta.icon === 'ring') { ctx.beginPath(); ctx.arc(x, iy, 8, 0, 7); ctx.stroke(); }
     else { for (let i = 0; i < 4; i++) { const a = i * Math.PI/2 + Math.PI/4;
       ctx.beginPath(); ctx.moveTo(x, iy); ctx.lineTo(x + Math.cos(a)*10, iy + Math.sin(a)*10); ctx.stroke(); } }
-    ctx.font = '700 16px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
+    ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
     ctx.fillText(meta.name + (p.bot ? ' \u00b7 bot' : ''), x, y + 44);
   }
   drawDanger(ctx) {
@@ -2636,8 +2849,12 @@ class CoopBubbles extends HTMLElement {
       ctx.fillText('CLEAR THE GLOWING BUBBLES!', cx0, this.DANGER_Y - 20);
     }
   }
+  // Launcher labels grow with the TV HUD; everywhere else they keep their desktop size.
+  tvTextScale() { return this.tvActive ? TV.hudScale : 1; }
   drawHUD(ctx) {
     if (this.battle && this.settings.mode === 'battle' && !this.online) return this.drawBattleStrip(ctx);
+    // The TV layout frames the field with its own DOM HUD (syncTvHud) instead.
+    if (this.tvActive && this.tvLay && this.tvLay.hud) return;
     ctx.textAlign = 'left';
     // Keep both boxes clear of the corner buttons, which grow relative to a narrow board.
     const hx = this.chromeInset || X0;
@@ -3351,6 +3568,68 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  .root[data-aim-mode="point"] .pad .padA:active{background:rgba(43,111,212,var(--padTint,.025))}
  .root[data-aim-mode="point"] .pad .padL,.root[data-aim-mode="point"] .pad .padR{display:none}
 }
+/* ---------- TV / couch display (.tvMode; measure() decides it from the Display setting) ----------
+   .gameCol becomes the fixed 1920x1080 logical stage, sized in real px by relayout(); --tvS is
+   stage px per logical px. Everything here is authored in logical px and multiplied by --tvS,
+   so 1080p and 4K get the same composition and a non-16:9 screen letterboxes. The root colour
+   is the letterbox; the stage art fills the whole 16:9 surface around the playfield. */
+.tvHud,.tvOnly{display:none}
+.root.tvMode{padding:0;gap:0;background:#0b1f3d}
+.root.tvMode .gameCol{flex:none;aspect-ratio:auto;max-width:none;max-height:none;overflow:hidden;
+ background:radial-gradient(circle at 12% 22%,rgba(255,111,177,.28) 0 70px,transparent 71px),radial-gradient(circle at 20% 70%,rgba(63,157,255,.22) 0 110px,transparent 111px),
+ radial-gradient(circle at 86% 30%,rgba(167,139,250,.30) 0 90px,transparent 91px),radial-gradient(circle at 80% 82%,rgba(62,207,114,.20) 0 130px,transparent 131px),
+ radial-gradient(circle at 50% 50%,rgba(255,255,255,.10),transparent 60%),linear-gradient(160deg,#27508f,#1a3766 55%,#122a52)}
+.root.tvMode canvas{position:absolute;left:calc(var(--pfX) * var(--tvS));top:calc(var(--pfY) * var(--tvS));width:calc(var(--pfW) * var(--tvS));height:calc(var(--pfH) * var(--tvS));
+ border-radius:calc(26px * var(--tvS));box-shadow:0 0 0 calc(6px * var(--tvS)) rgba(255,255,255,.18),0 calc(18px * var(--tvS)) calc(60px * var(--tvS)) rgba(0,0,0,.4)}
+.root.tvMode .overlay{border-radius:0}
+.root.tvMode .tvOnly{display:block}.root.tvMode .tvOnly[hidden]{display:none}
+.root.tvMode.isFullscreen .tvFullscreen{display:none}
+.root.tvMode .cornerButton{top:calc(var(--tvSafeY) * var(--tvS));width:calc(var(--tvChrome) * var(--tvS));height:calc(var(--tvChrome) * var(--tvS));font-size:calc(34px * var(--tvS))}
+.root.tvMode .fullscreenButton{left:calc(var(--tvSafeX) * var(--tvS))}
+.root.tvMode .gear{display:grid;right:calc(var(--tvSafeX) * var(--tvS))}
+.root.tvMode .buildTag{right:calc(var(--tvSafeX) * var(--tvS));bottom:calc(8px * var(--tvS));font-size:calc(13px * var(--tvS));color:rgba(255,255,255,.35)}
+/* Menus: authored at a fixed logical size, then scaled by stage × menuScale from their centre. */
+.root.tvMode .card{--u:1;width:600px;max-width:none;max-height:calc(var(--tvSafeH) / var(--tvMenuScale));transform:scale(var(--tvMenuK))}
+.root.tvMode .lobbyCard{width:680px}
+.root.tvMode .card .btn{padding:15px;font-size:19px;border-radius:16px}
+.root.tvMode .card .textInput,.root.tvMode .card select{padding:12px;font-size:17px}
+.root.tvMode .card .seg button{padding:10px 16px;font-size:16px}
+.root.tvMode .side.open{position:absolute;display:block;z-index:7;top:calc(var(--tvY) + var(--tvSafeY) * var(--tvS));right:calc(var(--tvX) + var(--tvSafeX) * var(--tvS));bottom:auto;
+ width:380px;height:calc(var(--tvSafeH) / var(--tvMenuScale));transform:scale(var(--tvMenuK));transform-origin:100% 0}
+.root.tvMode .side .seg{flex-wrap:wrap}.root.tvMode .side .seg button{padding:8px 13px;font-size:14px}.root.tvMode .side .row{margin:10px 0}
+/* Controller focus has to read from the sofa: a thick gold ring and a lift on every focusable. */
+.root.tvMode :is(button,select,input,textarea,summary):focus{outline:4px solid #ffc233;outline-offset:3px;box-shadow:0 0 0 9px rgba(255,194,51,.32)}
+.root.tvMode .overlay .btn:focus{transform:scale(1.03)}
+.root.tvMode .onlineBar{left:calc(var(--infoX) * var(--tvS));top:calc(var(--infoY) * var(--tvS));right:auto;width:calc(var(--infoW) / var(--tvHudS));flex-wrap:wrap;transform:scale(calc(var(--tvS) * var(--tvHudS)));transform-origin:0 0}
+.root.tvMode .pad{left:calc(var(--padX) * var(--tvS));top:calc(var(--padY) * var(--tvS));bottom:auto;width:calc(var(--padW) / var(--tvHudS));flex-wrap:wrap;transform:scale(calc(var(--tvS) * var(--tvHudS)));transform-origin:0 0}
+/* The HUD is one 1920x1080 logical layer; relayout() places its slots from the layout. */
+.root.tvMode .tvHud{display:block;position:absolute;left:0;top:0;width:1920px;height:1080px;transform:scale(var(--tvS));transform-origin:0 0;pointer-events:none;z-index:2;
+ font-size:calc(20px * var(--tvHudS));color:#fff;line-height:1.1}
+.tvSlot{position:absolute;box-sizing:border-box;border-radius:28px;padding:18px 24px;background:rgba(9,26,54,.55);box-shadow:inset 0 0 0 3px rgba(255,255,255,.12);overflow:hidden}
+.tvLabel{display:block;font-size:.8em;font-weight:600;letter-spacing:.12em;color:#9fc4ff;text-transform:uppercase}
+.tvBig{display:block;font-weight:700;font-size:2.6em;font-variant-numeric:tabular-nums;letter-spacing:.01em;text-shadow:0 3px 0 rgba(0,0,0,.25);white-space:nowrap}
+.tvRound .tvBig{font-size:2.2em}
+.tvLine{display:block;margin-top:6px;font-weight:600;font-size:1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tvLine:empty{display:none}
+.tvWarn{color:#ffc233}.tvAlarm{color:#ff8b98}
+.tvChain{display:inline-block;margin-top:8px;padding:4px 14px;border-radius:999px;background:#a78bfa;font-weight:700;font-size:1.1em}
+.tvChain:empty{display:none}
+.tvPower{padding:14px 20px}
+.tvMeter{height:26px;border-radius:13px;background:rgba(255,255,255,.14);overflow:hidden;margin:8px 0 0}
+.tvMeter i{display:block;height:100%;width:0;border-radius:13px;background:linear-gradient(90deg,#ff6fb1,#a78bfa)}
+.tvPower.ready .tvMeter i{background:linear-gradient(90deg,#ff5b6b,#ffc233,#3ecf72,#3f9dff,#a78bfa)}
+.tvInfo{background:rgba(9,26,54,.35);padding-top:88px}
+.tvInfo:not(.calm){visibility:hidden}
+.tvInfo .tvLine{font-size:.9em;line-height:1.35;color:#d7e8ff;white-space:pre-line}
+.tvCard{display:grid;grid-template-rows:auto 1fr auto;border-top:10px solid var(--accent,#fff)}
+.tvName{display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.7em}
+.tvName small{font-size:.5em;font-weight:600;color:#9fc4ff;letter-spacing:.1em;text-transform:uppercase}
+.tvBalls{display:flex;align-items:center;gap:26px}
+.tvBall{display:block;flex:none;border-radius:50%;background-size:106% 106%;background-position:center}
+.tvBall.cur{width:118px;height:118px}.tvBall.next{width:66px;height:66px;opacity:.9}
+.tvBallLabel{font-size:.7em;color:#9fc4ff;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.tvCard .tvStatus{font-weight:700;font-size:1.05em}
+.tvCard.small .tvBall.cur{width:78px;height:78px}.tvCard.small .tvBall.next{width:46px;height:46px}.tvCard.small .tvName{font-size:1.3em}
 </style>
 <div class="root">
   <div class="gameCol">
@@ -3358,6 +3637,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <button class="cornerButton fullscreenButton" type="button" title="Enter fullscreen" aria-label="Enter fullscreen"><span class="enterIcon" aria-hidden="true">\u26f6</span><span class="exitIcon" aria-hidden="true">\u2715</span></button>
     <button class="cornerButton gear" type="button" title="Settings" aria-label="Open settings">\u2699</button>
     <div class="onlineBar"><span class="onlineRoomLabel"></span><button class="onlinePause">Pause</button><button class="onlineRestart">Restart</button><button class="onlineLeave">Leave</button><span class="netState">Live</span></div>
+    <div class="tvHud" aria-hidden="true">
+      <div class="tvSlot tvScore"><span class="tvLabel">Team score</span><b class="tvBig tvScoreVal">0</b><span class="tvChain"></span></div>
+      <div class="tvSlot tvRound"><span class="tvLabel tvRoundLabel">Round</span><b class="tvBig tvRoundVal"></b><span class="tvLine tvRoundName"></span><span class="tvLine tvPush"></span></div>
+      <div class="tvSlot tvPower"><span class="tvLabel tvPowerLabel">Team power</span><div class="tvMeter"><i></i></div></div>
+      <div class="tvSlot tvInfo"><span class="tvLabel">Match</span><span class="tvLine tvInfoText"></span></div>
+      <div class="tvCards"></div>
+    </div>
     <div class="buildTag">${BUILD_LABEL}</div>
     <div class="pad"><div class="padA" aria-hidden="true"></div><button class="padL">\u25c0</button><button class="padF">FIRE</button><button class="padR">\u25b6</button><button class="padP" aria-label="Pass your bubble to your teammate">PASS</button><button class="padT" aria-label="Activate Team Power">TEAM POWER</button></div>
     <div class="overlay home"><div class="card">
@@ -3366,6 +3652,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <div class="homeActions"><button class="btn primary createOnline">Create online room</button>
       <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code"></div>
       <button class="btn ghost localPlay">Local play</button></div><div class="formError"></div>
+      <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
+      <button class="btn primary tvOnly tvFullscreen">\u26f6 Play fullscreen</button>
     </div></div>
     <div class="overlay lobby" style="display:none"><div class="card lobbyCard">
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
@@ -3414,6 +3702,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <div class="overlay pause" style="display:none"><div class="card" style="text-align:center">
       <h1>Paused</h1><p class="sub">press P or the button to resume</p>
       <button class="btn primary resume">Resume</button>
+      <button class="btn ghost tvOnly tvFullscreen">\u26f6 Fullscreen</button>
+      <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
     </div></div>
     <div class="overlay levelUp" style="display:none"><div class="card">
       <h1 class="luTitle"></h1><p class="sub luSub"></p><p class="luTime"></p>
@@ -3451,11 +3741,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');
     this.applyTouchStyle();
-    sh.querySelector('.localPlay').onclick = () => { this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
-    sh.querySelector('.createOnline').onclick = () => this.beginOnline('create');
-    sh.querySelector('.joinOnline').onclick = () => this.beginOnline('join');
+    sh.querySelector('.localPlay').onclick = () => { this.tvFullscreenNudge(); this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
+    sh.querySelector('.createOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('create'); };
+    sh.querySelector('.joinOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('join'); };
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));
-    sh.querySelector('.start').onclick = () => { this.ensureAudio(); if (this.settings.mode === 'battle' && !this.battle) this.resetGame(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
+    sh.querySelector('.start').onclick = () => { this.tvFullscreenNudge(); this.ensureAudio(); if (this.settings.mode === 'battle' && !this.battle) this.resetGame(); this.state = 'play'; this._t = performance.now(); this.tutEl.style.display = 'none'; };
     sh.querySelector('.resume').onclick = () => this.togglePause();
     sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{
       // A finished level chain leaves settings.level on the last level; restart the run.
@@ -3466,32 +3756,30 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const fullscreenButton = sh.querySelector('.fullscreenButton');
     this.fullscreenButtonEl = fullscreenButton;
     this.gearEl = sh.querySelector('.gear');
-    const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
     const syncFullscreenButton = () => {
-      const active = fullscreenElement() === this;
+      const active = this.isFullscreen();
+      /* Leaving fullscreen never leaves TV mode — Display is its own setting. It only stops
+         the TV flows from asking again this session: the player chose the window. */
+      if (this._wasFullscreen && !active) this._fsDeclined = true;
+      this._wasFullscreen = active;
       fullscreenButton.classList.toggle('isFullscreen', active);
+      this.rootEl.classList.toggle('isFullscreen', active);
       fullscreenButton.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
       fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
     };
-    fullscreenButton.onclick = async () => {
-      try {
-        if (fullscreenElement()) {
-          const exit = document.exitFullscreen || document.webkitExitFullscreen;
-          if (exit) await exit.call(document);
-        } else {
-          const enter = this.requestFullscreen || this.webkitRequestFullscreen;
-          if (enter) await enter.call(this);
-        }
-      } catch (_) {}
-      syncFullscreenButton();
-    };
+    this._syncFullscreen = syncFullscreenButton;
+    fullscreenButton.onclick = () => this.toggleFullscreen();
+    sh.querySelectorAll('.tvFullscreen').forEach(b => { b.onclick = () => { this._fsDeclined = false; this.enterFullscreen(); }; });
+    sh.querySelectorAll('.card .dispSeg button').forEach(b => { b.onclick = () => this.setDisplayMode(b.dataset.d); });
     document.addEventListener('fullscreenchange', syncFullscreenButton);
     document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
     this._fullscreenUnbind = () => {
       document.removeEventListener('fullscreenchange', syncFullscreenButton);
       document.removeEventListener('webkitfullscreenchange', syncFullscreenButton);
     };
-    if (!(this.requestFullscreen || this.webkitRequestFullscreen)) fullscreenButton.hidden = true;
+    if (!(this.requestFullscreen || this.webkitRequestFullscreen)) {
+      fullscreenButton.hidden = true; sh.querySelectorAll('.tvFullscreen').forEach(b => { b.hidden = true; });
+    }
     syncFullscreenButton();
     /* One capture-phase router owns every touch on the pad, so which control wins is a
        property of padHit's order rather than of CSS stacking. The aim halves are transparent
@@ -3565,6 +3853,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      one danger line, and a mismatched device simply letterboxes. */
   measure() {
     const root = this.rootEl; if (!root) return;
+    /* TV places everything on the fixed logical stage, so the world height is the one its
+       layout was drawn for rather than whatever shape the window happens to be. */
+    if (this.syncDisplayMode()) {
+      this._deviceViewH = H0;
+      if (!this.online) this.setViewH(H0);
+      this.relayout();
+      return;
+    }
     const cs = getComputedStyle(root);
     const availW = root.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     const availH = root.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
@@ -3578,6 +3874,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   }
   relayout() {
     const root = this.rootEl, col = this.gameColEl, a = this._avail;
+    if (root && col && this.tvActive) { this.relayoutTv(); return; }
     if (!root || !col || !a) return;
     root.style.setProperty('--fieldAspect', (W / this.H).toFixed(5));
     /* One pass, no oscillation. Decide on the side panel from the board as it would be
@@ -3605,7 +3902,166 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
        the canvas HUD inset itself to match rather than being drawn underneath. */
     const btn = [this.fullscreenButtonEl, this.gearEl].find(el => el && el.offsetWidth > 0);
     const gap = btn ? Math.min(btn.offsetLeft, w - btn.offsetLeft - btn.offsetWidth) : 0;
-    this.chromeInset = btn ? Math.max(X0, (btn.offsetWidth + gap * 2) * W / w) : X0;
+    // On the TV stage the corner buttons sit in the safe corners, well clear of the field.
+    this.chromeInset = btn && !this.tvActive ? Math.max(X0, (btn.offsetWidth + gap * 2) * W / w) : X0;
+  }
+
+  /* ---------- TV / couch display ---------- */
+  /* Resolves Auto / Desktop / TV against this screen and flips .tvMode. Auto is re-asked on
+     every measure and whenever a gamepad comes or goes, so it follows the room it is in. */
+  syncDisplayMode() {
+    const root = this.rootEl; if (!root) return false;
+    const mm = q => typeof matchMedia === 'function' && matchMedia(q).matches;
+    const tv = resolveDisplayMode(this.settings.displayMode, {
+      w: root.clientWidth, h: root.clientHeight,
+      gamepad: this.connectedPads().length > 0, noPointer: mm('(any-pointer: none)') }) === 'tv';
+    if (tv !== !!this.tvActive) {
+      this.tvActive = tv; this.tvLay = null;
+      root.classList.toggle('tvMode', tv);
+    }
+    return tv;
+  }
+  setDisplayMode(m) {
+    if (!DISPLAY_MODES.includes(m)) return;
+    this.settings.displayMode = m; this.saveLocalPrefs();
+    this.measure(); this.syncDisplaySegs();
+    // Choosing TV is a click, which is exactly the gesture a fullscreen request needs.
+    if (m === 'tv') { this._fsDeclined = false; this.tvFullscreenNudge(); }
+  }
+  syncDisplaySegs() {
+    this.shadowRoot?.querySelectorAll('.dispSeg button').forEach(b => b.classList.toggle('on', b.dataset.d === this.settings.displayMode));
+  }
+  isFullscreen() { return (document.fullscreenElement || document.webkitFullscreenElement) === this; }
+  async enterFullscreen() {
+    if (this.isFullscreen()) return;
+    const enter = this.requestFullscreen || this.webkitRequestFullscreen;
+    try { if (enter) await enter.call(this); } catch (_) { this._fsDeclined = true; }
+    this._syncFullscreen && this._syncFullscreen();
+  }
+  async toggleFullscreen() {
+    if (!this.isFullscreen()) { this._fsDeclined = false; return this.enterFullscreen(); }
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    try { if (exit) await exit.call(document); } catch (_) {}
+    this._syncFullscreen && this._syncFullscreen();
+  }
+  /* TV prefers fullscreen, so the clicks that start play ask for it — once. A refusal, an
+     unsupported browser or the player backing out of fullscreen all leave TV mode running in
+     the window, and nothing asks again until they press a fullscreen button themselves. */
+  tvFullscreenNudge() {
+    if (this.tvActive && TV.preferFullscreen && !this._fsDeclined && !this.isFullscreen()) this.enterFullscreen();
+  }
+  tvPlayerCount() {
+    return this.online || this.settings.mode !== 'battle' ? ((this.players || []).length || this.settings.players) : this.settings.players;
+  }
+  relayoutTv() {
+    const root = this.rootEl, col = this.gameColEl;
+    const st = tvStage(root.clientWidth || TV.logicalW, root.clientHeight || TV.logicalH);
+    const n = this.tvPlayerCount(), key = tvLayoutKey(this.settings.mode, n);
+    const lay = this.tvLay = tvLayout(key, W / this.H, n);
+    lay.n = n; lay.H = this.H;
+    root.classList.remove('wideLayout');
+    col.style.width = st.w + 'px'; col.style.height = st.h + 'px';
+    const set = (k, v) => root.style.setProperty(k, String(v));
+    set('--tvS', st.scale.toFixed(5)); set('--tvX', st.x.toFixed(1) + 'px'); set('--tvY', st.y.toFixed(1) + 'px');
+    set('--tvHudS', TV.hudScale); set('--tvMenuScale', TV.menuScale); set('--tvMenuK', (st.scale * TV.menuScale).toFixed(5));
+    set('--tvSafeX', lay.safe.x + 'px'); set('--tvSafeY', lay.safe.y + 'px'); set('--tvSafeH', lay.safe.h + 'px'); set('--tvChrome', TV.chrome + 'px');
+    for (const [name, r] of [['pf', lay.playfield], ['pad', lay.pad], ['info', lay.info]]) {
+      set(`--${name}X`, r.x.toFixed(1) + 'px'); set(`--${name}Y`, r.y.toFixed(1) + 'px');
+      set(`--${name}W`, r.w.toFixed(1) + 'px'); set(`--${name}H`, r.h.toFixed(1) + 'px');
+    }
+    this.placeTvHud(lay);
+    this.fit();
+  }
+  placeTvHud(lay) {
+    const sh = this.shadowRoot, place = (el, r) => {
+      if (!el) return; el.style.display = r ? '' : 'none';
+      if (r) Object.assign(el.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    };
+    place(sh.querySelector('.tvScore'), lay.hud && lay.score);
+    place(sh.querySelector('.tvRound'), lay.hud && lay.round);
+    place(sh.querySelector('.tvPower'), lay.hud && lay.power);
+    place(sh.querySelector('.tvInfo'), lay.hud && lay.info);
+    const box = sh.querySelector('.tvCards');
+    box.innerHTML = '';
+    this.tvCards = lay.cards.map((r, i) => {
+      const meta = META[i], el = document.createElement('div');
+      el.className = 'tvSlot tvCard' + (r.h < 240 ? ' small' : '');
+      el.style.setProperty('--accent', meta.accent);
+      el.innerHTML = `<div class="tvName"><span class="tvWho"></span><small class="tvTag"></small></div>
+        <div class="tvBalls"><span class="tvBall cur"></span><span><span class="tvBall next"></span><span class="tvBallLabel">next</span></span></div>
+        <div class="tvStatus"></div>`;
+      place(el, r); box.appendChild(el);
+      return { el, who: el.querySelector('.tvWho'), tag: el.querySelector('.tvTag'), cur: el.querySelector('.cur'),
+        next: el.querySelector('.next'), status: el.querySelector('.tvStatus') };
+    });
+    this._tvCache = new Map();
+  }
+  // The loaded / next bubble as a DOM swatch: the same sprite the canvas draws, colour behind it.
+  tvBallStyle(b) {
+    if (!b) return 'visibility:hidden';
+    const sp = b.special === 'rainbow' || b.special === 'bomb' ? b.special : b.kind;
+    const bg = PAL[b.kind] || '#c9d6e6', src = BUBBLE_SPRITE_URLS[sp];
+    return `visibility:visible;background-color:${bg};` + (src ? `background-image:url(${src})` : '');
+  }
+  /* Per-frame HUD sync. Values are cached per node, so an unchanged frame touches no DOM.
+     Active play shows only what matters this second; the match details wait for a pause,
+     a round card or the end screen (TV.hideSecondaryHud). */
+  syncTvHud() {
+    if (!this.tvActive) return;
+    const lay = this.tvLay, n = this.tvPlayerCount();
+    if (!lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)) { this.relayoutTv(); return; }
+    if (!lay.hud) return;
+    const sh = this.shadowRoot, cache = this._tvCache || (this._tvCache = new Map());
+    const put = (el, prop, v) => { const k = cache.get(el) || {}; if (k[prop] === v) return; k[prop] = v; cache.set(el, k);
+      if (prop === 'text') el.textContent = v; else if (prop === 'class') el.className = v; else if (prop === 'css') el.style.cssText = v; else el.style.setProperty(prop, v); };
+    put(sh.querySelector('.tvScoreVal'), 'text', Math.round(this.dispScore || 0).toLocaleString());
+    put(sh.querySelector('.tvChain'), 'text', this.chain && this.chain.mult > 1 ? 'CHAIN \u00d7' + this.chain.mult : '');
+    const S = this.settings, idx = this.levelIndex();
+    put(sh.querySelector('.tvRoundLabel'), 'text', S.mode === 'clear' ? (idx >= 0 ? 'Round ' + (idx + 1) + ' of ' + LEVELS.length : 'Custom round') : 'Endless');
+    put(sh.querySelector('.tvRoundVal'), 'text', S.mode === 'clear' ? (idx >= 0 ? String(idx + 1) : 'Custom') : 'Survive');
+    put(sh.querySelector('.tvRoundName'), 'text', S.mode === 'clear' && idx >= 0 ? LEVELS[idx].name : 'together');
+    const left = this.dropCountdown(), held = this.teamPowerActive && powerHolds(this.teamPowerActive, 'holdPressure');
+    const push = sh.querySelector('.tvPush');
+    put(push, 'text', left === null ? '' : held ? 'Row push held' : 'Row push in ' + left + (left === 1 ? ' shot' : ' shots'));
+    put(push, 'class', 'tvLine tvPush' + (left !== null && !held && left <= 1 ? ' tvAlarm' : left !== null && !held && left <= 3 ? ' tvWarn' : ''));
+    // Team Power: its own slot while two humans share the field.
+    const power = sh.querySelector('.tvPower'), duo = this.teamHumans().length === 2;
+    put(power, 'visibility', duo ? 'visible' : 'hidden');
+    if (duo) {
+      const max = TEAM_POWER.max, charge = this.teamPowerCharge || 0, active = this.teamPowerActive, def = active ? POWERS[active] : null;
+      const ready = !active && charge >= max, frac = def ? clamp((this.teamPowerTimer || 0) / def.secs, 0, 1) : clamp(charge / max, 0, 1);
+      put(power, 'class', 'tvSlot tvPower' + (ready || active ? ' ready' : ''));
+      put(sh.querySelector('.tvPowerLabel'), 'text', def ? def.name + ' ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
+        : ready ? 'Team power ready \u00b7 Q / Y' : 'Team power ' + Math.floor(charge) + '%');
+      put(sh.querySelector('.tvMeter i'), 'width', (frac * 100).toFixed(1) + '%');
+    }
+    // Secondary details: only once play stops.
+    const calm = !TV.hideSecondaryHud || this.state !== 'play';
+    const info = sh.querySelector('.tvInfo');
+    put(info, 'class', 'tvSlot tvInfo' + (calm ? ' calm' : ''));
+    if (calm) put(sh.querySelector('.tvInfoText'), 'text', [
+      'Miss meter ' + Math.floor(this.missMeter || 0) + ' / ' + S.missMax,
+      'Shot pressure ' + (S.pressureShots ? S.pressureShots + ' shots' : 'off') + ' \u00b7 hurry-up ' + (S.hurry ? S.hurry + 's' : 'off'),
+      'Reload ' + Number(S.reload).toFixed(2) + 's \u00b7 aim guide ' + (S.guide === 1 ? 'full' : S.guide === 0.5 ? 'short' : 'tiny'),
+      'Controllers ' + this.connectedPads().length + ' \u00b7 Start pauses \u00b7 A fires \u00b7 X passes',
+    ].join('\n'));
+    // Player cards: who, what is loaded, what is next, and one line of status.
+    const limit = Number(S.hurry) || 0;
+    (this.tvCards || []).forEach((c, i) => {
+      const p = (this.players || [])[i];
+      put(c.el, 'visibility', p ? 'visible' : 'hidden'); if (!p) return;
+      put(c.who, 'text', p.name || (p.meta || META[i]).name);
+      put(c.tag, 'text', p.bot ? 'bot' : this.online && i === this.activeP ? 'you' : this.padOwner(i) ? 'controller' : '');
+      const loading = this.passFx && (i === this.passFx.a || i === this.passFx.b) && (this.now - this.passFx.t) < PASS_FX;
+      put(c.cur, 'css', this.tvBallStyle(loading ? null : p.cur));
+      put(c.next, 'css', this.tvBallStyle(p.next));
+      const hurry = limit && this.state === 'play' && !p.bot && p.idle > limit - PACE.hurryWarn;
+      const st = hurry ? 'HURRY UP! ' + Math.ceil(Math.max(0, limit - p.idle))
+        : calm ? `${p.stats?.shots || 0} shots \u00b7 ${p.stats?.pops || 0} pops \u00b7 ${p.stats?.assists || 0} setups`
+        : p.reload > 0 ? 'Reloading\u2026' : 'Ready';
+      put(c.status, 'text', st);
+      put(c.status, 'class', 'tvStatus' + (hurry ? ' tvAlarm' : ''));
+    });
   }
   hideOverlays() { this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; this.levelUpEl.style.display = 'none'; }
   showEnd(won) {
@@ -3859,6 +4315,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Touch aiming</span><div class="seg amSeg">
   <button data-am="halves">Left / right</button><button data-am="point">Where I press</button></div></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">where I press: drag anywhere on the board and the cannon swings to your finger · FIRE still shoots · touch screens only, and it stays yours in online rooms</div>
+<div class="row"><span>Display</span><div class="seg dispSeg">
+  <button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
+<div style="color:#9db8d4;font-size:12px;margin-top:-2px">TV: a 16:9 couch layout with a big HUD and controller menus · auto picks it for a big widescreen driven by a gamepad · saved on this device</div>
 <div class="roomOwned">
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full path</button><button data-g="0.5">Short</button><button data-g="0.25">Tiny</button></div></div>
@@ -3894,6 +4353,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelector('.ptv').textContent = S.padTint ? (S.padTint * 100).toFixed(1) + '%' : 'off';
       el.querySelector('.fs').value = S.fireScale; el.querySelector('.fsv').textContent = S.fireScale.toFixed(2) + '×';
       el.querySelectorAll('.amSeg button').forEach(b => b.classList.toggle('on', b.dataset.am === S.aimMode));
+      this.syncDisplaySegs();
       const hint = AIM_HINT[S.aimMode] || AIM_HINT.halves;
       el.querySelector('.ctrlP1 .ctrlText').textContent = hint.ctrl;
       const tutAim = this.shadowRoot.querySelector('.tutAim'); if (tutAim) tutAim.textContent = hint.tut;
@@ -3943,6 +4403,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     segWire('.glSeg', null, b => { S.guide = +b.dataset.g; });
     segWire('.sndSeg', null, b => { S.sound = +b.dataset.v === 1; if (S.sound) this.ensureAudio(); });
     segWire('.amSeg', null, b => { S.aimMode = b.dataset.am; this.applyTouchStyle(); this.saveLocalPrefs(); });
+    el.querySelectorAll('.dispSeg button').forEach(b => { b.onclick = () => this.setDisplayMode(b.dataset.d); });
     const slider = (cls, fmt, set) => { const s = el.querySelector(cls);
       s.oninput = () => { set(parseFloat(s.value)); syncAll(); }; };
     slider('.rl', 0, v => S.reload = v);

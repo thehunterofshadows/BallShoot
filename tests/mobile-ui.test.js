@@ -84,7 +84,7 @@ test('point-to-aim is a per-device control scheme, never a room setting', () => 
   assert.match(component, /\.root\[data-aim-mode="point"\] \.pad\{top:0;height:100%\}/);
   assert.match(component, /\.root\[data-aim-mode="point"\] \.pad \.padL,[^{]*\.padR\{display:none\}/);
   assert.match(component, /AIM_MODES\.includes\(p\.aimMode\)/);       // clamped on load like the sliders
-  assert.match(component, /JSON\.stringify\(\{ aimSpeed, padTint, fireScale, aimMode \}\)/);
+  assert.match(component, /JSON\.stringify\(\{ aimSpeed, padTint, fireScale, aimMode(, displayMode)? \}\)/);
   // It must not travel with the room: the server has no such setting to merge over it.
   const lobbies = fs.readFileSync(path.join(root, 'server', 'lobbies.js'), 'utf8');
   assert.doesNotMatch(lobbies, /aimMode/);

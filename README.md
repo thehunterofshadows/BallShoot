@@ -39,6 +39,16 @@ rounds as authored; `0` turns it off). A player who sits on a loaded launcher is
 **HURRY UP!** and then fires at whatever angle they hold; the **Hurry-up** setting is the
 idle limit in seconds (default 8, `0` off). Bots and Battle boards are exempt.
 
+**Display** (home card, pause card or settings) chooses **Auto**, **Desktop** or **TV**, and is
+remembered on the device. TV is a couch layout on a fixed 16:9 stage: a big centred field,
+score and round across the top, a large card per player in two-player co-op, and bigger,
+controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Use **Play
+fullscreen** for the full effect; leaving fullscreen keeps TV mode. Gamepads work in every
+display mode: stick or d-pad aims, A fires, X passes, Y fires Team Power, Start pauses, Back
+opens settings, and in menus the stick moves focus, A presses and B backs out. Auto chooses TV
+for a large widescreen with a gamepad connected. Check the layout with
+`docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
+
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields
 refill with a score bonus, eliminated players spectate, and the last player alive
