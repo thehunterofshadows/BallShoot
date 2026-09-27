@@ -25,6 +25,17 @@ const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP 
 const PAL  = { R:'#ff5b6b', Y:'#ffc233', G:'#3ecf72', B:'#3f9dff' };
 const PALD = { R:'#d13a4c', Y:'#d69a12', G:'#1fa557', B:'#2273cc' };
 const KINDS = ['R','Y','G','B'];
+const BUBBLE_SPRITE_URLS = {
+  R:'assets/bubbles/red.webp', Y:'assets/bubbles/yellow.webp',
+  G:'assets/bubbles/green.webp', B:'assets/bubbles/blue.webp',
+  rainbow:'assets/bubbles/rainbow.webp', bomb:'assets/bubbles/bomb.webp',
+};
+const BUBBLE_SPRITES = {};
+if (typeof Image !== 'undefined') {
+  for (const [id, src] of Object.entries(BUBBLE_SPRITE_URLS)) {
+    const img = new Image(); img.decoding = 'async'; img.src = src; BUBBLE_SPRITES[id] = img;
+  }
+}
 /* Level library — rows alternate 11/10 wide; even rows anchor to the ceiling.
    Designed on Puzzle Bobble principles: readable clusters, big payoffs for cutting
    narrow supports, bank-shot channels, and setups one player leaves for another. */
@@ -1753,7 +1764,14 @@ class CoopBubbles extends HTMLElement {
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
   drawBubble(ctx, x, y, rad, kind, special, face, dangerPulse) {
-    if (special === 'rainbow') {
+    const spriteKey = (special === 'rainbow' || special === 'bomb') ? special : kind;
+    const sprite = BUBBLE_SPRITES[spriteKey];
+    if (sprite && sprite.complete && sprite.naturalWidth) {
+      // Generated art replaces the old procedural sphere while the vector drawing below
+      // remains a zero-network/loading fallback. Bomb gets a little extra room for its fuse.
+      const size = rad * (special === 'bomb' ? 2.35 : 2.12);
+      ctx.drawImage(sprite, x - size / 2, y - size / 2, size, size);
+    } else if (special === 'rainbow') {
       const spin = this.now * 1.5;
       for (let i = 0; i < 4; i++) {
         ctx.fillStyle = PAL[KINDS[i]];
@@ -2455,13 +2473,12 @@ class CoopBubbles extends HTMLElement {
     ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.ceilingY() - 40));
     this.grid.forEach(g => {
       const x = this.cellX(g.r, g.c), y = this.cellY(g.r);
-      ctx.fillStyle = g.special ? '#5b6f93' : PAL[g.kind];
-      ctx.beginPath(); ctx.arc(x, y, R - 2, 0, 7); ctx.fill();
-      ctx.strokeStyle = g.special ? '#2c3a52' : PALD[g.kind]; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(x, y, R - 3, 0, 7); ctx.stroke();
+      this.drawBubble(ctx, x, y, R - 2, g.kind, g.special, false, false);
     });
-    for (const f of this.flights) { ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); }
-    for (const f of this.falling) { ctx.globalAlpha = 0.7; ctx.fillStyle = PAL[f.kind] || '#fff'; ctx.beginPath(); ctx.arc(f.x, f.y, R - 4, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+    for (const f of this.flights) this.drawBubble(ctx, f.x, f.y, R - 4, f.kind, f.special, false, false);
+    for (const f of this.falling) {
+      ctx.globalAlpha = 0.7; this.drawBubble(ctx, f.x, f.y, R - 4, f.kind, f.special, false, false); ctx.globalAlpha = 1;
+    }
     ctx.setLineDash([18, 14]); ctx.lineWidth = 5; ctx.strokeStyle = b.danger ? '#ff5b6b' : 'rgba(255,91,107,0.5)';
     ctx.beginPath(); ctx.moveTo(18, this.DANGER_Y); ctx.lineTo(W - 18, this.DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
     const p = b.player;
@@ -2469,7 +2486,7 @@ class CoopBubbles extends HTMLElement {
     ctx.fillStyle = b.meta.accent; this.rrect(ctx, -14, -70, 28, 52, 12); ctx.fill(); ctx.restore();
     ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 34, 0, 7); ctx.fill();
     ctx.lineWidth = 7; ctx.strokeStyle = b.meta.accent; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 34, 0, 7); ctx.stroke();
-    if (p.cur) { ctx.fillStyle = p.cur.special ? '#5b6f93' : PAL[p.cur.kind]; ctx.beginPath(); ctx.arc(p.x, this.LAUNCH_Y - 44, 22, 0, 7); ctx.fill(); }
+    if (p.cur) this.drawBubble(ctx, p.x, this.LAUNCH_Y - 44, 22, p.cur.kind, p.cur.special, false, false);
     if (b.danger && b.alive) { ctx.fillStyle = 'rgba(255,91,107,' + (0.12 + Math.sin(this.now * 8) * 0.08).toFixed(3) + ')'; this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill(); }
     if (!b.alive) {
       ctx.fillStyle = 'rgba(60,80,110,0.55)'; this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill();

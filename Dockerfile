@@ -2,6 +2,7 @@ FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html coop-bubbles.js support.js /usr/share/nginx/html/
+COPY assets /usr/share/nginx/html/assets/
 # Stamp the build identity into the game before hashing it: the stamp is part of the
 # content, so every rebuild produces a fresh ?v= and the tag drawn in the corner always
 # matches the bundle the browser actually fetched.
