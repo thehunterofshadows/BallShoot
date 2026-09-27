@@ -8,12 +8,485 @@ const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108;
 const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP = 92;
 const LEVEL_READY_SECS = 60; // backstop on the between-levels ready gate
 const KINDS = ['R', 'Y', 'G', 'B'];
+/* levels:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds them
+   equal), so every room builds exactly the board a local game does.
+
+   Rounds are drawn the way Puzzle Bobble draws them: small readable pictures with open
+   space, big masses hung from thin stems so one good shot drops the lot, and pockets only a
+   bank shot reaches. Difficulty climbs by colour count first — 3, then 4, 5 and 6 — and
+   each round teaches one idea. Rows alternate 11/10 wide (even rows anchor to the ceiling),
+   at most 12. Cells: R Y G B P O colours, # stone (never pops, only falls), * star (a shot
+   landing beside it pops every bubble of the shot's colour), + rainbow (joins any colour's
+   group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
+const LEVEL_KINDS = ['R', 'Y', 'G', 'B', 'P', 'O'];
+const LEVEL_SPECIALS = { '#': 'stone', '*': 'star', '+': 'rainbow' };
+const levelCell = ch => LEVEL_KINDS.includes(ch) ? { kind: ch, special: null }
+  : LEVEL_SPECIALS[ch] ? { kind: ch, special: LEVEL_SPECIALS[ch] } : null;
+const levelColors = rows => new Set(rows.join('').split('').filter(ch => LEVEL_KINDS.includes(ch))).size;
+/* The cells a resolving shot of `kind` clears through a star beside it, or null: the shot,
+   the star(s) it touched and every plain bubble of that colour on the board. */
+const starHit = (grid, around, b, kind) => {
+  const stars = around.map(([r, c]) => grid.get(r + ',' + c)).filter(n => n && n.special === 'star');
+  if (!stars.length || !LEVEL_KINDS.includes(kind)) return null;
+  const out = new Set([b.r + ',' + b.c]);
+  for (const s of stars) out.add(s.r + ',' + s.c);
+  grid.forEach((g, k) => { if (g.kind === kind && !g.special) out.add(k); });
+  return out;
+};
 const LEVELS = [
-  ["GGBYRGBYYGB","BRRGBYRGBY","RGGYRGBYRGB","BYRBBYRGBY","RGBYYGBYRGB","BYRGBYRGBY","RGBY...YRGB","BYRG...GBY","RGB.....RGB","BY.......Y"],
-  ["YYRBGYRBBYR","RGGYRBGYRB","GYYBGYRBGYR","RBGRRBGYRB","GYRBBYRBGYR","RBGYRBGYRB","GYRBGYRBGYR","BB.RR...BB","BB.RR....BB"],
-  ["RRYGBRYGGRY","YBBRYGBRYG","BRRGBRYGBRY","YGBYYGBRYG","BRYGGRYGBRY","YGBR...RYG","BRYG...GBRY","YGBR...RYG","BRYG...GBRY","YGB.....YG","BR.......RY"],
-  ["YBGRY......","GRYBGG....","YBGRY.BRYBG","GRYB..YBGR","YBGRR.GRYBG","GRYB..YBGR","YBGRY.RRYBG","GRYB..YGGR","BBGRY.GRRBG","GYYB..YBGR"],
+  // 1-10 · three colours · shapes, direct matches, the first stem cut
+  { name: 'Hello Bubbles', drop: 10, rows: [
+    'RRRYYYYYBBB',
+    'RRRYYYYBBB',
+    'RR..YYY..BB',
+  ]},
+  { name: 'Smile', drop: 10, rows: [
+    'YYYYYYYYYYY',
+    'YGGYYYYGGY',
+    'YYYYYYYYYYY',
+    'R........R',
+    '.RRRRRRRRR.',
+  ]},
+  { name: 'Stripes', drop: 10, rows: [
+    'RRGGBBBGGRR',
+    'RGGBBBBGGR',
+    'RRGGBBBGGRR',
+    '.RGG..GGR.',
+  ]},
+  { name: 'Little Heart', drop: 10, rows: [
+    'BRRRBBBRRRB',
+    'RRYRRRRYRR',
+    'BRRRRRRRRRB',
+    '..RRRRRR..',
+    '....RRR....',
+  ]},
+  { name: 'Arrow', drop: 10, rows: [
+    '...GGGGG...',
+    '...GGGG...',
+    '.YYYGGGYYY.',
+    '..YYYYYY..',
+    '....BBB....',
+  ]},
+  { name: 'Twin Pendants', drop: 10, rows: [
+    'YYBBYYYBBYY',
+    '..B....B..',
+    '.GGGG.GGGG.',
+    'GGGG..GGGG',
+    '.GGG...GGG.',
+  ]},
+  { name: 'Pyramid', drop: 10, rows: [
+    'RRRRRRRRRRR',
+    '.YYYYYYYY.',
+    '..GGGGGGG..',
+    '...RRRR...',
+    '....YYY....',
+  ]},
+  { name: 'Cherries', drop: 10, rows: [
+    'YYYGGGGGYYY',
+    '...G..G...',
+    '...G...G...',
+    '..RR..RR..',
+    '..RRR.RRR..',
+  ]},
+  { name: 'Bridge', drop: 10, rows: [
+    'BBB.....BBB',
+    'BB......BB',
+    'BYYYYYYYYYB',
+    '.R.R..R.R.',
+  ]},
+  { name: 'The Kite', drop: 10, rows: [
+    '....YYY....',
+    '....YY....',
+    '....RRR....',
+    '...RGGR...',
+    '...RGGGR...',
+  ]},
+  // 11-22 · four colours · pendants on one-bubble stems, bank-shot pockets
+  { name: 'Four Corners', drop: 9, rows: [
+    'RRRR...BBBB',
+    'RRRY..YBBB',
+    'RRYY...YYBB',
+    'GGG....GGG',
+    'GGG.....GGG',
+  ]},
+  { name: 'Pendulum', drop: 9, rows: [
+    'YYYYBBBYYYY',
+    '....BB....',
+    '.....B.....',
+    '....RR....',
+    '...RGGGR...',
+    '...RGGR...',
+    '....RRR....',
+  ]},
+  { name: 'Butterfly', drop: 9, rows: [
+    'RR...G...RR',
+    'RRY.GG.YRR',
+    'RYYY.G.YYYR',
+    'BYY.GG.YYB',
+    'BB...G...BB',
+    '.B..GG..B.',
+  ]},
+  { name: 'Bank Shot', drop: 9, rows: [
+    'RRRRRRRRRRR',
+    'B.GGGGGG.B',
+    'B.GGGGGGG.B',
+    '..YYYYYY..',
+    '...YYYYY...',
+  ]},
+  { name: 'Lantern', drop: 9, rows: [
+    '...BBBBB...',
+    '....BB....',
+    '...RRRRR...',
+    '..RYYYYR..',
+    '..RYYGYYR..',
+    '..RYYYYR..',
+    '...RRRRR...',
+  ]},
+  { name: 'Zigzag', drop: 9, rows: [
+    'GGGGGGGGGGG',
+    'YY..YY..YY',
+    '.BB.BBB.BB.',
+    'RR..RR..RR',
+    '.YY.YYY.YY.',
+  ]},
+  { name: 'Crown', drop: 9, rows: [
+    'YYYYYYYYYYY',
+    'YRRYGGYRRY',
+    'YY.YYYYY.YY',
+    'Y..BYYB..Y',
+    'Y...YYY...Y',
+  ]},
+  { name: 'Wind Chimes', drop: 9, rows: [
+    'BBBBBBBBBBB',
+    'R.Y.GG.Y.R',
+    'R.Y..G..Y.R',
+    'R.Y.GG.Y.R',
+    'R.Y..G..Y.R',
+    'B.B.BB.B.B',
+  ]},
+  { name: 'Checkerboard', drop: 9, rows: [
+    'RRBBRRRBBRR',
+    'YYGGYYGGYY',
+    'BBRRBBBRRBB',
+    'GGYYGGYYGG',
+    '..RR.B.RR..',
+  ]},
+  { name: 'Side Pocket', drop: 9, rows: [
+    'BBBBBBBBBBB',
+    'Y.RRRRRR.Y',
+    'Y..RRRRR..Y',
+    'Y..GGGG..Y',
+    'YY..GGG..YY',
+    '.Y......Y.',
+  ]},
+  { name: 'Umbrella', drop: 9, rows: [
+    '..RRRRRRR..',
+    '.RRYRRYRR.',
+    'RRYRRRRRYRR',
+    'B...GG...B',
+    '.....G.....',
+    '....GG....',
+    '....G......',
+  ]},
+  { name: 'Jellyfish', drop: 9, rows: [
+    '...BBBBB...',
+    '..BBYYBB..',
+    '.BBYYYYYBB.',
+    '.B.R..R.B.',
+    '.G..R.R..G.',
+    '.G.R..R.G.',
+  ]},
+  // 23-34 · five colours (+purple) · stones that only clear by falling
+  { name: 'Stepping Stones', drop: 8, rows: [
+    'RRRYYGYYRRR',
+    'RR#YYYY#RR',
+    'BBB#PPP#BBB',
+    'BB#.PP.#BB',
+    'P#.......#P',
+  ]},
+  { name: 'Castle Gate', drop: 8, rows: [
+    'YYYYYYYYYYY',
+    '#RRRPPRRR#',
+    '#RR#PPP#RR#',
+    '#GG#..#GG#',
+    '#GG#...#GG#',
+    '.BB....BB.',
+  ]},
+  { name: 'Rock Garden', drop: 8, rows: [
+    'GGGGGGGGGGG',
+    'G#GG##GG#G',
+    '.PP.YYY.PP.',
+    '.#P.YY.P#.',
+    '..RR.B.RR..',
+    '..#R..R#..',
+  ]},
+  { name: 'Anchor', drop: 8, rows: [
+    'GGGBBBBBGGG',
+    '....PP....',
+    '.....#.....',
+    '....##....',
+    '..YYY#YYY..',
+    '.RY....YR.',
+    '.RR.....RR.',
+  ]},
+  { name: 'Keystone', drop: 8, rows: [
+    'YYY.....YYY',
+    'PPB....BPP',
+    'PPB.....BPP',
+    'GPB....BPG',
+    '.GBR...RBG.',
+    '..GR##RG..',
+  ]},
+  { name: 'Quarry', drop: 8, rows: [
+    'BBBBBBBBBBB',
+    'BYYYYYYYYB',
+    'BY#######YB',
+    'PP#RRRR#PP',
+    '.P#RGGGR#P.',
+    '..#RGGR#..',
+    '...#RRR#...',
+  ]},
+  { name: 'Stone Bell', drop: 8, rows: [
+    '....RRR....',
+    '....PP....',
+    '...#YYY#...',
+    '..#YYYY#..',
+    '..#GGGGG#..',
+    '.#GBBBBG#.',
+    '.##.....##.',
+  ]},
+  { name: 'Totem', drop: 8, rows: [
+    '..RRRRRRR..',
+    '..#GGGG#..',
+    '..#PBBBP#..',
+    '...YYYY...',
+    '..#YRRRY#..',
+    '..#GGGG#..',
+    '...PPPPP...',
+    '....##....',
+  ]},
+  { name: 'Hourglass', drop: 8, rows: [
+    'PPPPPPPPPPP',
+    '.YYYYYYYY.',
+    '..YYYYYYY..',
+    '...#RR#...',
+    '....#G#....',
+    '...BGGB...',
+    '..BBGGGBB..',
+    '.BBBBBBBB.',
+  ]},
+  { name: 'Boulder Drop', drop: 8, rows: [
+    'YYYYGGGYYYY',
+    'B...GG...B',
+    'B...RRR...B',
+    'P..####..P',
+    'P..#####..P',
+    '...####...',
+  ]},
+  { name: 'Fortress', drop: 8, rows: [
+    'RRRRRRRRRRR',
+    '#GGGGGGGG#',
+    '#G#BBBBB#G#',
+    '#G#YYYY#G#',
+    '#GG#PPP#GG#',
+    '#GG#..#GG#',
+    '.#G#...#G#.',
+    '..#....#..',
+  ]},
+  { name: 'Mountain Pass', drop: 8, rows: [
+    'YYYYY.YYYYY',
+    '#PPP..PPP#',
+    '##PP...PP##',
+    '###B..B###',
+    '###RB.BR###',
+    '##RG..GR##',
+    '#.RG...GR.#',
+  ]},
+  // 35-46 · six colours (+orange) · stars and grid rainbows, bigger cuts
+  { name: 'Shooting Star', drop: 7, rows: [
+    'OOOYYYYYOOO',
+    '...Y**Y...',
+    '..RRRYRRR..',
+    '..GGBBGG..',
+    '..PPGBGPP..',
+    '...BPPB...',
+  ]},
+  { name: 'Prism', drop: 7, rows: [
+    '..RRRRRRR..',
+    '..OOOOOO..',
+    '...YY+YY...',
+    '...G++G...',
+    '....B+B....',
+    '....PP....',
+  ]},
+  { name: 'Rainbow Road', drop: 7, rows: [
+    'RRRRRRRRRRR',
+    'OOOOOOOOOO',
+    'YYYY+++YYYY',
+    'GGG+..+GGG',
+    'BB+.....+BB',
+    'P+......+P',
+  ]},
+  { name: 'Starfish', drop: 7, rows: [
+    'GBP.OOO.PBG',
+    '....OO....',
+    '...OO*OO...',
+    'OOOO**OOOO',
+    '...YO*OY...',
+    '..YY..YY..',
+    '.YR.....RY.',
+  ]},
+  { name: 'Constellation', drop: 7, rows: [
+    'BBBBBBBBBBB',
+    'B*......*B',
+    '.PP.....PP.',
+    '..PYYYYP..',
+    '..G.O*O.G..',
+    '.GG.RR.GG.',
+    '....R*R....',
+  ]},
+  { name: 'Fireworks', drop: 7, rows: [
+    '..YYY.YYY..',
+    '...O..O...',
+    '..R*R.R*R..',
+    'RRBR..RBRR',
+    '.G.P...P.G.',
+    'G..P..P..G',
+  ]},
+  { name: 'Kaleidoscope', drop: 7, rows: [
+    'RYGBPOPBGYR',
+    'OPB+GG+BPO',
+    'YGBP*O*PBGY',
+    '.RYG++GYR.',
+    '..OBPRPBO..',
+    '...G++G...',
+    '....RYR....',
+  ]},
+  { name: 'Comet', drop: 7, rows: [
+    'OOOOYYY....',
+    'OOYYRR....',
+    '.YYRR*BB...',
+    '...R*BBGG.',
+    '.....BGGPP.',
+    '......GPP.',
+    '........P..',
+  ]},
+  { name: 'Aurora', drop: 7, rows: [
+    'GGGGGGGGGGG',
+    'BGGBBBBGGB',
+    'PBBPPPPPBBP',
+    'OPPO++OPPO',
+    '.OO.YYY.OO.',
+    '..R.YY.R..',
+    '..R.*.*.R..',
+  ]},
+  { name: 'Carousel', drop: 7, rows: [
+    '....RRR....',
+    '...YYYY...',
+    '..OOOOOOO..',
+    '.PPPPPPPP.',
+    'BB.G.*.G.BB',
+    'B..G..G..B',
+    'B..+...+..B',
+    '..GG..GG..',
+  ]},
+  { name: 'Starlight Chandelier', drop: 7, rows: [
+    'YYYYYYYYYYY',
+    '...YOOY...',
+    '....O*O....',
+    'RRRRBBRRRR',
+    'P.G.BBB.G.P',
+    'P.G.**.G.P',
+    'PP.GG.GG.PP',
+    '.P......P.',
+  ]},
+  { name: 'Supernova', drop: 7, rows: [
+    'RRROOYOORRR',
+    'RYYOOOOYYR',
+    'GYY+***+YYG',
+    'GBB+**+BBG',
+    'PGBB+++BBGP',
+    '.PGBBBBGP.',
+    '..PGG.GGP..',
+    '..PP..PP..',
+    '...P...P...',
+  ]},
+  // 47-52 · six colours · dense finales, the original four set-pieces reworked
+  { name: 'The Vault', drop: 6, rows: [ // scattered singles weave — build your own matches; grind open the high arch
+    'GGBYROBYYGB',
+    'BRRPBYRGBY',
+    'RGGYRGBYOGB',
+    'BYRBBYRPBY',
+    'RGBOOGBYRGB',
+    'BYRGBYRGPY',
+    'RG#Y...Y#GB',
+    'BYRG...GBY',
+    'RGB.....RGB',
+    'BY.......Y',
+  ]},
+  { name: 'Chandeliers', drop: 6, rows: [ // dense field, three solid pendants: pop direct or cut the cells above
+    'YYRBOYRBBYR',
+    'RGGPRBGYRB',
+    'GYYBG*RBGYR',
+    'RBORRBGPRB',
+    'GYRBBYRBGYR',
+    'RBGYPBGYOB',
+    'GYRBGYRBGYR',
+    'OO.PP...OO',
+    'OO.PP....OO',
+  ]},
+  { name: 'The Canyon', drop: 6, rows: [ // 11-row wall towers; coordinated cuts drop big chunks
+    'RRYGBOYGGRY',
+    'YBBPYGBRYG',
+    'BRRGBRYOBRY',
+    'YGBYPGBRYG',
+    'BRYGGRYGBRY',
+    'Y#BR...R#G',
+    'BROG...GPRY',
+    'YGB#...#YG',
+    'BRYG...GBRY',
+    'YGB.....YG',
+    'PO.......OP',
+  ]},
+  { name: 'Hive Bridge', drop: 6, rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
+    'YBPRY......',
+    'GOYBGG....',
+    'YBGRY.BROBG',
+    'GPYB..YBGR',
+    'YBGRR.GRYPG',
+    'GRO#..YBOR',
+    'YBGRY.RRYBG',
+    'GRYB..#GGR',
+    'BBGPY.GRRBO',
+    'GYYB..YBGR',
+  ]},
+  { name: 'Grand Cathedral', drop: 6, rows: [
+    'PPPPPPPPPPP',
+    'P#OOOOOO#P',
+    'P#O+YYY+O#P',
+    '#OYYRRYYO#',
+    '#OY*RRR*YO#',
+    '#GYRBBRYG#',
+    '#GG.BBB.GG#',
+    '#BG....GB#',
+    '#BG.....GB#',
+    '.BB....BB.',
+    '..B.....B..',
+  ]},
+  { name: 'Bubble Together', drop: 6, rows: [
+    'PRRRPOPBBBP',
+    'RRRRYYBBBB',
+    'RR*RRYBB*BB',
+    'RRRRGGBBBB',
+    '.RRR+O+BBB.',
+    '..RRGGBB..',
+    '...RYOYB...',
+    '....RB....',
+    '....G#G....',
+    '....GG....',
+  ]},
 ];
+/* levels:end */
 const key = (r, c) => `${r},${c}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const geom = vh => {
@@ -169,6 +642,41 @@ const powerPair = (T, humans, players, by, state, charge, active) => {
 };
 const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
 /* power-rules:end */
+/* pace-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so the ceiling, the clear clock and the idle timer run the same locally and
+   online.
+
+   Puzzle Bobble keeps a round moving three ways. The ceiling drops every `drop` shots — the
+   level's own pace, scaled by the Shot pressure setting (0 turns it off) and one shot
+   tighter for each of the level's colours the team has cleared off the board — and the pack
+   shakes for the last `warnShots` shots before it goes. A fast clear pays a time bonus that
+   slides from full at `timeFull` seconds to nothing at `timeZero`, a longer window than the
+   arcade's minute because a co-op board is bigger. And a human who sits on a loaded
+   launcher for the `hurry` setting's seconds is told HURRY UP! with `hurryWarn` left, then
+   fires at whatever angle they hold. Firing, aiming or passing resets that clock. */
+const PACE = {
+  basePressure: 8, // the Shot pressure default, at which a level's `drop` is used as written
+  warnShots: 2,
+  timeBonus: 5000, timeFull: 15, timeZero: 120,
+  hurryWarn: 5,
+};
+const dropPace = (drop, setting, colors, left) => {
+  if (!setting) return 0;
+  const base = drop ? Math.max(3, Math.round(drop * setting / PACE.basePressure)) : setting;
+  return Math.max(3, base - Math.max(0, colors - left));
+};
+const clearTimeBonus = secs => Math.round(PACE.timeBonus *
+  Math.max(0, Math.min(1, (PACE.timeZero - secs) / (PACE.timeZero - PACE.timeFull))));
+// One human launcher's idle clock: 'warn' as it crosses into the last hurryWarn seconds,
+// 'fire' once it runs out (and every tick after, until a shot actually leaves), else null.
+const hurryTick = (p, dt, limit) => {
+  if (!(limit > 0) || (p.held && (p.held.l || p.held.r)) || p.aimTarget != null) { p.idle = 0; return null; }
+  const was = p.idle || 0, warnAt = Math.max(0, limit - PACE.hurryWarn);
+  p.idle = was + dt;
+  if (p.idle >= limit) return 'fire';
+  return was <= warnAt && p.idle > warnAt ? 'warn' : null;
+};
+/* pace-rules:end */
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -208,11 +716,12 @@ class OnlineGame {
     const rows = this.levelRows();
     const offs = S.field === 'wide' ? [1, 12, 23, 34] : [0];
     for (const off of offs) rows.forEach((row, r) => {
-      for (let i = 0; i < row.length; i++) if (row[i] !== '.') {
-        const c = i + off;
-        this.grid.set(key(r, c), { r, c, kind: row[i], special: null, placedBy: -1 });
+      for (let i = 0; i < row.length; i++) {
+        const cell = levelCell(row[i]), c = i + off;
+        if (cell) this.grid.set(key(r, c), { r, c, ...cell, placedBy: -1 });
       }
     });
+    this.levelColors = levelColors(rows);
     this.removeFloaters();
     this.flights = []; this.batch = []; this.resolveAt = 0;
     this.score = carry ? carry.score : 0;
@@ -224,6 +733,7 @@ class OnlineGame {
     this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0;
     this.teamPowerActive = null; this.teamPowerTimer = 0;
     if (!carry) { this.now = 0; this.events = []; this.eventId = 0; this.paused = false; }
+    this.levelStartT = this.now; // the clear clock; `now` stands still while paused or between levels
     const prior = carry ? new Map(carry.players.map(p => [p.id, p])) : null;
     this.players = this.roster.map((member, i) => {
       const was = prior?.get(member.id);
@@ -242,12 +752,14 @@ class OnlineGame {
   levelRows() {
     if (this.settings.level === 'custom') {
       const rows = String(this.settings.customText || '').split('\n')
-        .map(s => s.trim().toUpperCase().replace(/[^RGYB.]/g, '.')).filter(Boolean).slice(0, 12)
+        .map(s => s.trim().toUpperCase().replace(/[^RGYBPO#*+.]/g, '.')).filter(Boolean).slice(0, 12)
         .map((s, r) => (s + '.'.repeat((r % 2) ? 10 : 11)).slice(0, (r % 2) ? 10 : 11));
-      if (rows.some(s => /[RGYB]/.test(s))) return rows;
+      if (rows.some(s => /[RGYBPO]/.test(s))) return rows;
     }
-    return LEVELS[Number(this.settings.level) || 0] || LEVELS[0];
+    return (LEVELS[Number(this.settings.level) || 0] || LEVELS[0]).rows;
   }
+  // Shots per ceiling drop as authored; a custom board has none and runs on the setting.
+  levelDrop() { return this.settings.level === 'custom' ? 0 : (LEVELS[Number(this.settings.level) || 0] || LEVELS[0]).drop; }
   par(r) { return (r + this.parityFlip) & 1; }
   colsIn(r) { return this.par(r) ? this.cols - 1 : this.cols; }
   cellX(r, c) { return X0 + R + c * 2 * R + this.par(r) * R; }
@@ -337,16 +849,18 @@ class OnlineGame {
     if (!p || !p.connected || this.state !== 'play') return;
     p.held = { l: !!(held && held.l), r: !!(held && held.r) };
     p.aimTarget = Number.isFinite(aim) ? clamp(Number(aim), -AIM_MAX, AIM_MAX) : null;
+    // A tap can start and end between two ticks, so aiming resets the hurry clock here too.
+    if (p.held.l || p.held.r || p.aimTarget != null) p.idle = 0;
   }
-  fire(id) {
+  fire(id, auto = false) {
     const p = this.players.find(q => q.id === id);
     if (!p || !p.connected || this.state !== 'play' || this.paused || this.inputLocked || p.reload > 0) return false;
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++;
+    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; p.idle = 0;
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
-    this.emit('launch', { player: p.i, x: p.x, angle: a });
+    this.emit('launch', { player: p.i, x: p.x, angle: a, auto: auto || undefined });
     return true;
   }
   /* There is no swap: a player shoots the colour they were dealt. The queue is a constraint
@@ -360,7 +874,7 @@ class OnlineGame {
     if (!p || this.inputLocked) return false;
     const pair = passPair(this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state, this.passCd);
     if (!pair) return false;
-    passSwap(pair); this.passCd = PASS.cooldown;
+    passSwap(pair); this.passCd = PASS.cooldown; p.idle = 0;
     this.emit('pass', { by: p.i, players: pair.map(q => q.i), cur: pair.map(q => ({ ...q.cur })), cooldown: PASS.cooldown });
     return true;
   }
@@ -415,6 +929,14 @@ class OnlineGame {
       if (!p.connected || this.inputLocked) continue;
       aimTick(p, dt, this.settings.aimSpeed);
     }
+    // Hurry-up: every connected human in a shared-board room. Battle boards and a running
+    // power (which holds the ceiling's clocks) leave the idle clock where it is.
+    if (!this.battle && !this.inputLocked && !holdPressure) for (const p of this.players) {
+      if (!p.connected) continue;
+      const hurry = hurryTick(p, dt, Number(this.settings.hurry) || 0);
+      if (hurry === 'warn') this.emit('hurry', { player: p.i, secs: Math.min(PACE.hurryWarn, Number(this.settings.hurry)) });
+      else if (hurry === 'fire') this.fire(p.id, true);
+    }
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
     const perDrop = this.shotsPerDrop();
@@ -464,7 +986,7 @@ class OnlineGame {
       if (!this.grid.has(key(b.r,b.c))) { results.push({shooter:b.placedBy,at:b.fired,gone:true}); continue; }
       if (b.special==='bomb') {
         const bx=this.cellX(b.r,b.c), by=this.cellY(b.r), popped=new Set([key(b.r,b.c)]);
-        this.grid.forEach((g,k)=>{ if(Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
+        this.grid.forEach((g,k)=>{ if(g.special!=='stone'&&Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
         results.push({shooter:b.placedBy,at:b.fired,popped,bomb:true});
       } else {
         let kind=b.kind;
@@ -472,7 +994,9 @@ class OnlineGame {
           let best=null,size=0; for(const [r,c] of this.neighbors(b.r,b.c)){const n=this.grid.get(key(r,c)); if(n&&!n.special){const s=this.matchGroup(b.r,b.c,n.kind).size;if(s>size){size=s;best=n.kind;}}}
           if(!best){results.push({shooter:b.placedBy,at:b.fired});continue;} kind=best;
         }
-        const group=this.matchGroup(b.r,b.c,kind); results.push({shooter:b.placedBy,at:b.fired,popped:group.size>=3?group:null});
+        const group=this.matchGroup(b.r,b.c,kind), star=starHit(this.grid,this.neighbors(b.r,b.c),b,kind);
+        if(star){group.forEach(k=>star.add(k));results.push({shooter:b.placedBy,at:b.fired,popped:star,star:true});continue;}
+        results.push({shooter:b.placedBy,at:b.fired,popped:group.size>=3?group:null});
       }
     }
     const all=new Set(), owners=new Set(), clearers=[], shots=[];
@@ -518,14 +1042,15 @@ class OnlineGame {
      LEVEL_READY_SECS is the backstop: one player who walks away must not freeze the room. */
   clearLevel() {
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
-    this.score += bonus;
-    if (next < 0) { this.emit('level_cleared', { level: from, bonus, final: true }); return this.end(true); }
-    this.emit('level_cleared', { level: from, next, bonus, final: false });
+    const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
+    this.score += bonus + timeBonus;
+    if (next < 0) { this.emit('level_cleared', { level: from, bonus, timeBonus, secs, final: true }); return this.end(true); }
+    this.emit('level_cleared', { level: from, next, bonus, timeBonus, secs, final: false });
     this.state = 'levelup';
     this.levelReadyIds = new Set();
     this.levelTimer = LEVEL_READY_SECS;
     this.levelSummary = {
-      from, next, bonus, score: this.score,
+      from, next, bonus, timeBonus, secs, score: this.score,
       players: this.players.map(p => ({ i: p.i, stats: { ...p.stats } })),
     };
   }
@@ -559,7 +1084,7 @@ class OnlineGame {
   }
   refillBattleBoard(){
     this.score+=1000;this.gridTop=GRIDTOP0;this.gridTopTarget=GRIDTOP0;this.parityFlip=0;this.anchorRow=0;this.pressure=0;
-    const rows=this.levelRows();for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++)if(rows[r][c]!=='.')this.grid.set(key(r,c),{r,c,kind:rows[r][c],special:null,placedBy:-1});
+    const rows=this.levelRows();for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++){const cell=levelCell(rows[r][c]);if(cell)this.grid.set(key(r,c),{r,c,...cell,placedBy:-1});}
     this.removeFloaters();this.updateLowest();this.refreshQueues();this.emit('field_refilled',{points:1000});
   }
   addGarbage(amount,fromId){
@@ -607,10 +1132,7 @@ class OnlineGame {
     this.parityFlip^=1;this.anchorRow++;this.gridTop-=ROWH;
     this.updateLowest();this.refreshQueues();
   }
-  shotsPerDrop(){
-    const base=this.settings.pressureShots;
-    return base?Math.max(3,base-(KINDS.length-this.availKinds().length)):0;
-  }
+  shotsPerDrop(){ return dropPace(this.levelDrop(),this.settings.pressureShots,this.levelColors,this.availKinds().length); }
   addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;const a=this.anchorRow;for(let c=0;c<this.colsIn(a);c++)if(this.random()<.85)this.grid.set(key(a,c),{r:a,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
   end(won){if(this.state!=='play')return;this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
   setPaused(value){if(this.state==='play'){this.paused=!!value;this.emit(this.paused?'paused':'resumed');}}
@@ -636,4 +1158,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, LEVEL_KINDS, levelCell, levelColors, starHit, PACE, dropPace, clearTimeBonus, hurryTick, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };

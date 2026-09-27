@@ -12,6 +12,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { LEVELS } = require('./game');
 
 const TOP_N = 20;
 const MAX_SCORE = 100_000_000;
@@ -38,7 +39,7 @@ class Scores {
     if (mode !== 'clear') return `${mode}:-`;
     if (level === 'custom') return `${mode}:custom`;
     const n = Number(level);
-    if (!Number.isInteger(n) || n < 0 || n > 3) throw fail('bad_bucket', 'Unknown level.');
+    if (!Number.isInteger(n) || n < 0 || n >= LEVELS.length) throw fail('bad_bucket', 'Unknown level.');
     return `${mode}:${n}`;
   }
   static cleanInitials(value) {

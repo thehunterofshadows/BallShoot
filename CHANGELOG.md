@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Co-op Clear levels now play like **Puzzle Bobble** (#5). The four dense walls became **52
+  named rounds** in five tiers, drawn as small symmetric pictures with open space, stems to
+  cut and bank-shot pockets: rounds 1-10 use three colours, 11-22 four, 23-34 five (new
+  **purple**) and 35-52 six (new **orange**); The Vault, Chandeliers, The Canyon and Hive
+  Bridge return reworked as the late set-pieces. Levels are now `{ name, drop, rows }` in one
+  `levels` block that is byte-identical in `coop-bubbles.js` and `server/game.js`, and both
+  Level pickers are generated from it. Rows gain placed specials: **stone** `#` never
+  matches, pops or feels a bomb and only clears by falling; **star** `*` pops every bubble of
+  the colour of a shot that lands beside it; **rainbow** `+` joins any colour's group without
+  bridging two colours. The ceiling now drops every `drop` shots for that round (10 → 6),
+  scaled by Shot pressure (8 = as authored, 0 = off; custom boards use the setting), still
+  one shot tighter per colour cleared, and the pack shakes and ticks for the last two shots
+  before it drops. Clearing a round pays a **time bonus** — 5,000 inside 15 s, sliding to 0
+  at 120 s — shown on its own line on the level card. A new **Hurry-up** setting (default 8
+  s, 0 = off, side panel and lobby) warns **HURRY UP!** with a countdown 5 s before an idle
+  human launcher auto-fires at its current angle; firing, aiming or passing resets it, and
+  bots, Battle boards and a running Team Power are exempt. Online the server owns all of it
+  (`hurry` / auto `launch` events, `timeBonus` and `secs` on `level_cleared` and the level
+  summary); the timing rules live in a mirrored `pace-rules` block. Custom levels accept
+  `P O # * +`. Leaderboard buckets and room validation follow the new level count, so
+  `clear` scores saved against the old level 0-3 now sit under rounds 1-4.
+
 - Two-player Co-op Clear gets a shared **Team Power** meter and its first power, **SYNERGY
   BURST** (#3). The meter fills only from the teamwork events the co-op rules already
   resolve, once per event and never per bubble: setup assist +15, alternating team-chain

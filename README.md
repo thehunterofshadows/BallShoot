@@ -20,15 +20,24 @@ rescues and team drops — solo-style clears add nothing). At 100% either player
 or the TEAM POWER button for **SYNERGY BURST**: both loaded bubbles turn rainbow and shot
 pressure, the ceiling and any rescue countdown hold for 8 seconds.
 
-Co-op Clear plays the four authored levels as a chain: clearing one carries your score and
-stats into the next, pays an accuracy bonus, and only the last level ends the run. Beating
+Co-op Clear plays 52 Puzzle Bobble–style rounds as a chain: clearing one carries your score
+and stats into the next, pays an accuracy bonus plus a **time bonus** (the full 5,000 inside
+15 seconds, sliding to nothing at two minutes), and only the last round ends the run. The
+rounds are small pictures in five tiers — three colours at first, then four, five (+purple)
+and six (+orange) — and later ones place **stones** (`#`, never pop, only fall), **stars**
+(`*`, a shot beside one clears its whole colour) and **rainbows** (`+`, join any colour's
+group). The custom level editor accepts the same characters. Beating
 the top-20 board prompts for three initials; the table lives on the game server, so it is
 shared across devices and survives a restart. It is not authenticated — treat it as an
 arcade cabinet, not a record.
 
-Every few shots the field pushes down a row, and the ceiling comes with it. The
-threshold tightens as colours disappear from the board, so endgames accelerate on
-their own. Hosts tune it with the **Shot pressure** slider; `0` turns it off.
+Every few shots the field pushes down a row, and the ceiling comes with it. Each round sets
+its own pace (10 shots early, down to 6 at the end), the pack shakes for the last two shots
+before it goes, and the threshold tightens as the round's colours disappear from the board,
+so endgames accelerate on their own. Hosts scale it with the **Shot pressure** slider (8 plays
+rounds as authored; `0` turns it off). A player who sits on a loaded launcher is told
+**HURRY UP!** and then fires at whatever angle they hold; the **Hurry-up** setting is the
+idle limit in seconds (default 8, `0` off). Bots and Battle boards are exempt.
 
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields

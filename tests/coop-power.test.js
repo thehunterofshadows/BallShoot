@@ -161,11 +161,11 @@ test('the burst holds shot pressure, the miss meter and the rescue clock, then r
   game.flights = [];
   game.shoot(0, 0, 0, 'G', 6); // a lone bubble: no match
   assert.equal(game.missMeter, 2, 'a miss during the burst does not fill the meter');
-  game.pressure = 9;
+  const held = game.pressure = game.shotsPerDrop() + 1; // past due: only the burst holds it
   for (let t = 0; t < BURST.secs - 0.5; t += 0.05) game.update(0.05);
   assert.equal(game.state, 'play');
   assert.equal(game.danger.t, 1.5, 'the rescue clock stood still');
-  assert.equal(game.pressure, 9, 'the ceiling did not come down');
+  assert.equal(game.pressure, held, 'the ceiling did not come down');
   const anchor = game.anchorRow;
   for (let i = 0; i < 12; i++) game.update(0.05);
   assert.equal(game.teamPowerActive, null);

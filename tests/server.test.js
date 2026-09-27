@@ -80,7 +80,7 @@ test('the leaderboard endpoint reads and writes over plain HTTP', async () => {
 
   // Rejections are 4xx with a code, not a crash.
   for (const bad of [{initials:'',score:1,mode:'clear',level:0},{initials:'AAA',score:-5,mode:'clear',level:0},
-                     {initials:'AAA',score:1,mode:'nope',level:0},{initials:'AAA',score:1,mode:'clear',level:42}]) {
+                     {initials:'AAA',score:1,mode:'nope',level:0},{initials:'AAA',score:1,mode:'clear',level:999}]) {
     const res=await post(bad);
     assert.equal(res.status,400);
     assert.ok((await res.json()).code,'a machine-readable code comes back');

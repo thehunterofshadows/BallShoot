@@ -22,12 +22,14 @@ const ROWH = R * Math.sqrt(3), X0 = 12, GRIDTOP0 = 108;
    a wide screen letterboxes rather than shrinking the world, so no shape ever gets less
    runway than the game already shipped with. */
 const H0 = 1080, VIEWH_MIN = H0, VIEWH_MAX = 1560, LAUNCH_GAP = 142, DANGER_GAP = 92;
-const PAL  = { R:'#ff5b6b', Y:'#ffc233', G:'#3ecf72', B:'#3f9dff' };
-const PALD = { R:'#d13a4c', Y:'#d69a12', G:'#1fa557', B:'#2273cc' };
+const PAL  = { R:'#ff5b6b', Y:'#ffc233', G:'#3ecf72', B:'#3f9dff', P:'#a95cf2', O:'#ff8a2a' };
+const PALD = { R:'#d13a4c', Y:'#d69a12', G:'#1fa557', B:'#2273cc', P:'#7a35c4', O:'#d2600c' };
+// Random rows (endless, battle junk) stay four-colour; authored levels use LEVEL_KINDS.
 const KINDS = ['R','Y','G','B'];
 const BUBBLE_SPRITE_URLS = {
   R:'assets/bubbles/red.webp', Y:'assets/bubbles/yellow.webp',
   G:'assets/bubbles/green.webp', B:'assets/bubbles/blue.webp',
+  P:'assets/bubbles/purple.webp', O:'assets/bubbles/orange.webp',
   rainbow:'assets/bubbles/rainbow.webp', bomb:'assets/bubbles/bomb.webp',
 };
 const BUBBLE_SPRITES = {};
@@ -49,59 +51,485 @@ if (typeof Image !== 'undefined') {
     const img = new Image(); img.decoding = 'async'; img.src = src; LAUNCHER_SPRITES[id] = img;
   }
 }
-/* Level library — rows alternate 11/10 wide; even rows anchor to the ceiling.
-   Designed on Puzzle Bobble principles: readable clusters, big payoffs for cutting
-   narrow supports, bank-shot channels, and setups one player leaves for another. */
+/* levels:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds them
+   equal), so every room builds exactly the board a local game does.
+
+   Rounds are drawn the way Puzzle Bobble draws them: small readable pictures with open
+   space, big masses hung from thin stems so one good shot drops the lot, and pockets only a
+   bank shot reaches. Difficulty climbs by colour count first — 3, then 4, 5 and 6 — and
+   each round teaches one idea. Rows alternate 11/10 wide (even rows anchor to the ceiling),
+   at most 12. Cells: R Y G B P O colours, # stone (never pops, only falls), * star (a shot
+   landing beside it pops every bubble of the shot's colour), + rainbow (joins any colour's
+   group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
+const LEVEL_KINDS = ['R', 'Y', 'G', 'B', 'P', 'O'];
+const LEVEL_SPECIALS = { '#': 'stone', '*': 'star', '+': 'rainbow' };
+const levelCell = ch => LEVEL_KINDS.includes(ch) ? { kind: ch, special: null }
+  : LEVEL_SPECIALS[ch] ? { kind: ch, special: LEVEL_SPECIALS[ch] } : null;
+const levelColors = rows => new Set(rows.join('').split('').filter(ch => LEVEL_KINDS.includes(ch))).size;
+/* The cells a resolving shot of `kind` clears through a star beside it, or null: the shot,
+   the star(s) it touched and every plain bubble of that colour on the board. */
+const starHit = (grid, around, b, kind) => {
+  const stars = around.map(([r, c]) => grid.get(r + ',' + c)).filter(n => n && n.special === 'star');
+  if (!stars.length || !LEVEL_KINDS.includes(kind)) return null;
+  const out = new Set([b.r + ',' + b.c]);
+  for (const s of stars) out.add(s.r + ',' + s.c);
+  grid.forEach((g, k) => { if (g.kind === kind && !g.special) out.add(k); });
+  return out;
+};
 const LEVELS = [
-  { name:"The Vault", rows:[ // scattered singles weave — build your own matches; grind open the high arch
-    "GGBYRGBYYGB",
-    "BRRGBYRGBY",
-    "RGGYRGBYRGB",
-    "BYRBBYRGBY",
-    "RGBYYGBYRGB",
-    "BYRGBYRGBY",
-    "RGBY...YRGB",
-    "BYRG...GBY",
-    "RGB.....RGB",
-    "BY.......Y",
+  // 1-10 · three colours · shapes, direct matches, the first stem cut
+  { name: 'Hello Bubbles', drop: 10, rows: [
+    'RRRYYYYYBBB',
+    'RRRYYYYBBB',
+    'RR..YYY..BB',
   ]},
-  { name:"Chandeliers", rows:[ // dense field, three solid pendants: pop direct or cut the cells above
-    "YYRBGYRBBYR",
-    "RGGYRBGYRB",
-    "GYYBGYRBGYR",
-    "RBGRRBGYRB",
-    "GYRBBYRBGYR",
-    "RBGYRBGYRB",
-    "GYRBGYRBGYR",
-    "BB.RR...BB",
-    "BB.RR....BB",
+  { name: 'Smile', drop: 10, rows: [
+    'YYYYYYYYYYY',
+    'YGGYYYYGGY',
+    'YYYYYYYYYYY',
+    'R........R',
+    '.RRRRRRRRR.',
   ]},
-  { name:"The Canyon", rows:[ // 11-row wall towers; coordinated cuts drop big chunks
-    "RRYGBRYGGRY",
-    "YBBRYGBRYG",
-    "BRRGBRYGBRY",
-    "YGBYYGBRYG",
-    "BRYGGRYGBRY",
-    "YGBR...RYG",
-    "BRYG...GBRY",
-    "YGBR...RYG",
-    "BRYG...GBRY",
-    "YGB.....YG",
-    "BR.......RY",
+  { name: 'Stripes', drop: 10, rows: [
+    'RRGGBBBGGRR',
+    'RGGBBBBGGR',
+    'RRGGBBBGGRR',
+    '.RGG..GGR.',
   ]},
-  { name:"Hive Bridge", rows:[ // right hive hangs from a lone 2-bubble bridge up the center channel
-    "YBGRY......",
-    "GRYBGG....",
-    "YBGRY.BRYBG",
-    "GRYB..YBGR",
-    "YBGRR.GRYBG",
-    "GRYB..YBGR",
-    "YBGRY.RRYBG",
-    "GRYB..YGGR",
-    "BBGRY.GRRBG",
-    "GYYB..YBGR",
+  { name: 'Little Heart', drop: 10, rows: [
+    'BRRRBBBRRRB',
+    'RRYRRRRYRR',
+    'BRRRRRRRRRB',
+    '..RRRRRR..',
+    '....RRR....',
+  ]},
+  { name: 'Arrow', drop: 10, rows: [
+    '...GGGGG...',
+    '...GGGG...',
+    '.YYYGGGYYY.',
+    '..YYYYYY..',
+    '....BBB....',
+  ]},
+  { name: 'Twin Pendants', drop: 10, rows: [
+    'YYBBYYYBBYY',
+    '..B....B..',
+    '.GGGG.GGGG.',
+    'GGGG..GGGG',
+    '.GGG...GGG.',
+  ]},
+  { name: 'Pyramid', drop: 10, rows: [
+    'RRRRRRRRRRR',
+    '.YYYYYYYY.',
+    '..GGGGGGG..',
+    '...RRRR...',
+    '....YYY....',
+  ]},
+  { name: 'Cherries', drop: 10, rows: [
+    'YYYGGGGGYYY',
+    '...G..G...',
+    '...G...G...',
+    '..RR..RR..',
+    '..RRR.RRR..',
+  ]},
+  { name: 'Bridge', drop: 10, rows: [
+    'BBB.....BBB',
+    'BB......BB',
+    'BYYYYYYYYYB',
+    '.R.R..R.R.',
+  ]},
+  { name: 'The Kite', drop: 10, rows: [
+    '....YYY....',
+    '....YY....',
+    '....RRR....',
+    '...RGGR...',
+    '...RGGGR...',
+  ]},
+  // 11-22 · four colours · pendants on one-bubble stems, bank-shot pockets
+  { name: 'Four Corners', drop: 9, rows: [
+    'RRRR...BBBB',
+    'RRRY..YBBB',
+    'RRYY...YYBB',
+    'GGG....GGG',
+    'GGG.....GGG',
+  ]},
+  { name: 'Pendulum', drop: 9, rows: [
+    'YYYYBBBYYYY',
+    '....BB....',
+    '.....B.....',
+    '....RR....',
+    '...RGGGR...',
+    '...RGGR...',
+    '....RRR....',
+  ]},
+  { name: 'Butterfly', drop: 9, rows: [
+    'RR...G...RR',
+    'RRY.GG.YRR',
+    'RYYY.G.YYYR',
+    'BYY.GG.YYB',
+    'BB...G...BB',
+    '.B..GG..B.',
+  ]},
+  { name: 'Bank Shot', drop: 9, rows: [
+    'RRRRRRRRRRR',
+    'B.GGGGGG.B',
+    'B.GGGGGGG.B',
+    '..YYYYYY..',
+    '...YYYYY...',
+  ]},
+  { name: 'Lantern', drop: 9, rows: [
+    '...BBBBB...',
+    '....BB....',
+    '...RRRRR...',
+    '..RYYYYR..',
+    '..RYYGYYR..',
+    '..RYYYYR..',
+    '...RRRRR...',
+  ]},
+  { name: 'Zigzag', drop: 9, rows: [
+    'GGGGGGGGGGG',
+    'YY..YY..YY',
+    '.BB.BBB.BB.',
+    'RR..RR..RR',
+    '.YY.YYY.YY.',
+  ]},
+  { name: 'Crown', drop: 9, rows: [
+    'YYYYYYYYYYY',
+    'YRRYGGYRRY',
+    'YY.YYYYY.YY',
+    'Y..BYYB..Y',
+    'Y...YYY...Y',
+  ]},
+  { name: 'Wind Chimes', drop: 9, rows: [
+    'BBBBBBBBBBB',
+    'R.Y.GG.Y.R',
+    'R.Y..G..Y.R',
+    'R.Y.GG.Y.R',
+    'R.Y..G..Y.R',
+    'B.B.BB.B.B',
+  ]},
+  { name: 'Checkerboard', drop: 9, rows: [
+    'RRBBRRRBBRR',
+    'YYGGYYGGYY',
+    'BBRRBBBRRBB',
+    'GGYYGGYYGG',
+    '..RR.B.RR..',
+  ]},
+  { name: 'Side Pocket', drop: 9, rows: [
+    'BBBBBBBBBBB',
+    'Y.RRRRRR.Y',
+    'Y..RRRRR..Y',
+    'Y..GGGG..Y',
+    'YY..GGG..YY',
+    '.Y......Y.',
+  ]},
+  { name: 'Umbrella', drop: 9, rows: [
+    '..RRRRRRR..',
+    '.RRYRRYRR.',
+    'RRYRRRRRYRR',
+    'B...GG...B',
+    '.....G.....',
+    '....GG....',
+    '....G......',
+  ]},
+  { name: 'Jellyfish', drop: 9, rows: [
+    '...BBBBB...',
+    '..BBYYBB..',
+    '.BBYYYYYBB.',
+    '.B.R..R.B.',
+    '.G..R.R..G.',
+    '.G.R..R.G.',
+  ]},
+  // 23-34 · five colours (+purple) · stones that only clear by falling
+  { name: 'Stepping Stones', drop: 8, rows: [
+    'RRRYYGYYRRR',
+    'RR#YYYY#RR',
+    'BBB#PPP#BBB',
+    'BB#.PP.#BB',
+    'P#.......#P',
+  ]},
+  { name: 'Castle Gate', drop: 8, rows: [
+    'YYYYYYYYYYY',
+    '#RRRPPRRR#',
+    '#RR#PPP#RR#',
+    '#GG#..#GG#',
+    '#GG#...#GG#',
+    '.BB....BB.',
+  ]},
+  { name: 'Rock Garden', drop: 8, rows: [
+    'GGGGGGGGGGG',
+    'G#GG##GG#G',
+    '.PP.YYY.PP.',
+    '.#P.YY.P#.',
+    '..RR.B.RR..',
+    '..#R..R#..',
+  ]},
+  { name: 'Anchor', drop: 8, rows: [
+    'GGGBBBBBGGG',
+    '....PP....',
+    '.....#.....',
+    '....##....',
+    '..YYY#YYY..',
+    '.RY....YR.',
+    '.RR.....RR.',
+  ]},
+  { name: 'Keystone', drop: 8, rows: [
+    'YYY.....YYY',
+    'PPB....BPP',
+    'PPB.....BPP',
+    'GPB....BPG',
+    '.GBR...RBG.',
+    '..GR##RG..',
+  ]},
+  { name: 'Quarry', drop: 8, rows: [
+    'BBBBBBBBBBB',
+    'BYYYYYYYYB',
+    'BY#######YB',
+    'PP#RRRR#PP',
+    '.P#RGGGR#P.',
+    '..#RGGR#..',
+    '...#RRR#...',
+  ]},
+  { name: 'Stone Bell', drop: 8, rows: [
+    '....RRR....',
+    '....PP....',
+    '...#YYY#...',
+    '..#YYYY#..',
+    '..#GGGGG#..',
+    '.#GBBBBG#.',
+    '.##.....##.',
+  ]},
+  { name: 'Totem', drop: 8, rows: [
+    '..RRRRRRR..',
+    '..#GGGG#..',
+    '..#PBBBP#..',
+    '...YYYY...',
+    '..#YRRRY#..',
+    '..#GGGG#..',
+    '...PPPPP...',
+    '....##....',
+  ]},
+  { name: 'Hourglass', drop: 8, rows: [
+    'PPPPPPPPPPP',
+    '.YYYYYYYY.',
+    '..YYYYYYY..',
+    '...#RR#...',
+    '....#G#....',
+    '...BGGB...',
+    '..BBGGGBB..',
+    '.BBBBBBBB.',
+  ]},
+  { name: 'Boulder Drop', drop: 8, rows: [
+    'YYYYGGGYYYY',
+    'B...GG...B',
+    'B...RRR...B',
+    'P..####..P',
+    'P..#####..P',
+    '...####...',
+  ]},
+  { name: 'Fortress', drop: 8, rows: [
+    'RRRRRRRRRRR',
+    '#GGGGGGGG#',
+    '#G#BBBBB#G#',
+    '#G#YYYY#G#',
+    '#GG#PPP#GG#',
+    '#GG#..#GG#',
+    '.#G#...#G#.',
+    '..#....#..',
+  ]},
+  { name: 'Mountain Pass', drop: 8, rows: [
+    'YYYYY.YYYYY',
+    '#PPP..PPP#',
+    '##PP...PP##',
+    '###B..B###',
+    '###RB.BR###',
+    '##RG..GR##',
+    '#.RG...GR.#',
+  ]},
+  // 35-46 · six colours (+orange) · stars and grid rainbows, bigger cuts
+  { name: 'Shooting Star', drop: 7, rows: [
+    'OOOYYYYYOOO',
+    '...Y**Y...',
+    '..RRRYRRR..',
+    '..GGBBGG..',
+    '..PPGBGPP..',
+    '...BPPB...',
+  ]},
+  { name: 'Prism', drop: 7, rows: [
+    '..RRRRRRR..',
+    '..OOOOOO..',
+    '...YY+YY...',
+    '...G++G...',
+    '....B+B....',
+    '....PP....',
+  ]},
+  { name: 'Rainbow Road', drop: 7, rows: [
+    'RRRRRRRRRRR',
+    'OOOOOOOOOO',
+    'YYYY+++YYYY',
+    'GGG+..+GGG',
+    'BB+.....+BB',
+    'P+......+P',
+  ]},
+  { name: 'Starfish', drop: 7, rows: [
+    'GBP.OOO.PBG',
+    '....OO....',
+    '...OO*OO...',
+    'OOOO**OOOO',
+    '...YO*OY...',
+    '..YY..YY..',
+    '.YR.....RY.',
+  ]},
+  { name: 'Constellation', drop: 7, rows: [
+    'BBBBBBBBBBB',
+    'B*......*B',
+    '.PP.....PP.',
+    '..PYYYYP..',
+    '..G.O*O.G..',
+    '.GG.RR.GG.',
+    '....R*R....',
+  ]},
+  { name: 'Fireworks', drop: 7, rows: [
+    '..YYY.YYY..',
+    '...O..O...',
+    '..R*R.R*R..',
+    'RRBR..RBRR',
+    '.G.P...P.G.',
+    'G..P..P..G',
+  ]},
+  { name: 'Kaleidoscope', drop: 7, rows: [
+    'RYGBPOPBGYR',
+    'OPB+GG+BPO',
+    'YGBP*O*PBGY',
+    '.RYG++GYR.',
+    '..OBPRPBO..',
+    '...G++G...',
+    '....RYR....',
+  ]},
+  { name: 'Comet', drop: 7, rows: [
+    'OOOOYYY....',
+    'OOYYRR....',
+    '.YYRR*BB...',
+    '...R*BBGG.',
+    '.....BGGPP.',
+    '......GPP.',
+    '........P..',
+  ]},
+  { name: 'Aurora', drop: 7, rows: [
+    'GGGGGGGGGGG',
+    'BGGBBBBGGB',
+    'PBBPPPPPBBP',
+    'OPPO++OPPO',
+    '.OO.YYY.OO.',
+    '..R.YY.R..',
+    '..R.*.*.R..',
+  ]},
+  { name: 'Carousel', drop: 7, rows: [
+    '....RRR....',
+    '...YYYY...',
+    '..OOOOOOO..',
+    '.PPPPPPPP.',
+    'BB.G.*.G.BB',
+    'B..G..G..B',
+    'B..+...+..B',
+    '..GG..GG..',
+  ]},
+  { name: 'Starlight Chandelier', drop: 7, rows: [
+    'YYYYYYYYYYY',
+    '...YOOY...',
+    '....O*O....',
+    'RRRRBBRRRR',
+    'P.G.BBB.G.P',
+    'P.G.**.G.P',
+    'PP.GG.GG.PP',
+    '.P......P.',
+  ]},
+  { name: 'Supernova', drop: 7, rows: [
+    'RRROOYOORRR',
+    'RYYOOOOYYR',
+    'GYY+***+YYG',
+    'GBB+**+BBG',
+    'PGBB+++BBGP',
+    '.PGBBBBGP.',
+    '..PGG.GGP..',
+    '..PP..PP..',
+    '...P...P...',
+  ]},
+  // 47-52 · six colours · dense finales, the original four set-pieces reworked
+  { name: 'The Vault', drop: 6, rows: [ // scattered singles weave — build your own matches; grind open the high arch
+    'GGBYROBYYGB',
+    'BRRPBYRGBY',
+    'RGGYRGBYOGB',
+    'BYRBBYRPBY',
+    'RGBOOGBYRGB',
+    'BYRGBYRGPY',
+    'RG#Y...Y#GB',
+    'BYRG...GBY',
+    'RGB.....RGB',
+    'BY.......Y',
+  ]},
+  { name: 'Chandeliers', drop: 6, rows: [ // dense field, three solid pendants: pop direct or cut the cells above
+    'YYRBOYRBBYR',
+    'RGGPRBGYRB',
+    'GYYBG*RBGYR',
+    'RBORRBGPRB',
+    'GYRBBYRBGYR',
+    'RBGYPBGYOB',
+    'GYRBGYRBGYR',
+    'OO.PP...OO',
+    'OO.PP....OO',
+  ]},
+  { name: 'The Canyon', drop: 6, rows: [ // 11-row wall towers; coordinated cuts drop big chunks
+    'RRYGBOYGGRY',
+    'YBBPYGBRYG',
+    'BRRGBRYOBRY',
+    'YGBYPGBRYG',
+    'BRYGGRYGBRY',
+    'Y#BR...R#G',
+    'BROG...GPRY',
+    'YGB#...#YG',
+    'BRYG...GBRY',
+    'YGB.....YG',
+    'PO.......OP',
+  ]},
+  { name: 'Hive Bridge', drop: 6, rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
+    'YBPRY......',
+    'GOYBGG....',
+    'YBGRY.BROBG',
+    'GPYB..YBGR',
+    'YBGRR.GRYPG',
+    'GRO#..YBOR',
+    'YBGRY.RRYBG',
+    'GRYB..#GGR',
+    'BBGPY.GRRBO',
+    'GYYB..YBGR',
+  ]},
+  { name: 'Grand Cathedral', drop: 6, rows: [
+    'PPPPPPPPPPP',
+    'P#OOOOOO#P',
+    'P#O+YYY+O#P',
+    '#OYYRRYYO#',
+    '#OY*RRR*YO#',
+    '#GYRBBRYG#',
+    '#GG.BBB.GG#',
+    '#BG....GB#',
+    '#BG.....GB#',
+    '.BB....BB.',
+    '..B.....B..',
+  ]},
+  { name: 'Bubble Together', drop: 6, rows: [
+    'PRRRPOPBBBP',
+    'RRRRYYBBBB',
+    'RR*RRYBB*BB',
+    'RRRRGGBBBB',
+    '.RRR+O+BBB.',
+    '..RRGGBB..',
+    '...RYOYB...',
+    '....RB....',
+    '....G#G....',
+    '....GG....',
   ]},
 ];
+/* levels:end */
 /* P1's touch controls depend on the aim mode, so its hint is filled in from AIM_HINT rather
    than fixed here; the keyboard launchers never change. */
 const AIM_HINT = {
@@ -129,6 +557,7 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
   pass:[340,.3,'sine',560], passNo:[150,.04,'square',0],
   powerReady:[660,.35,'triangle',440], teamPower:[520,.8,'triangle',780], powerEnd:[420,.3,'sine',-180],
+  dropTick:[980,.05,'square',-200], hurry:[700,.18,'square',-240],
 };
 /* team-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so local co-op and an online room qualify the same moments the same way.
@@ -243,6 +672,44 @@ const powerPair = (T, humans, players, by, state, charge, active) => {
 };
 const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
 /* power-rules:end */
+/* pace-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
+   them equal), so the ceiling, the clear clock and the idle timer run the same locally and
+   online.
+
+   Puzzle Bobble keeps a round moving three ways. The ceiling drops every `drop` shots — the
+   level's own pace, scaled by the Shot pressure setting (0 turns it off) and one shot
+   tighter for each of the level's colours the team has cleared off the board — and the pack
+   shakes for the last `warnShots` shots before it goes. A fast clear pays a time bonus that
+   slides from full at `timeFull` seconds to nothing at `timeZero`, a longer window than the
+   arcade's minute because a co-op board is bigger. And a human who sits on a loaded
+   launcher for the `hurry` setting's seconds is told HURRY UP! with `hurryWarn` left, then
+   fires at whatever angle they hold. Firing, aiming or passing resets that clock. */
+const PACE = {
+  basePressure: 8, // the Shot pressure default, at which a level's `drop` is used as written
+  warnShots: 2,
+  timeBonus: 5000, timeFull: 15, timeZero: 120,
+  hurryWarn: 5,
+};
+const dropPace = (drop, setting, colors, left) => {
+  if (!setting) return 0;
+  const base = drop ? Math.max(3, Math.round(drop * setting / PACE.basePressure)) : setting;
+  return Math.max(3, base - Math.max(0, colors - left));
+};
+const clearTimeBonus = secs => Math.round(PACE.timeBonus *
+  Math.max(0, Math.min(1, (PACE.timeZero - secs) / (PACE.timeZero - PACE.timeFull))));
+// One human launcher's idle clock: 'warn' as it crosses into the last hurryWarn seconds,
+// 'fire' once it runs out (and every tick after, until a shot actually leaves), else null.
+const hurryTick = (p, dt, limit) => {
+  if (!(limit > 0) || (p.held && (p.held.l || p.held.r)) || p.aimTarget != null) { p.idle = 0; return null; }
+  const was = p.idle || 0, warnAt = Math.max(0, limit - PACE.hurryWarn);
+  p.idle = was + dt;
+  if (p.idle >= limit) return 'fire';
+  return was <= warnAt && p.idle > warnAt ? 'warn' : null;
+};
+/* pace-rules:end */
+// "1. Hello Bubbles" … plus Custom: the one list both level pickers are built from.
+const levelOptionsHTML = () => LEVELS.map((L, i) => `<option value="${i}">${i + 1}. ${L.name}</option>`).join('')
+  + '<option value="custom">Custom</option>';
 const PASS_FX = 0.45; // seconds a passed bubble spends in the air (presentation only)
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
@@ -337,7 +804,7 @@ class CoopBubbles extends HTMLElement {
     this.setViewH(H0); // measure() refines this once .root has a box
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
-      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
+      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
       aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves' };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
@@ -417,9 +884,10 @@ class CoopBubbles extends HTMLElement {
     const rows = this.levelRows();
     const offs = this.settings.field === 'wide' ? [1, 12, 23, 34] : [0];
     for (const off of offs) rows.forEach((row, r) => { for (let i = 0; i < row.length; i++) {
-      const c = i + off;
-      if (row[i] !== '.') this.grid.set(key(r,c), { r, c, kind: row[i], special: null, placedBy: -1 });
+      const cell = levelCell(row[i]), c = i + off;
+      if (cell) this.grid.set(key(r,c), { r, c, ...cell, placedBy: -1 });
     }});
+    this.levelColors = levelColors(rows);
     // quietly purge any unsupported bubbles (bad custom levels)
     const safe0 = new Set(), st0 = [];
     this.grid.forEach((b,k) => { if (b.r === 0) { safe0.add(k); st0.push(b); } });
@@ -435,6 +903,7 @@ class CoopBubbles extends HTMLElement {
     this.score = carry ? carry.score : 0;
     this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
     if (!carry) this.now = 0;
+    this.levelStartT = this.now; // mirrors OnlineGame.reset: the clear clock only runs in play
     this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
     this.rowTimer = 0; this.lowestY = 0;
     this.spawnPlayers(carry);
@@ -461,13 +930,15 @@ class CoopBubbles extends HTMLElement {
     if (this.settings.level === 'custom') {
       let t = this.customText;
       if (t === undefined) { try { t = localStorage.getItem('bt_custom_level') || ''; } catch(e) { t = ''; } }
-      const rows = t.split('\n').map(s => s.trim().toUpperCase().replace(/[^RGYB.]/g, '.')).filter(s => s.length)
+      const rows = t.split('\n').map(s => s.trim().toUpperCase().replace(/[^RGYBPO#*+.]/g, '.')).filter(s => s.length)
         .slice(0, 12).map((s, r) => { const n = (r % 2) ? 10 : 11; return (s + '.'.repeat(n)).slice(0, n); });
-      if (rows.some(s => /[RGYB]/.test(s))) return rows;
+      if (rows.some(s => /[RGYBPO]/.test(s))) return rows;
     }
     const L = LEVELS[this.settings.level];
     return (L || LEVELS[0]).rows;
   }
+  // Mirrors OnlineGame.levelDrop: authored pace, or none for a custom board.
+  levelDrop() { return this.settings.level === 'custom' ? 0 : (LEVELS[this.settings.level] || LEVELS[0]).drop; }
   availKinds() {
     const s = new Set();
     this.grid.forEach(b => { if (!b.special) s.add(b.kind); });
@@ -564,8 +1035,8 @@ class CoopBubbles extends HTMLElement {
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
     p.cur = p.next; p.next = this.genBubble();
-    p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now;
-    if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
+    p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now; p.idle = 0;
+    if (!powerHolds(this.teamPowerActive, 'holdPressure')) { this.pressure++; this.dropWarnSfx(); }
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
       vx: Math.sin(a) * rnd(60, 180) + rnd(-40, 40), vy: -Math.cos(a) * rnd(60, 180) + rnd(-40, 40),
       g: 0, t: this.now, life: 0.35, color: 'rgba(255,255,255,0.85)', sz: rnd(4, 8), soft: true });
@@ -648,7 +1119,7 @@ class CoopBubbles extends HTMLElement {
       if (!this.grid.get(key(b.r, b.c))) { results.push({ shooter: b.placedBy, at: b.fired, popped: null, gone: true }); continue; }
       if (b.special === 'bomb') {
         const bx = this.cellX(b.r, b.c), by = this.cellY(b.r), blast = new Set([key(b.r,b.c)]);
-        this.grid.forEach((g,k) => { if (Math.hypot(this.cellX(g.r,g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(k); });
+        this.grid.forEach((g,k) => { if (g.special !== 'stone' && Math.hypot(this.cellX(g.r,g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(k); });
         results.push({ shooter: b.placedBy, at: b.fired, popped: blast, bomb: true });
       } else {
         let kind = b.kind;
@@ -660,7 +1131,8 @@ class CoopBubbles extends HTMLElement {
           }
           if (best) kind = best; else { results.push({ shooter: b.placedBy, at: b.fired, popped: null }); continue; }
         }
-        const g = this.matchGroup(b.r, b.c, kind);
+        const g = this.matchGroup(b.r, b.c, kind), star = starHit(this.grid, this.neighbors(b.r, b.c), b, kind);
+        if (star) { g.forEach(k => star.add(k)); results.push({ shooter: b.placedBy, at: b.fired, popped: star, star: true }); continue; }
         results.push({ shooter: b.placedBy, at: b.fired, popped: g.size >= 3 ? g : null });
       }
     }
@@ -703,6 +1175,7 @@ class CoopBubbles extends HTMLElement {
       this.missMeter = Math.max(0, this.missMeter - 1);
       this.sfx(popN >= 6 ? 'bigpop' : 'pop');
       if (results.some(r => r.bomb && r.popped)) this.callout('KABOOM!', '#ff8a3c');
+      if (results.some(r => r.star)) this.callout('STAR BURST!', '#e0a100');
     }
     // misses: every landed shot that didn't pop counts one miss (per spec), even if a teammate popped in the same batch.
     // A power that holds the pressure holds the miss meter too, as OnlineGame does.
@@ -754,13 +1227,14 @@ class CoopBubbles extends HTMLElement {
   }
   clearLevel() {
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
-    this.score += bonus;
+    const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
+    this.score += bonus + timeBonus;
     if (from >= 0) this.recordProgress(from);
     if (next < 0) return this.endGame(true);
     this.state = 'levelup'; this.sfx('win');
     this._pendingLevel = next;
     // Everyone on this device is looking at the same screen, so one Continue is the gate.
-    this.showLevelCard({ from, next, bonus, score: this.score, rows: this.playerStatRows(this.players) });
+    this.showLevelCard({ from, next, bonus, timeBonus, secs, score: this.score, rows: this.playerStatRows(this.players) });
   }
   /* One row per player, the same shape the game-over card uses. It takes plain rows rather
      than players because online the numbers come from the server's summary. */
@@ -785,11 +1259,14 @@ class CoopBubbles extends HTMLElement {
   }
   /* The level card. `ready` is only present online, where the next level does not start
      until every connected player has said so (or the room's timer runs out). */
-  showLevelCard({ from, next, bonus, score, rows, ready }) {
+  showLevelCard({ from, next, bonus, timeBonus, secs, score, rows, ready }) {
     const sh = this.shadowRoot;
     sh.querySelector('.luTitle').textContent = '⭐ ' + (LEVELS[from]?.name || 'Level ' + (from + 1)) + ' cleared!';
     sh.querySelector('.luSub').textContent = 'Clear bonus +' + (bonus || 0).toLocaleString()
-      + ' · Score ' + (score || 0).toLocaleString() + ' · Up next: ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
+      + ' · Score ' + (score || 0).toLocaleString() + ' · Up next: ' + (next + 1) + '. ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
+    // The speed reward gets its own line: full inside PACE.timeFull, nothing by PACE.timeZero.
+    sh.querySelector('.luTime').textContent = '\u23f1 Cleared in ' + Math.round(secs || 0) + 's · Time bonus +'
+      + (timeBonus || 0).toLocaleString();
     sh.querySelector('.luStats').innerHTML = this.statRowsHTML(rows);
     const readyEl = sh.querySelector('.luReady'), btn = sh.querySelector('.luNext');
     if (ready) {
@@ -933,7 +1410,7 @@ class CoopBubbles extends HTMLElement {
     const pair = passPair(h, this.players, i, this.state, this.passCd || 0);
     if (!pair) { this.passRefused(); return; }
     if (this.online) { this.sendOnline('pass'); return; }
-    passSwap(pair); this.passCd = PASS.cooldown;
+    passSwap(pair); this.passCd = PASS.cooldown; this.players[i].idle = 0;
     this.showPass({ by: i, players: pair.map(p => p.i) });
   }
   // Not ready: a muted click and a shake of the button, never a line of text over the board.
@@ -1134,8 +1611,21 @@ class CoopBubbles extends HTMLElement {
     this.updateLowest(); this.refreshQueues();
   }
   shotsPerDrop() { // shots between drops, tightening as colours leave the field
-    const base = this.settings.pressureShots;
-    return base ? Math.max(3, base - (KINDS.length - this.availKinds().length)) : 0;
+    // Online the authority's own count is on the wire: the whole room for a shared board,
+    // each summary for a battle board.
+    if (this.online) return (this._boundBoard ? this._boundBoard.perDrop : this.onlinePerDrop) || 0;
+    return dropPace(this.levelDrop(), this.settings.pressureShots, this.levelColors || 0, this.availKinds().length);
+  }
+  // The shots-before-drop warning: the pack shakes (see packJitter) and each shot ticks.
+  dropWarning() {
+    const left = this.dropCountdown();
+    return left !== null && left > 0 && left <= PACE.warnShots && !powerHolds(this.teamPowerActive, 'holdPressure');
+  }
+  dropWarnSfx() { if (this.dropWarning()) this.sfx('dropTick'); }
+  packJitter() {
+    if (!this.dropWarning() || (this.state !== 'play' && this.state !== 'paused')) return null;
+    const amp = this.dropCountdown() <= 1 ? 2.6 : 1.4;
+    return { x: Math.sin(this.now * 47) * amp, y: Math.cos(this.now * 39) * amp * 0.5 };
   }
   pressureDescend() {
     this.pressure = 0; this.descendRow();
@@ -1315,6 +1805,13 @@ class CoopBubbles extends HTMLElement {
         if (p.held.l || p.held.r || p.aimTarget != null) this.activeP = p.i;
         aimTick(p, rdt, this.settings.aimSpeed);
       }
+    }
+    // Hurry-up, as OnlineGame runs it: humans only, and a running power holds the clock.
+    if (!powerHolds(this.teamPowerActive, 'holdPressure')) for (const p of this.players) {
+      if (p.bot) continue;
+      const hurry = hurryTick(p, rdt, this.settings.hurry);
+      if (hurry === 'warn') this.showHurry(p.i);
+      else if (hurry === 'fire' && p.reload <= 0) { this.activeP = p.i; this.fire(p.i); }
     }
     // camera follows the active player's aim (wide field)
     const pf = this.players[this.activeP] || this.players[0];
@@ -1599,9 +2096,11 @@ class CoopBubbles extends HTMLElement {
     const tg = ctx.createLinearGradient(0, cy, 0, cy + 22);
     tg.addColorStop(0, 'rgba(60,100,150,0.16)'); tg.addColorStop(1, 'rgba(60,100,150,0)');
     ctx.fillStyle = tg; ctx.fillRect(X0 - 6, cy, this.WW - 2*(X0-6), 22);
-    // attached bubbles
+    // attached bubbles; the pack shakes for the last shots before the ceiling drops
+    const jit = this.packJitter();
     this.grid.forEach(b => {
       let x = this.cellX(b.r,b.c), y = this.cellY(b.r);
+      if (jit) { x += jit.x; y += jit.y; }
       if (x < vwL || x > vwR) return;
       if (b.snapFrom) {
         const k = clamp((this.now - b.snapT) / 0.14, 0, 1), e = 1 - (1-k)*(1-k);
@@ -1668,6 +2167,7 @@ class CoopBubbles extends HTMLElement {
       this.drawBubble(ctx, 0, 0, R - 1, f.kind, f.special, false, false); ctx.restore(); }
     // launchers
     for (const p of this.players) this.drawLauncher(ctx, p);
+    this.drawHurry(ctx);
     this.drawPassFx(ctx);
     this.drawPowerFx(ctx);
     this.drawTeamFx(ctx);
@@ -1708,6 +2208,29 @@ class CoopBubbles extends HTMLElement {
       ctx.fillStyle = '#3a5a80'; ctx.fillText('\u266a ' + s.name, X0 + 6, this.LAUNCH_Y - 78 - i * 20);
     });
     ctx.globalAlpha = 1;
+  }
+  /* ---------- hurry-up ----------
+     Local play runs hurryTick in update(); online the server does and sends `hurry` and an
+     auto-fired `launch`, with each launcher's idle clock in the snapshot for the countdown. */
+  showHurry(i) {
+    const humans = (this.players || []).filter(p => !p.bot).length, meta = META[i] || META[0];
+    this.callout((humans > 1 ? meta.name + ' ' : '') + 'HURRY UP!', meta.accent);
+    this.sfx('hurry');
+  }
+  // The seconds left before an idle launcher fires itself, counted down above its barrel.
+  drawHurry(ctx) {
+    const limit = Number(this.settings.hurry) || 0;
+    if (!limit || this.state !== 'play' || this.battle) return;
+    for (const p of this.players) {
+      if (p.bot || !(p.idle > limit - PACE.hurryWarn)) continue;
+      const left = Math.max(0, limit - p.idle), n = Math.ceil(left), k = n - left;
+      ctx.save(); ctx.translate(p.x, this.LAUNCH_Y - 150); ctx.scale(1 + k * 0.25, 1 + k * 0.25);
+      ctx.globalAlpha = 0.55 + 0.45 * (1 - k);
+      ctx.textAlign = 'center'; ctx.font = '700 40px Fredoka, sans-serif';
+      ctx.lineWidth = 7; ctx.strokeStyle = '#fff'; ctx.strokeText(String(n), 0, 0);
+      ctx.fillStyle = '#ff5b6b'; ctx.fillText(String(n), 0, 0);
+      ctx.restore();
+    }
   }
   /* TEAM CHAIN ×N for two-player Co-op Clear. The ring is the time left in the chain
      window, drawn in the colour of the player whose clear keeps it alive next; the badge
@@ -1779,7 +2302,9 @@ class CoopBubbles extends HTMLElement {
   drawBubble(ctx, x, y, rad, kind, special, face, dangerPulse) {
     const spriteKey = (special === 'rainbow' || special === 'bomb') ? special : kind;
     const sprite = BUBBLE_SPRITES[spriteKey];
-    if (sprite && sprite.complete && sprite.naturalWidth) {
+    if (special === 'stone') this.drawStone(ctx, x, y, rad);
+    else if (special === 'star') this.drawStar(ctx, x, y, rad);
+    else if (sprite && sprite.complete && sprite.naturalWidth) {
       // Generated art replaces the old procedural sphere while the vector drawing below
       // remains a zero-network/loading fallback. Bomb gets a little extra room for its fuse.
       const size = rad * (special === 'bomb' ? 2.35 : 2.12);
@@ -1832,6 +2357,38 @@ class CoopBubbles extends HTMLElement {
       ctx.strokeStyle = '#ff5b6b'; ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, 7); ctx.stroke(); ctx.globalAlpha = 1;
     }
+  }
+  /* Level-placed specials have no sprite yet. A stone is a grey riveted ball that reads as
+     unpoppable; a star is a gold ball with a white star that glints. */
+  drawStone(ctx, x, y, rad) {
+    ctx.fillStyle = 'rgba(30,60,110,0.13)';
+    ctx.beginPath(); ctx.ellipse(x + rad*0.1, y + rad*0.55, rad*0.85, rad*0.55, 0, 0, 7); ctx.fill();
+    const g = ctx.createRadialGradient(x - rad*0.35, y - rad*0.4, rad*0.1, x, y, rad);
+    g.addColorStop(0, '#d7dde6'); g.addColorStop(0.55, '#8d97a6'); g.addColorStop(1, '#5b6574');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#4a5361'; ctx.lineWidth = rad * 0.1;
+    ctx.beginPath(); ctx.arc(x, y, rad * 0.62, 0, 7); ctx.stroke();
+    for (let i = 0; i < 4; i++) { // rivets
+      const a = i * Math.PI / 2 + Math.PI / 4, rx = x + Math.cos(a) * rad * 0.62, ry = y + Math.sin(a) * rad * 0.62;
+      ctx.fillStyle = '#e8ecf2'; ctx.beginPath(); ctx.arc(rx, ry, rad * 0.11, 0, 7); ctx.fill();
+      ctx.fillStyle = '#4a5361'; ctx.beginPath(); ctx.arc(rx + rad*0.03, ry + rad*0.03, rad * 0.05, 0, 7); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(25,35,55,0.45)'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(x, y, rad - 0.8, 0, 7); ctx.stroke();
+  }
+  drawStar(ctx, x, y, rad) {
+    const g = ctx.createRadialGradient(x - rad*0.35, y - rad*0.45, rad*0.08, x, y, rad);
+    g.addColorStop(0, '#fffbe6'); g.addColorStop(0.3, '#ffd84a'); g.addColorStop(1, '#d99a00');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
+    const glint = 0.75 + 0.25 * Math.sin(this.now * 5 + x * 0.05);
+    ctx.fillStyle = 'rgba(255,255,255,' + glint.toFixed(2) + ')'; ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5, rr = i & 1 ? rad * 0.3 : rad * 0.72;
+      if (i) ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); else ctx.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(150,95,0,0.5)'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(x, y, rad - 0.8, 0, 7); ctx.stroke();
   }
   drawTrail(ctx, f) {
     const meta = META[f.p], n = f.trail.length;
@@ -2155,6 +2712,7 @@ class CoopBubbles extends HTMLElement {
     this.WW = W; this.cols = COLS; this.camX = 0;
     const n = clamp(this.settings.players, 2, 8);
     this.battle = { boards: [], phase: 'play', targeting: null, zoom: 0, order: [], winner: -1, spectate: false, view: 0 };
+    this.levelColors = levelColors(this.levelRows());
     for (let i = 0; i < n; i++) this.battle.boards.push(this.makeBattleBoard(i, i !== 0));
     this.battle.human = this.battle.boards[0];
     this.flights = []; this.falling = []; this.pops = []; this.sparks = []; this.ripples = []; this.callouts = []; this.popups = []; this.sfxLog = [];
@@ -2171,8 +2729,8 @@ class CoopBubbles extends HTMLElement {
       score: 0, dispScore: 0, missMeter: 0, pressure: 0, danger: null,
       attackFlash: -9, chargeFlash: -9, attackPend: null, _dead: false };
     const rows = this.levelRows();
-    rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
-      if (row[c] !== '.') b.grid.set(key(r, c), { r, c, kind: row[c], special: null, placedBy: -1 }); });
+    rows.forEach((row, r) => { for (let c = 0; c < row.length; c++) { const cell = levelCell(row[c]);
+      if (cell) b.grid.set(key(r, c), { r, c, ...cell, placedBy: -1 }); } });
     b.player = { i: 0, meta: META[i], x: W / 2, angle: rnd(-0.3, 0.3), cur: null, next: null,
       reload: 0, bot, think: rnd(0.6, 1.8), plan: null, held: {},
       stats: { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0 } };
@@ -2324,7 +2882,7 @@ class CoopBubbles extends HTMLElement {
       if (!this.grid.get(key(l.r, l.c))) { results.push({ popped: null, gone: true }); continue; }
       if (l.special === 'bomb') {
         const bx = this.cellX(l.r, l.c), by = this.cellY(l.r), blast = new Set([key(l.r, l.c)]);
-        this.grid.forEach((g, kk) => { if (Math.hypot(this.cellX(g.r, g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(kk); });
+        this.grid.forEach((g, kk) => { if (g.special !== 'stone' && Math.hypot(this.cellX(g.r, g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(kk); });
         results.push({ popped: blast, bomb: true });
       } else {
         let kind = l.kind;
@@ -2334,7 +2892,8 @@ class CoopBubbles extends HTMLElement {
             if (nb && !nb.special) { const sz = this.matchGroup(l.r, l.c, nb.kind).size; if (sz > bs) { bs = sz; best = nb.kind; } } }
           if (best) kind = best; else { results.push({ popped: null }); continue; }
         }
-        const g = this.matchGroup(l.r, l.c, kind);
+        const g = this.matchGroup(l.r, l.c, kind), star = starHit(this.grid, this.neighbors(l.r, l.c), l, kind);
+        if (star) { g.forEach(kk => star.add(kk)); results.push({ popped: star }); continue; }
         results.push({ popped: g.size >= 3 ? g : null });
       }
     }
@@ -2384,9 +2943,9 @@ class CoopBubbles extends HTMLElement {
       this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
       this.parityFlip = 0; this.anchorRow = 0; this.pressure = 0;
       const rows = this.levelRows();
-      rows.forEach((row, r) => { for (let c = 0; c < row.length; c++)
-        if (row[c] !== '.') this.grid.set(key(r, c), { r, c, kind: row[c], special: null, placedBy: -1,
-          snapFrom: { x: this.cellX(r, c), y: this.cellY(r) - 500 }, snapT: this.now + r * 0.04 }); });
+      rows.forEach((row, r) => { for (let c = 0; c < row.length; c++) { const cell = levelCell(row[c]);
+        if (cell) this.grid.set(key(r, c), { r, c, ...cell, placedBy: -1,
+          snapFrom: { x: this.cellX(r, c), y: this.cellY(r) - 500 }, snapT: this.now + r * 0.04 }); } });
       this.updateLowest(); this.refreshQueues();
     }
   }
@@ -2589,8 +3148,10 @@ class CoopBubbles extends HTMLElement {
     ctx.strokeStyle = hov ? '#ff8a3c' : selectable ? b.meta.accent : 'rgba(120,150,190,0.5)';
     ctx.stroke();
     ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.ceilingY() - 40));
+    const left = b.perDrop ? b.perDrop - (b.pressure || 0) : 0, jit = b.alive && left > 0 && left <= PACE.warnShots
+      ? { x: Math.sin(this.now * 47 + b.i) * 4, y: 0 } : { x: 0, y: 0 };
     this.grid.forEach(g => {
-      const x = this.cellX(g.r, g.c), y = this.cellY(g.r);
+      const x = this.cellX(g.r, g.c) + jit.x, y = this.cellY(g.r) + jit.y;
       this.drawBubble(ctx, x, y, R - 2, g.kind, g.special, false, false);
     });
     for (const f of this.flights) this.drawBubble(ctx, f.x, f.y, R - 4, f.kind, f.special, false, false);
@@ -2681,10 +3242,11 @@ canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px
 .sideClose{float:right;border:0;background:#f4f9ff;border-radius:50%;width:30px;height:30px;color:#7593b5;font:700 15px/1 Fredoka,sans-serif;cursor:pointer;display:none}
 .root:not(.wideLayout) .sideClose{display:block}
 .luStats{margin:10px 0 4px;text-align:left}
+.luTime{margin:-6px 0 10px;font-weight:700;color:#2b6fd4}
 .luReady{min-height:18px;color:#7593b5;font-size:13px;margin-bottom:10px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:7px 0}
 .seg{display:flex;gap:4px}
-.lvlSeg{flex-wrap:wrap}
+.lvlSel{width:100%;border:2px solid #d7e6f5;border-radius:10px;padding:6px 8px;font:inherit;font-size:13px;color:#2b4a70;background:#f4f9ff}
 textarea{width:100%;font:12px ui-monospace,monospace;border:2px solid #d7e6f5;border-radius:10px;padding:8px;resize:vertical;color:#2b4a70;background:#f8fbff;letter-spacing:2px}
 details summary{cursor:pointer;color:#2b4a70;font-weight:600;margin-top:8px;font-size:13px}
 .seg button{border:2px solid #d7e6f5;background:#f4f9ff;border-radius:10px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer;color:#2b4a70}
@@ -2811,11 +3373,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h3>Host settings</h3><div class="lobbySettings">
         <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option><option value="battle">Battle Royale (2\u20138)</option></select></label>
         <label>Field<select data-setting="field"><option value="classic">Classic</option><option value="wide">Wide 4×</option></select></label>
-        <label>Level<select data-setting="level"><option value="0">1. The Vault</option><option value="1">2. Chandeliers</option><option value="2">3. The Canyon</option><option value="3">4. Hive Bridge</option><option value="custom">Custom</option></select></label>
+        <label>Level<select data-setting="level">${levelOptionsHTML()}</select></label>
         <label>Aim guide<select data-setting="guide"><option value="1">Full path</option><option value="0.5">Short</option><option value="0.25">Tiny</option></select></label>
         <label>Reload<input data-setting="reload" type="range" min="0.8" max="2.2" step="0.05"></label>
         <label>Miss limit<input data-setting="missMax" type="range" min="4" max="20" step="1"></label>
         <label>Shot pressure<input data-setting="pressureShots" type="range" min="0" max="20" step="1"></label>
+        <label>Hurry-up (s)<input data-setting="hurry" type="range" min="0" max="20" step="1"></label>
         <label>Rescue timer<input data-setting="rescueDur" type="range" min="3" max="5" step="0.5"></label>
         <label>Aim assist<input data-setting="assist" type="range" min="0" max="1" step="0.05"></label>
         <label>Aim speed<input data-setting="aimSpeed" type="range" min="0.6" max="6" step="0.1"></label>
@@ -2853,7 +3416,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <button class="btn primary resume">Resume</button>
     </div></div>
     <div class="overlay levelUp" style="display:none"><div class="card">
-      <h1 class="luTitle"></h1><p class="sub luSub"></p>
+      <h1 class="luTitle"></h1><p class="sub luSub"></p><p class="luTime"></p>
       <div class="luStats"></div>
       <div class="luReady"></div>
       <button class="btn primary luNext">Continue</button>
@@ -3162,7 +3725,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','guide','aimSpeed','padTint','fireScale'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','hurry','guide','aimSpeed','padTint','fireScale'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   /* Rebuild a launcher from a snapshot without stamping on the angle we are already showing:
      the wire value becomes serverAngle and predictOwnAim / followServerAim ease onto it. Seat
@@ -3175,7 +3738,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
+    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.pressure=s.pressure||0;this.onlinePerDrop=s.perDrop||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
@@ -3183,7 +3746,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     // Between levels the room sits on a scoreboard until everyone says go; the snapshot
     // carries the summary and the ready list, so a rejoin lands on the same card.
     if(s.levelSummary){const su=s.levelSummary,ready=s.levelReady||[];
-      this.showLevelCard({from:su.from,next:su.next,bonus:su.bonus,score:su.score,
+      this.showLevelCard({from:su.from,next:su.next,bonus:su.bonus,timeBonus:su.timeBonus,secs:su.secs,score:su.score,
         rows:this.playerStatRows(su.players),
         ready:{count:ready.length,total:(this.players||[]).filter(p=>p.connected!==false).length,secs:s.levelSecs,me:ready.includes(this.onlinePlayerId)}});}
     else if(oldState==='levelup'&&s.state!=='levelup')this.levelUpEl.style.display='none';
@@ -3226,7 +3789,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+(d.bonus||0),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at
@@ -3270,9 +3833,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   <button data-f="classic">Classic</button><button data-f="wide">Wide 4\u00d7</button></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:2px">wide: the camera pans as you aim</div></div>
 <h3>Level</h3>
-<div class="seg lvlSeg">${LEVELS.map((L, i) => `<button data-lv="${i}">${i + 1}. ${L.name}</button>`).join('')}<button data-lv="custom">Custom</button></div>
+<select class="lvlSel" aria-label="Level">${levelOptionsHTML()}</select>
 <details><summary>Custom level editor</summary>
-  <div style="color:#9db8d4;font-size:12px;margin:6px 0">One row per line \u00b7 R G Y B, dot = empty \u00b7 rows alternate 11 / 10 wide \u00b7 floaters are removed</div>
+  <div style="color:#9db8d4;font-size:12px;margin:6px 0">One row per line \u00b7 colours R G Y B P O \u00b7 # stone, * star, + rainbow, dot = empty \u00b7 rows alternate 11 / 10 wide \u00b7 floaters are removed</div>
   <textarea class="lvlTxt" rows="7" spellcheck="false"></textarea>
   <button class="btn ghost playCustom">Save &amp; play custom</button>
 </details>
@@ -3285,6 +3848,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Reload</span><input type="range" class="rl" min="0.8" max="2.2" step="0.05"><span class="val rlv"></span></div>
 <div class="row"><span>Miss limit</span><input type="range" class="mm" min="4" max="20" step="1"><span class="val mmv"></span></div>
 <div class="row"><span>Shot pressure</span><input type="range" class="sp" min="0" max="20" step="1"><span class="val spv"></span></div>
+<div class="row"><span>Hurry-up</span><input type="range" class="hu" min="0" max="20" step="1"><span class="val huv"></span></div>
 <div class="row"><span>Rescue timer</span><input type="range" class="rc" min="3" max="5" step="0.5"><span class="val rcv"></span></div>
 <div class="row"><span>Aim assist</span><input type="range" class="aa" min="0" max="1" step="0.05"><span class="val aav"></span></div>
 <div class="row"><span>Aim speed</span><input type="range" class="as" min="0.6" max="6" step="0.1"><span class="val asv"></span></div>
@@ -3317,14 +3881,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelectorAll('.tlSeg button').forEach(b => b.classList.toggle('on', (+b.dataset.v === 1) === S.mateLines));
       el.querySelectorAll('.glSeg button').forEach(b => b.classList.toggle('on', +b.dataset.g === S.guide));
       el.querySelectorAll('.sndSeg button').forEach(b => b.classList.toggle('on', (+b.dataset.v === 1) === S.sound));
-      el.querySelectorAll('.lvlSeg button').forEach(b => {
-        const v = b.dataset.lv === 'custom' ? 'custom' : +b.dataset.lv;
-        b.classList.toggle('on', v === S.level);
-      });
+      el.querySelector('.lvlSel').value = String(S.level);
       el.querySelector('.rl').value = S.reload; el.querySelector('.rlv').textContent = S.reload.toFixed(2) + 's';
       el.querySelector('.mm').value = S.missMax; el.querySelector('.mmv').textContent = S.missMax;
       el.querySelector('.sp').value = S.pressureShots;
       el.querySelector('.spv').textContent = S.pressureShots ? S.pressureShots + ' shots' : 'off';
+      el.querySelector('.hu').value = S.hurry; el.querySelector('.huv').textContent = S.hurry ? S.hurry + 's' : 'off';
       el.querySelector('.rc').value = S.rescueDur; el.querySelector('.rcv').textContent = S.rescueDur.toFixed(1) + 's';
       el.querySelector('.aa').value = S.assist; el.querySelector('.aav').textContent = Math.round(S.assist * 100) + '%';
       el.querySelector('.as').value = S.aimSpeed; el.querySelector('.asv').textContent = S.aimSpeed.toFixed(1) + '×';
@@ -3364,10 +3926,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       else if (S.players > 4) S.players = 4;
       this.resetGame(); });
     segWire('.fldSeg', null, b => { S.field = b.dataset.f; this.resetGame(); });
-    el.querySelectorAll('.lvlSeg button').forEach(b => b.onclick = () => {
-      S.level = b.dataset.lv === 'custom' ? 'custom' : +b.dataset.lv;
+    el.querySelector('.lvlSel').onchange = e => {
+      S.level = e.target.value === 'custom' ? 'custom' : +e.target.value;
       this.resetGame(); syncAll();
-    });
+    };
     const ta = el.querySelector('.lvlTxt');
     try { ta.value = localStorage.getItem('bt_custom_level') || 'RRGGBBYYRRG\nR...BB...G\n....YY.....'; } catch(e) {}
     el.querySelector('.playCustom').onclick = () => {
@@ -3386,6 +3948,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     slider('.rl', 0, v => S.reload = v);
     slider('.mm', 0, v => S.missMax = v);
     slider('.sp', 0, v => S.pressureShots = v);
+    slider('.hu', 0, v => S.hurry = v);
     slider('.rc', 0, v => S.rescueDur = v);
     slider('.aa', 0, v => S.assist = v);
     slider('.as', 0, v => { S.aimSpeed = v; this.saveLocalPrefs(); });

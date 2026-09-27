@@ -1,12 +1,13 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { OnlineGame, normalizeViewH } = require('./game');
+const { OnlineGame, LEVELS, normalizeViewH } = require('./game');
 const { BattleGame } = require('./battle');
 
 const DEFAULT_SETTINGS = Object.freeze({
   reload:1.35, missMax:12, rescueDur:4, assist:.35, pressureShots:8, mateLines:true, sound:true,
   mode:'clear', field:'classic', guide:1, level:0, customText:'', viewH:1080,
+  hurry:8, // seconds a human may sit on a loaded launcher before it fires for them; 0 = off
   /* Control feel travels with the room: the host sets one set of aim and FIRE controls and
      every player gets it, the same way they set the rules. Clients hand their own saved
      device values back to themselves on leaving (restoreLocalPrefs in coop-bubbles.js). */
@@ -21,10 +22,10 @@ function validateSettings(input) {
   const s = { ...DEFAULT_SETTINGS, ...(input || {}) };
   if (!['clear','endless','battle'].includes(s.mode)) throw fail('bad_settings','Invalid game mode.');
   if (!['classic','wide'].includes(s.field)) throw fail('bad_settings','Invalid field width.');
-  if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level <= 3)) throw fail('bad_settings','Invalid level.');
+  if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level < LEVELS.length)) throw fail('bad_settings','Invalid level.');
   const number = (name,min,max) => { s[name]=Number(s[name]); if(!Number.isFinite(s[name])||s[name]<min||s[name]>max)throw fail('bad_settings',`Invalid ${name}.`); };
   number('reload',.8,2.2); number('missMax',4,20); number('rescueDur',3,5); number('assist',0,1);
-  number('pressureShots',0,20); number('aimSpeed',.6,6); number('padTint',0,.3); number('fireScale',.6,2.2);
+  number('pressureShots',0,20); number('hurry',0,30); number('aimSpeed',.6,6); number('padTint',0,.3); number('fireScale',.6,2.2);
   if (![.25,.5,1].includes(Number(s.guide))) throw fail('bad_settings','Invalid guide length.');
   s.guide=Number(s.guide); s.mateLines=!!s.mateLines; s.sound=!!s.sound;
   s.customText=String(s.customText || '').slice(0, 512);

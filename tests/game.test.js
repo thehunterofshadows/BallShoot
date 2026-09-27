@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { OnlineGame, geom, normalizeViewH } = require('../server/game');
+const { OnlineGame, LEVELS, geom, normalizeViewH } = require('../server/game');
 const { DEFAULT_SETTINGS } = require('../server/lobbies');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -81,8 +81,13 @@ const ROWH = 28 * Math.sqrt(3);
 // Fire `n` shots straight at the ceiling, letting each one fully resolve.
 const shoot = (game, n) => { for (let i=0;i<n;i++){ game.fire('a'); for(let t=0;t<180;t++) game.update(1/60); } };
 
+// The original four-colour Vault wall as a custom board: a custom level has no authored
+// `drop`, so it runs on the Shot pressure setting exactly as every level used to.
+const VAULT='GGBYRGBYYGB\nBRRGBYRGBY\nRGGYRGBYRGB\nBYRBBYRGBY\nRGBYYGBYRGB\nBYRGBYRGBY\nRGBY...YRGB\nBYRG...GBY\nRGB.....RGB\nBY.......Y';
+const wall={...DEFAULT_SETTINGS,level:'custom',customText:VAULT,hurry:0};
+
 test('the field descends one row every pressureShots shots', () => {
-  const game=new OnlineGame({...DEFAULT_SETTINGS,pressureShots:8,missMax:20},roster,4242);
+  const game=new OnlineGame({...wall,pressureShots:8,missMax:20},roster,4242);
   const before={parity:game.parityFlip,anchor:game.anchorRow,top:game.cellY(game.anchorRow)};
   shoot(game,8);
   assert.equal(game.anchorRow,before.anchor+1,'anchor row advanced exactly once');
@@ -107,7 +112,7 @@ test('a descent never orphans the board', () => {
 });
 
 test('fewer colours on the board means faster drops', () => {
-  const game=new OnlineGame({...DEFAULT_SETTINGS,pressureShots:8},roster,5);
+  const game=new OnlineGame({...wall,pressureShots:8},roster,5);
   assert.equal(game.shotsPerDrop(),8);
   for(const [k,b] of [...game.grid]) if(b.kind!=='R'&&b.kind!=='G') game.grid.delete(k);
   assert.equal(game.shotsPerDrop(),6,'two colours left costs two shots');
@@ -174,9 +179,9 @@ test('clear mode chains the authored levels and carries the score', () => {
   const carried=game.score;
   assert.ok(carried>0,'the accuracy/headroom bonus was awarded');
   // Walk out the rest of the chain; only the last level ends the run.
-  for(let i=1;i<4;i++)clear();
+  for(let i=1;i<LEVELS.length;i++)clear();
   assert.equal(game.state,'won');
-  assert.equal(game.settings.level,3,'stops on the last authored level');
+  assert.equal(game.settings.level,LEVELS.length-1,'stops on the last authored level');
   assert.ok(game.score>carried,'score accumulated across levels');
 });
 
