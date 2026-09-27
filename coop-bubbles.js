@@ -809,17 +809,32 @@ const geom = vh => {
    dimension. A mode gets its own composition by adding a spec to TV_LAYOUTS; the stage,
    safe area, typography, menu scale, fullscreen and controller focus come for free. */
 const DISPLAY_MODES = ['auto', 'desktop', 'tv'];
+const FIT_EDGES = ['top', 'right', 'bottom', 'left'];
 const TV = {
   logicalW: 1920, logicalH: 1080,
-  safeArea: 0.05,        // share of each edge kept clear of critical UI
-  hudScale: 1.35,        // HUD type and launcher labels, relative to desktop
+  safeArea: 0.05,        // default share of each edge kept clear of critical UI
+  /* Screen Fit: the calibrated safe area, one share per edge. The player moves these in or
+     out on the Screen Fit screen for their own TV's overscan; the default is safeArea all
+     round. `fit` bounds and steps every edge — at the maximum inset every layout still fits. */
+  screenFit: { top: 0.05, right: 0.05, bottom: 0.05, left: 0.05 },
+  fit: { min: 0, max: 0.10, step: 0.005 },
+  hudScale: 1.35,        // launcher labels and the touch pad, relative to desktop
   menuScale: 1.40,       // cards, drawer, corner buttons, relative to desktop
+  /* Couch legibility. Type is designed for 8-12 ft, not multiplied up from the desk: every
+     critical HUD string has its own logical-px size here (at 1080p, so 4K doubles it), and
+     none may drop below minHudFontPx; menus are held to minMenuFontPx after menuScale. */
+  minHudFontPx: 28, minMenuFontPx: 30,
+  hudType: { label: 28, line: 30, big: 76, roundBig: 60, chain: 32, name: 44, nameSmall: 34, tag: 28,
+    status: 32, info: 28, prompt: 30, toast: 34 },
+  menuType: { title: 52, body: 30, button: 32, control: 30, small: 30, code: 64 },
+  controllerNavigation: true, // d-pad / stick focus, default selection, A confirms, B backs out
   playfieldScale: 1.15,  // playfield height as a multiple of the safe height (capped at the stage)
   hideSecondaryHud: true,
   preferFullscreen: true,
   gap: 40,               // logical px between the playfield and the columns framing it
   chrome: 84,            // logical px square for the fullscreen / settings buttons
-  headH: 180, rowGap: 24, powerH: 104, padH: 96,
+  promptH: 76,           // logical px kept free above the safe bottom for the controller legend
+  headH: 212, rowGap: 24, powerH: 104, padH: 96,
   // Auto picks TV for a couch-shaped screen (large, near 16:9) that is being driven by a
   // controller or by no pointer at all — a desktop monitor with a mouse stays Desktop.
   auto: { minW: 960, minH: 540, minAspect: 1.55, maxAspect: 1.95 },
@@ -830,13 +845,24 @@ const resolveDisplayMode = (pref, env = {}) => {
   const couch = w >= a.minW && h >= a.minH && aspect >= a.minAspect && aspect <= a.maxAspect;
   return couch && (env.gamepad || env.noPointer) ? 'tv' : 'desktop';
 };
+// Any stored or half-formed fit becomes four in-range edges snapped to the step.
+const normalizeScreenFit = (v, cfg = TV) => {
+  const out = {}, f = cfg.fit;
+  for (const e of FIT_EDGES) {
+    const n = v && Number.isFinite(v[e]) ? v[e] : cfg.screenFit[e];
+    out[e] = Math.round(Math.min(f.max, Math.max(f.min, n)) / f.step) * f.step;
+    out[e] = +out[e].toFixed(4);
+  }
+  return out;
+};
 // The stage in real pixels: one uniform scale, centred, with the safe rect in logical px.
-const tvStage = (vw, vh, cfg = TV) => {
+const tvStage = (vw, vh, cfg = TV, fit = cfg.screenFit) => {
   const scale = Math.max(1e-4, Math.min(vw / cfg.logicalW, vh / cfg.logicalH));
-  const w = cfg.logicalW * scale, h = cfg.logicalH * scale;
-  const sx = Math.round(cfg.logicalW * cfg.safeArea), sy = Math.round(cfg.logicalH * cfg.safeArea);
+  const w = cfg.logicalW * scale, h = cfg.logicalH * scale, f = normalizeScreenFit(fit, cfg);
+  const x = Math.round(cfg.logicalW * f.left), y = Math.round(cfg.logicalH * f.top);
+  const r = Math.round(cfg.logicalW * f.right), b = Math.round(cfg.logicalH * f.bottom);
   return { scale, w, h, x: (vw - w) / 2, y: (vh - h) / 2,
-    safe: { x: sx, y: sy, w: cfg.logicalW - 2 * sx, h: cfg.logicalH - 2 * sy } };
+    safe: { x, y, w: cfg.logicalW - x - r, h: cfg.logicalH - y - b } };
 };
 /* Layout specs. `cards` is how many player cards frame the field (alternating left/right,
    filled from the bottom), `cardH` their height, and `hud` whether the co-op HUD replaces the
@@ -848,22 +874,28 @@ const TV_LAYOUTS = {
 };
 const tvLayoutKey = (mode, players) => mode === 'battle' ? 'battle' : players === 2 ? 'coop2' : 'coop';
 /* Logical rects for one layout. `aspect` is the world's width / height, so an online room
-   with a taller shared field just narrows the playfield and widens the columns. */
-const tvLayout = (key, aspect, players, cfg = TV) => {
-  const spec = TV_LAYOUTS[key] || TV_LAYOUTS.coop, safe = tvStage(cfg.logicalW, cfg.logicalH, cfg).safe;
+   with a taller shared field just narrows the playfield and widens the columns. A calibrated
+   `fit` moves every critical rect with the safe area; the playfield only scales uniformly
+   (never stretches) and centres on the safe rect, and may still bleed past it. */
+const tvLayout = (key, aspect, players, cfg = TV, fit = cfg.screenFit) => {
+  const spec = TV_LAYOUTS[key] || TV_LAYOUTS.coop, safe = tvStage(cfg.logicalW, cfg.logicalH, cfg, fit).safe;
   const ph = Math.min(cfg.logicalH, safe.h * cfg.playfieldScale), pw = ph * aspect;
-  const playfield = { x: (cfg.logicalW - pw) / 2, y: (cfg.logicalH - ph) / 2, w: pw, h: ph };
+  const cx = safe.x + safe.w / 2, cy = safe.y + safe.h / 2;
+  const playfield = { x: Math.min(cfg.logicalW - pw, Math.max(0, cx - pw / 2)),
+    y: Math.min(cfg.logicalH - ph, Math.max(0, cy - ph / 2)), w: pw, h: ph };
   const top = safe.y, bottom = safe.y + safe.h, g = cfg.rowGap, c = cfg.chrome;
   const L = { x: safe.x, w: playfield.x - cfg.gap - safe.x };
   const Rx = playfield.x + pw + cfg.gap, Rc = { x: Rx, w: safe.x + safe.w - Rx };
   const n = Math.min(spec.cards, players), rows = Math.ceil(n / 2);
+  const below = top + cfg.headH + g, padEnd = below + cfg.powerH + g + cfg.padH;
+  // A tall inset squeezes the cards before it lets them climb into the power / pad rows.
+  const cardH = rows ? Math.min(spec.cardH, (bottom - padEnd - g - (rows - 1) * g) / rows) : 0;
   const cards = [];
   for (let i = 0; i < n; i++) {
     const col = i % 2 ? Rc : L, row = Math.floor(i / 2);
-    cards.push({ x: col.x, y: bottom - (rows - row) * spec.cardH - (rows - row - 1) * g, w: col.w, h: spec.cardH });
+    cards.push({ x: col.x, y: bottom - (rows - row) * cardH - (rows - row - 1) * g, w: col.w, h: cardH });
   }
-  const cardsTop = n ? bottom - rows * spec.cardH - (rows - 1) * g : bottom;
-  const below = top + cfg.headH + g;
+  const cardsTop = n ? bottom - rows * cardH - (rows - 1) * g : bottom;
   return { key, hud: spec.hud, playfield, safe, cards,
     chromeL: { x: L.x, y: top, w: c, h: c },
     chromeR: { x: Rc.x + Rc.w - c, y: top, w: c, h: c },
@@ -873,6 +905,31 @@ const tvLayout = (key, aspect, players, cfg = TV) => {
     pad: { x: L.x, y: below + cfg.powerH + g, w: L.w, h: cfg.padH },
     info: { x: Rc.x, y: below, w: Rc.w, h: Math.max(0, cardsTop - g - below) },
   };
+};
+/* Spatial focus for d-pad and stick: from the focused rect, the nearest candidate whose
+   centre lies in the pressed direction, weighing drift across the axis double so a row of
+   segment buttons walks sideways and up / down steps between rows. Nothing that way: up /
+   down wraps to the far end of the list, left / right stays put. Returns an index or -1. */
+const spatialPick = (rects, at, dx, dy) => {
+  const cur = rects[at]; if (!cur) return rects.length ? 0 : -1;
+  const c = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 }), o = c(cur);
+  let best = -1, score = Infinity;
+  rects.forEach((r, i) => {
+    if (i === at) return;
+    const p = c(r), along = (p.x - o.x) * dx + (p.y - o.y) * dy, across = Math.abs((p.x - o.x) * dy) + Math.abs((p.y - o.y) * dx);
+    // Stacked controls share a centre line, so "in that direction" is an edge test too.
+    const beyond = dx > 0 ? r.x >= cur.x + cur.w - 2 : dx < 0 ? r.x + r.w <= cur.x + 2 : dy > 0 ? r.y >= cur.y + cur.h - 2 : r.y + r.h <= cur.y + 2;
+    if (along <= 0 || !beyond) return;
+    const s = along + across * 2;
+    if (s < score) { score = s; best = i; }
+  });
+  if (best < 0 && dy) {
+    // Wrap: the top-most (or bottom-most) control, nearest the current column.
+    const ys = rects.map(r => r.y + r.h / 2), edge = dy > 0 ? Math.min(...ys) : Math.max(...ys);
+    rects.forEach((r, i) => { if (i === at || Math.abs(ys[i] - edge) > 4) return;
+      const s = Math.abs(c(r).x - o.x); if (s < score) { score = s; best = i; } });
+  }
+  return best;
 };
 /* Standard-mapping gamepad buttons. In play: stick / d-pad aims, A or RT fires, X or LB
    passes, Y or RB fires Team Power, Start pauses, Back opens settings. In menus the same
@@ -890,7 +947,7 @@ class CoopBubbles extends HTMLElement {
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
       reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
-      aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves', displayMode:'auto' };
+      aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves', displayMode:'auto', screenFit:normalizeScreenFit(TV.screenFit) };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
     this.resetGame();
@@ -915,12 +972,13 @@ class CoopBubbles extends HTMLElement {
       if (Number.isFinite(p.fireScale)) out.fireScale = clamp(p.fireScale, 0.6, 2.2);
       if (AIM_MODES.includes(p.aimMode)) out.aimMode = p.aimMode;
       if (DISPLAY_MODES.includes(p.displayMode)) out.displayMode = p.displayMode;
+      if (p.screenFit && typeof p.screenFit === 'object') out.screenFit = normalizeScreenFit(p.screenFit);
       return out;
     } catch (_) { return {}; }
   }
   saveLocalPrefs() {
-    const { aimSpeed, padTint, fireScale, aimMode, displayMode } = this.settings;
-    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale, aimMode, displayMode })); } catch (_) {}
+    const { aimSpeed, padTint, fireScale, aimMode, displayMode, screenFit } = this.settings;
+    try { localStorage.setItem('bt_prefs', JSON.stringify({ aimSpeed, padTint, fireScale, aimMode, displayMode, screenFit })); } catch (_) {}
   }
   applyTouchStyle() {
     const root = this.rootEl; if (!root) return;
@@ -945,6 +1003,7 @@ class CoopBubbles extends HTMLElement {
     this._viewportUnbind && this._viewportUnbind();
     this._fullscreenUnbind && this._fullscreenUnbind();
     clearTimeout(this._reconnectTimer);
+    clearTimeout(this._toastTimer);
     if (this.ws) this.ws.close();
   }
 
@@ -1812,6 +1871,7 @@ class CoopBubbles extends HTMLElement {
     this._raf = requestAnimationFrame(tt => this.frame(tt));
     const dt = Math.min(0.033, (t - (this._t || t)) / 1000); this._t = t;
     this.pollGamepads();
+    this.syncMenuFocus();
     this.syncTvHud();
     if (this.battle && this.settings.mode === 'battle') {
       if (!this.online && this.state === 'play') this.battleUpdate(dt);
@@ -1986,18 +2046,30 @@ class CoopBubbles extends HTMLElement {
     try { return [...navigator.getGamepads()].filter(g => g && g.connected); } catch (_) { return []; }
   }
   padOwner(i) { return (this._padPlayers || []).includes(i); }
+  /* Pads keep a slot from connect to disconnect (lowest free slot first), so slot n drives the
+     nth human no matter which other pad drops out, and a pad that reconnects usually lands
+     back on its own launcher. A new pad's already-held buttons are not presses. */
   pollGamepads() {
-    const pads = this.connectedPads();
-    if (pads.length !== (this._padCount || 0)) {
+    const pads = this.connectedPads(), slots = this._padSlots || (this._padSlots = new Map());
+    const prev = this._padPrev || (this._padPrev = new Map()), live = new Set(pads.map(g => g.index));
+    const humans = this._padHumans = (this.players || []).filter(p => !p.bot).map(p => p.i);
+    let changed = false;
+    for (const [idx, slot] of [...slots]) if (!live.has(idx)) { slots.delete(idx); prev.delete(idx); changed = true; this.padLost(slot); }
+    for (const g of pads) if (!slots.has(g.index)) {
+      const used = new Set(slots.values()); let slot = 0; while (used.has(slot)) slot++;
+      slots.set(g.index, slot); changed = true;
+      prev.set(g.index, { b: g.buttons.map(x => !!(x && x.pressed)), h: 0, nav: '', navT: 0 });
+      this.padFound(slot);
+    }
+    if (changed) {
       this._padCount = pads.length;
       if (this.settings.displayMode === 'auto') this.measure(); // a controller can make this the TV
     }
-    if (!pads.length) { this._padPrev = null; this._padPlayers = []; return; }
-    const prev = this._padPrev || (this._padPrev = new Map()), menu = this.menuRoot();
-    const humans = (this.players || []).filter(p => !p.bot).map(p => p.i);
-    this._padPlayers = pads.map((_, n) => humans[n]).filter(i => i !== undefined);
-    pads.forEach((g, n) => {
-      const was = prev.get(g.index) || { b: [], h: 0, nav: '', navT: 0 };
+    this._padPlayers = [...slots.values()].map(n => humans[n]).filter(i => i !== undefined);
+    if (!pads.length) return;
+    const menu = this.menuRoot();
+    pads.forEach(g => {
+      const n = slots.get(g.index), was = prev.get(g.index) || { b: [], h: 0, nav: '', navT: 0 };
       const b = g.buttons.map(x => !!(x && x.pressed));
       const down = k => b[GAMEPAD.btn[k]], hit = k => down(k) && !was.b[GAMEPAD.btn[k]];
       const ax = g.axes[0] || 0, ay = g.axes[1] || 0;
@@ -2006,7 +2078,7 @@ class CoopBubbles extends HTMLElement {
       const now = performance.now() / 1000;
       let nav = was.nav, navT = was.navT;
       if (hit('start')) this.padStart();
-      else if (hit('back')) this.sideEl.classList.toggle('open');
+      else if (hit('back')) this.toggleSide();
       else if (menu) {
         const dir = v ? 'v' + v : h ? 'h' + h : '';
         if (dir && (dir !== was.nav || now >= was.navT)) {
@@ -2014,11 +2086,45 @@ class CoopBubbles extends HTMLElement {
           navT = now + (dir !== was.nav ? GAMEPAD.repeatFirst : GAMEPAD.repeat);
         }
         nav = dir;
+        if (menu === this.screenFitEl) {
+          if (hit('x')) this.cycleFitEdge(1);
+          if (hit('y')) this.resetScreenFit();
+          if (hit('lb')) this.stepScreenFit(-1);
+          if (hit('rb')) this.stepScreenFit(1);
+        }
         if (hit('a')) this.menuActivate(menu);
         if (hit('b')) this.menuBack();
       } else this.padPlay(n, h, h !== was.h, hit);
       prev.set(g.index, { b, h, nav, navT });
     });
+  }
+  // The human a pad slot drives; undefined once there are more pads than humans.
+  padHuman(n) { return (this._padHumans || [])[n]; }
+  /* A dropped controller must not leave its launcher turning forever or a match running with
+     nobody at the stick: its holds are released and local play pauses until it is back. */
+  padLost(slot) {
+    const i = this.padHuman(slot);
+    this.padToast(`Controller ${slot + 1} disconnected`);
+    if (i === undefined) return;
+    const bt = this.battle && this.settings.mode === 'battle' ? this.battle : null;
+    const p = bt ? (slot ? null : bt.human && bt.human.player) : (this.players || [])[i];
+    if (p) { p.held = { l: false, r: false }; p.aimTarget = null; }
+    if (this.online && !slot) { this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
+    if (!this.online && this.state === 'play') {
+      this.togglePause();
+      const sub = this.shadowRoot.querySelector('.pauseSub');
+      if (sub) sub.textContent = `Controller ${slot + 1} disconnected — reconnect it, then press A or Start to resume`;
+    }
+  }
+  padFound(slot) {
+    const i = this.padHuman(slot), p = i === undefined ? null : (this.players || [])[i];
+    this.padToast(`Controller ${slot + 1} connected` + (p ? ' · ' + (p.name || (p.meta || META[i]).name) : ''));
+  }
+  padToast(text) {
+    const el = this.toastEl; if (!el) return;
+    el.textContent = text; el.classList.add('on');
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove('on'), 3200);
   }
   padPlay(n, h, turned, hit) {
     const fire = hit('a') || hit('rt'), pass = hit('x') || hit('lb'), power = hit('y') || hit('rb');
@@ -2049,20 +2155,23 @@ class CoopBubbles extends HTMLElement {
       if (power) this.requestTeamPower(this.activeP);
       return;
     }
-    const i = this._padPlayers[n], p = this.players[i]; if (!p || p.bot) return;
+    const i = this.padHuman(n), p = this.players[i]; if (!p || p.bot) return;
     if (turned) { p.held.l = h < 0; p.held.r = h > 0; p.aimTarget = null; }
     if (fire) { this.activeP = i; this.fire(i); }
     if (pass) this.requestPass(i);
     if (power) this.requestTeamPower(i);
   }
   padStart() {
+    if (this.screenFitEl && this.screenFitEl.style.display !== 'none') { this.closeScreenFit(true); return; }
     if (this.sideEl.classList.contains('open')) { this.closeSide(); return; }
     if (this.state === 'play' || this.state === 'paused') { this.togglePause(); return; }
     const menu = this.menuRoot(); if (menu) this.menuActivate(menu);
   }
-  /* The surface a controller is navigating: the settings drawer if it is open, otherwise
-     the top-most visible card. Null during active play. */
+  toggleSide() { if (this.sideEl.classList.contains('open')) this.closeSide(); else this.sideEl.classList.add('open'); }
+  /* The surface a controller is navigating: Screen Fit or the settings drawer if open,
+     otherwise the top-most visible card. Null during active play. */
   menuRoot() {
+    if (this.screenFitEl && this.screenFitEl.style.display !== 'none') return this.screenFitEl;
     if (this.sideEl && this.sideEl.classList.contains('open') && this.sideEl.offsetParent !== null) return this.sideEl;
     const cards = [this.homeEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
     for (let k = cards.length - 1; k >= 0; k--) {
@@ -2074,11 +2183,19 @@ class CoopBubbles extends HTMLElement {
     return [...root.querySelectorAll('button,select,input,textarea,summary')]
       .filter(el => !el.disabled && !el.hidden && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   }
+  // Each screen's opening selection: its marked couch default, else its primary action.
+  menuDefault(root, list = this.menuFocusables(root)) {
+    return list.find(el => el.hasAttribute('data-tv-default')) || list.find(el => el.classList.contains('sfRange'))
+      || list.find(el => el.classList.contains('primary')) || list[0] || null;
+  }
+  menuFocus(el) { if (!el) return; el.focus({ preventScroll: true }); el.scrollIntoView?.({ block: 'nearest' }); }
   menuMove(root, axis, d) {
     const list = this.menuFocusables(root); if (!list.length) return;
     const cur = this.shadowRoot.activeElement, at = list.indexOf(cur);
-    if (at < 0) { (list.find(el => el.classList.contains('primary')) || list[0]).focus(); return; }
-    // Left / right adjusts a picker or slider in place; everywhere else it walks like up / down.
+    if (at < 0) { this.menuFocus(this.menuDefault(root, list)); return; }
+    // Arcade entry for short codes (room code, initials): up / down picks the character.
+    if (cur.dataset.padChars && this.padCharInput(cur, axis, d)) return;
+    // Left / right adjusts a picker or slider in place; up / down moves between controls.
     if (axis === 'h' && cur.tagName === 'SELECT') {
       cur.selectedIndex = clamp(cur.selectedIndex + d, 0, cur.options.length - 1);
       cur.dispatchEvent(new Event('change', { bubbles: true })); return;
@@ -2087,19 +2204,163 @@ class CoopBubbles extends HTMLElement {
       d > 0 ? cur.stepUp() : cur.stepDown();
       cur.dispatchEvent(new Event('input', { bubbles: true })); cur.dispatchEvent(new Event('change', { bubbles: true })); return;
     }
-    const next = list[(at + d + list.length) % list.length];
-    next.focus(); next.scrollIntoView?.({ block: 'nearest' });
+    this.menuSpatial(list, at, axis, d);
+  }
+  menuSpatial(list, at, axis, d) {
+    const rects = list.map(el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+    const next = spatialPick(rects, at, axis === 'h' ? d : 0, axis === 'v' ? d : 0);
+    if (next >= 0) this.menuFocus(list[next]);
+    return next >= 0;
+  }
+  /* Up / down cycles the last character through data-pad-chars, right adds one, left deletes
+     one. Past either end it hands back to spatial focus so the field is never a trap. */
+  padCharInput(el, axis, d) {
+    const chars = el.dataset.padChars, max = el.maxLength > 0 ? el.maxLength : 3, v = el.value.toUpperCase();
+    let out = v;
+    if (axis === 'v') {
+      if (!v) out = chars[d > 0 ? 0 : chars.length - 1];
+      else { const k = chars.indexOf(v.slice(-1)); out = v.slice(0, -1) + chars[((k < 0 ? 0 : k + d) + chars.length) % chars.length]; }
+    } else if (d > 0) { if (v.length >= max || !v) return false; out = v + chars[0]; }
+    else { if (!v) return false; out = v.slice(0, -1); }
+    el.value = out; el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
   }
   menuActivate(root) {
     const cur = this.shadowRoot.activeElement;
-    if (!cur || !root.contains(cur)) { this.menuMove(root, 'v', 1); return; }
+    if (!cur || !root.contains(cur)) { this.menuFocus(this.menuDefault(root)); return; }
+    if (cur.classList.contains('sfRange')) { this.closeScreenFit(true); return; }
     if (cur.tagName === 'SELECT') { cur.selectedIndex = (cur.selectedIndex + 1) % cur.options.length; cur.dispatchEvent(new Event('change', { bubbles: true })); return; }
-    if (cur.tagName === 'INPUT' && cur.type !== 'range') { this.menuMove(root, 'v', 1); return; }
+    // A on a text field is "done": on to the control after it (Save beside the initials).
+    if (cur.tagName === 'INPUT' && cur.type !== 'range' || cur.tagName === 'TEXTAREA') {
+      const list = this.menuFocusables(root), at = list.indexOf(cur);
+      if (!(cur.dataset.padChars && this.menuSpatial(list, at, 'h', 1))) this.menuSpatial(list, at, 'v', 1);
+      return;
+    }
     cur.click();
   }
+  /* B / Escape always means "back one step", and says so in the prompt bar: cancel Screen Fit,
+     close the drawer, resume from pause, leave the tutorial the way you came. Where backing
+     out would abandon a room it only moves focus to Leave, so it takes a second press. */
+  menuBackLabel(menu = this.menuRoot()) {
+    if (!menu) return null;
+    if (menu === this.screenFitEl) return 'Cancel';
+    if (menu === this.sideEl) return 'Close';
+    if (menu === this.pauseEl) return 'Resume';
+    if (menu === this.tutEl) return this._tutBack === 'home' ? 'Back' : 'Play';
+    if (menu === this.lobbyEl || menu === this.reconnectEl) return 'Leave…';
+    return null;
+  }
   menuBack() {
-    if (this.sideEl.classList.contains('open')) { this.closeSide(); return; }
-    if (this.state === 'paused') this.togglePause();
+    const menu = this.menuRoot();
+    if (menu === this.screenFitEl) { this.closeScreenFit(false); return; }
+    if (menu === this.sideEl) { this.closeSide(); return; }
+    if (menu === this.pauseEl) { if (this.state === 'paused') this.togglePause(); return; }
+    if (menu === this.tutEl) {
+      if (this._tutBack === 'home' && !this.online) { this.tutEl.style.display = 'none'; this.homeEl.style.display = 'grid'; this.state = 'home'; }
+      else this.shadowRoot.querySelector('.start').click();
+      return;
+    }
+    if (menu === this.lobbyEl) this.menuFocus(this.shadowRoot.querySelector('.lobbyLeave'));
+    if (menu === this.reconnectEl) this.menuFocus(this.shadowRoot.querySelector('.reconnectLeave'));
+  }
+  /* Per frame while a controller could be driving (TV mode or any pad): when the surface
+     changes, focus lands on its default — or on whatever was focused there last, so closing
+     the drawer puts you back where you were — and the prompt bar follows the focus. */
+  syncMenuFocus() {
+    const on = TV.controllerNavigation && (this.tvActive || this._padCount > 0);
+    const menu = on ? this.menuRoot() : null, sh = this.shadowRoot, cur = sh && sh.activeElement;
+    const mem = this._menuMem || (this._menuMem = new WeakMap());
+    if (this._menuPrev && cur && this._menuPrev.contains(cur)) mem.set(this._menuPrev, cur);
+    if (menu !== this._menuPrev) {
+      this._menuPrev = menu;
+      if (menu && !(cur && menu.contains(cur))) {
+        const list = this.menuFocusables(menu), back = mem.get(menu);
+        this.menuFocus(back && list.includes(back) ? back : this.menuDefault(menu, list));
+      }
+    }
+    this.syncTvPrompts(menu);
+  }
+  // The controller legend along the bottom of the safe area: letters, not just colours.
+  syncTvPrompts(menu) {
+    const el = this.promptsEl; if (!el) return;
+    const show = !!(this.tvActive && menu);
+    let html = '';
+    if (show) {
+      const cur = this.shadowRoot.activeElement, key = (k, t) => `<span><b class="tvKey k${k}">${k}</b>${t}</span>`;
+      const back = this.menuBackLabel(menu), parts = [];
+      if (menu === this.screenFitEl) parts.push('<span>◀▶ Move edge</span>', key('X', 'Next edge'), key('Y', 'Reset'), key('A', 'Save'));
+      else if (cur && cur.dataset && cur.dataset.padChars) parts.push('<span>▲▼ Character · ▶ Add · ◀ Delete</span>', key('A', 'Done'));
+      else if (cur && (cur.type === 'range' || cur.tagName === 'SELECT')) parts.push('<span>◀▶ Adjust · ▲▼ Move</span>', key('A', 'Next'));
+      else parts.push('<span>✚ Move</span>', key('A', 'Select'));
+      if (back) parts.push(key('B', back));
+      html = parts.join('');
+    }
+    if (el.hidden !== !show) el.hidden = !show;
+    if (this._promptsHtml !== html) { this._promptsHtml = html; el.innerHTML = html; }
+  }
+
+  /* ---------- Screen Fit (TV overscan calibration) ----------
+     A draft copy of settings.screenFit is edited live — the HUD, corner buttons and menus
+     follow it through relayoutTv, and the corner marks sit exactly on the calibrated safe
+     edges — then Save persists it with the device prefs and Cancel / B puts the old one back. */
+  bindScreenFit() {
+    const el = this.screenFitEl; if (!el) return;
+    el.querySelectorAll('.sfEdges button').forEach(b => { b.onclick = () => { this._fitEdge = b.dataset.e; this.syncScreenFit(); }; });
+    el.querySelectorAll('.sfStep').forEach(b => { b.onclick = () => this.stepScreenFit(+b.dataset.d); });
+    const range = el.querySelector('.sfRange');
+    Object.assign(range, { min: TV.fit.min * 100, max: TV.fit.max * 100, step: TV.fit.step * 100 });
+    range.oninput = () => this.setScreenFit(parseFloat(range.value) / 100);
+    el.querySelector('.sfReset').onclick = () => this.resetScreenFit();
+    el.querySelector('.sfCancel').onclick = () => this.closeScreenFit(false);
+    el.querySelector('.sfSave').onclick = () => this.closeScreenFit(true);
+  }
+  openScreenFit() {
+    if (!this.tvActive || !this.screenFitEl) return;
+    this._fitReturn = this.shadowRoot.activeElement;
+    this._fitDraft = normalizeScreenFit(this.settings.screenFit);
+    this._fitEdge = 'all';
+    if (!this.online && this.state === 'play') this.togglePause();
+    this.closeSide();
+    this.screenFitEl.style.display = 'grid';
+    this.syncScreenFit(); this.relayoutTv();
+    this.menuFocus(this.screenFitEl.querySelector('.sfRange'));
+  }
+  closeScreenFit(save) {
+    const el = this.screenFitEl; if (!el || el.style.display === 'none') return;
+    if (save && this._fitDraft) { this.settings.screenFit = normalizeScreenFit(this._fitDraft); this.saveLocalPrefs(); }
+    this._fitDraft = null; el.style.display = 'none';
+    if (this.tvActive) this.relayoutTv();
+    const back = this._fitReturn; this._fitReturn = null;
+    if (back && back.isConnected && back.getClientRects().length) this.menuFocus(back);
+  }
+  fitEdgeValue() { const d = this._fitDraft || this.screenFitNow(), e = this._fitEdge || 'all'; return e === 'all' ? Math.max(...FIT_EDGES.map(k => d[k])) : d[e]; }
+  setScreenFit(v) {
+    if (!this._fitDraft) return;
+    const e = this._fitEdge || 'all', next = { ...this._fitDraft };
+    for (const k of e === 'all' ? FIT_EDGES : [e]) next[k] = v;
+    this._fitDraft = normalizeScreenFit(next);
+    this.syncScreenFit();
+  }
+  stepScreenFit(d) { this.setScreenFit(this.fitEdgeValue() + d * TV.fit.step); }
+  cycleFitEdge(d) {
+    const order = ['all', ...FIT_EDGES], at = order.indexOf(this._fitEdge || 'all');
+    this._fitEdge = order[(at + d + order.length) % order.length]; this.syncScreenFit();
+  }
+  resetScreenFit() { if (!this._fitDraft) return; this._fitDraft = normalizeScreenFit(TV.screenFit); this._fitEdge = 'all'; this.syncScreenFit(); }
+  syncScreenFit() {
+    const el = this.screenFitEl, d = this._fitDraft; if (!el || !d) return;
+    const e = this._fitEdge || 'all', pct = v => (v * 100).toFixed(1) + '%', v = this.fitEdgeValue();
+    el.dataset.edge = e;
+    el.querySelectorAll('.sfEdges button').forEach(b => b.classList.toggle('on', b.dataset.e === e));
+    el.querySelectorAll('.sfEdge').forEach(s => {
+      const k = s.dataset.e, sel = e === 'all' || e === k;
+      s.textContent = (sel ? '▶ ' : '') + k.toUpperCase() + ' ' + pct(d[k]);
+      s.classList.toggle('sel', sel);
+    });
+    const range = el.querySelector('.sfRange');
+    range.value = String(+(v * 100).toFixed(2));
+    el.querySelector('.sfValue').textContent = (e === 'all' ? 'All edges' : e[0].toUpperCase() + e.slice(1) + ' edge') + ' inset ' + pct(v)
+      + (FIT_EDGES.every(k => Math.abs(d[k] - TV.screenFit[k]) < 1e-9) ? ' · default' : '');
   }
 
   /* ---------- input ---------- */
@@ -2194,6 +2455,17 @@ class CoopBubbles extends HTMLElement {
       // The settings panel is a drawer over the board on narrow layouts; Escape is the way
       // out that does not require finding the gear again.
       if (k === 'escape' && this.sideEl.classList.contains('open')) { this.closeSide(); e.preventDefault(); return; }
+      /* TV menus answer the keyboard the way they answer a pad: arrows move focus spatially,
+         Enter presses (natively), Escape is the same "back one step" as B. */
+      const menu = this.tvActive && TV.controllerNavigation ? this.menuRoot() : null;
+      if (menu && e.key.startsWith('Arrow')) {
+        // Fields keep their own arrows (caret, slider, picker); up / down still leaves a text box.
+        const d = { arrowup: ['v', -1], arrowdown: ['v', 1], arrowleft: ['h', -1], arrowright: ['h', 1] }[k];
+        const t = (e.composedPath && e.composedPath()[0]) || e.target, tag = t.tagName || '';
+        if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (d[0] === 'v' && tag === 'INPUT' && t.type !== 'range')) { this.menuMove(menu, d[0], d[1]); e.preventDefault(); }
+        return;
+      }
+      if (menu && k === 'escape') { this.menuBack(); e.preventDefault(); return; }
       if (k === 'p') { this.togglePause(); return; }
       if (this.battle && this.settings.mode === 'battle') {
         const bt = this.battle, tg = bt.targeting;
@@ -2243,7 +2515,8 @@ class CoopBubbles extends HTMLElement {
       if (!this.onlineRoom || this.onlineRoom.hostId !== this.onlinePlayerId) return;
       this.sendOnline(this.state === 'paused' ? 'resume' : 'pause'); return;
     }
-    if (this.state === 'play') { this.state = 'paused'; this.pauseEl.style.display = 'grid'; }
+    if (this.state === 'play') { this.state = 'paused'; this.pauseEl.style.display = 'grid';
+      this.shadowRoot.querySelector('.pauseSub').textContent = 'press P, Start or the button to resume'; }
     else if (this.state === 'paused') { this.state = 'play'; this.pauseEl.style.display = 'none'; this._t = performance.now(); }
     this.syncButtons();
   }
@@ -3399,7 +3672,7 @@ class CoopBubbles extends HTMLElement {
     sh.querySelector('.tutSub').textContent = isB ? 'Battle royale \u00b7 2\u20138 players \u00b7 own field, shared chaos' : 'Co-op bubble shooter \u00b7 2\u20134 players \u00b7 one shared field';
     sh.querySelector('.coopSteps').style.display = isB ? 'none' : '';
     sh.querySelector('.battleSteps').style.display = isB ? '' : 'none';
-    this.tutEl.style.display = 'grid'; this.state = 'tutorial';
+    this.tutEl.style.display = 'grid'; this.state = 'tutorial'; this._tutBack = null;
   }
 
   /* ---------- DOM / UI ---------- */
@@ -3581,38 +3854,67 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
  radial-gradient(circle at 50% 50%,rgba(255,255,255,.10),transparent 60%),linear-gradient(160deg,#27508f,#1a3766 55%,#122a52)}
 .root.tvMode canvas{position:absolute;left:calc(var(--pfX) * var(--tvS));top:calc(var(--pfY) * var(--tvS));width:calc(var(--pfW) * var(--tvS));height:calc(var(--pfH) * var(--tvS));
  border-radius:calc(26px * var(--tvS));box-shadow:0 0 0 calc(6px * var(--tvS)) rgba(255,255,255,.18),0 calc(18px * var(--tvS)) calc(60px * var(--tvS)) rgba(0,0,0,.4)}
-.root.tvMode .overlay{border-radius:0}
+.root.tvMode .overlay{border-radius:0;box-sizing:border-box;background:rgba(8,22,46,.62);
+ padding:calc(var(--tvSafeY) * var(--tvS)) calc(var(--tvSafeR) * var(--tvS)) calc((var(--tvSafeB) + var(--tvPromptH)) * var(--tvS)) calc(var(--tvSafeX) * var(--tvS))}
 .root.tvMode .tvOnly{display:block}.root.tvMode .tvOnly[hidden]{display:none}
 .root.tvMode.isFullscreen .tvFullscreen{display:none}
 .root.tvMode .cornerButton{top:calc(var(--tvSafeY) * var(--tvS));width:calc(var(--tvChrome) * var(--tvS));height:calc(var(--tvChrome) * var(--tvS));font-size:calc(34px * var(--tvS))}
 .root.tvMode .fullscreenButton{left:calc(var(--tvSafeX) * var(--tvS))}
-.root.tvMode .gear{display:grid;right:calc(var(--tvSafeX) * var(--tvS))}
-.root.tvMode .buildTag{right:calc(var(--tvSafeX) * var(--tvS));bottom:calc(8px * var(--tvS));font-size:calc(13px * var(--tvS));color:rgba(255,255,255,.35)}
-/* Menus: authored at a fixed logical size, then scaled by stage × menuScale from their centre. */
-.root.tvMode .card{--u:1;width:600px;max-width:none;max-height:calc(var(--tvSafeH) / var(--tvMenuScale));transform:scale(var(--tvMenuK))}
-.root.tvMode .lobbyCard{width:680px}
-.root.tvMode .card .btn{padding:15px;font-size:19px;border-radius:16px}
-.root.tvMode .card .textInput,.root.tvMode .card select{padding:12px;font-size:17px}
-.root.tvMode .card .seg button{padding:10px 16px;font-size:16px}
-.root.tvMode .side.open{position:absolute;display:block;z-index:7;top:calc(var(--tvY) + var(--tvSafeY) * var(--tvS));right:calc(var(--tvX) + var(--tvSafeX) * var(--tvS));bottom:auto;
- width:380px;height:calc(var(--tvSafeH) / var(--tvMenuScale));transform:scale(var(--tvMenuK));transform-origin:100% 0}
-.root.tvMode .side .seg{flex-wrap:wrap}.root.tvMode .side .seg button{padding:8px 13px;font-size:14px}.root.tvMode .side .row{margin:10px 0}
-/* Controller focus has to read from the sofa: a thick gold ring and a lift on every focusable. */
-.root.tvMode :is(button,select,input,textarea,summary):focus{outline:4px solid #ffc233;outline-offset:3px;box-shadow:0 0 0 9px rgba(255,194,51,.32)}
-.root.tvMode .overlay .btn:focus{transform:scale(1.03)}
+.root.tvMode .gear{display:grid;right:calc(var(--tvSafeR) * var(--tvS))}
+.root.tvMode .buildTag{right:calc(var(--tvSafeR) * var(--tvS));bottom:calc(8px * var(--tvS));font-size:calc(13px * var(--tvS));color:rgba(255,255,255,.35)}
+/* Menus: authored at a fixed logical size, then scaled by stage × menuScale from their centre.
+   Type comes from TV.menuType via --tvM-* (already divided by menuScale), so every label
+   reaches the screen at >= minMenuFontPx; low-contrast greys darken for the far seat. */
+.root.tvMode .card{--u:1;width:640px;max-width:none;max-height:calc((var(--tvSafeH) - var(--tvPromptH)) / var(--tvMenuScale));transform:scale(var(--tvMenuK));font-size:var(--tvM-body);line-height:1.3}
+.root.tvMode .lobbyCard{width:720px}
+.root.tvMode .card h1{font-size:var(--tvM-title);line-height:1.1}
+.root.tvMode .card :is(.sub,p,label,h3,.row>span,.tut p,.luTime,.luReady,.formError,.hsPrompt,.hsNote,.hostTag,.statRow,.statRow .nums,.statRow.team,.hsRow,.hiscore h3,.lobbySettings label,.onlinePlayer){font-size:var(--tvM-body)}
+.root.tvMode .card :is(.sub,.luReady,.hsNote,.hostTag,.lobbySettings label){color:#3d5f86}
+.root.tvMode .card .statRow .nums{color:#2b4a70}
+.root.tvMode .tut .n{width:1.3em;height:1.3em;font-size:var(--tvM-body)}
+.root.tvMode .card .btn{padding:.5em;font-size:var(--tvM-button);border-radius:16px;font-weight:700}
+.root.tvMode .card :is(.textInput,select,textarea,.lobbySettings input,.lobbySettings select){padding:.35em .5em;font-size:var(--tvM-control)}
+.root.tvMode .card .seg button{padding:.3em .6em;font-size:var(--tvM-control);font-weight:600}
+.root.tvMode .card .roomCode{font-size:var(--tvM-code)}
+.root.tvMode .card .hsIn{width:6em;font-size:var(--tvM-code)}
+.root.tvMode .joinFields{grid-template-columns:1fr 5em}
+.root.tvMode .side.open{position:absolute;display:block;z-index:7;top:calc(var(--tvY) + var(--tvSafeY) * var(--tvS));right:calc(var(--tvX) + var(--tvSafeR) * var(--tvS));bottom:auto;
+ width:460px;height:calc((var(--tvSafeH) - var(--tvPromptH)) / var(--tvMenuScale));transform:scale(var(--tvMenuK));transform-origin:100% 0;font-size:var(--tvM-body);color:#17335c}
+.root.tvMode .side :is(h3,.val,.lvlSel,details summary,.ctrlList,.seg button,.row>span,.pName){font-size:var(--tvM-small)}
+.root.tvMode .side h2{font-size:var(--tvM-title)}
+.root.tvMode .side [style*="font-size"]{font-size:var(--tvM-small)!important;color:#3d5f86!important}
+.root.tvMode .side h3{color:#3d5f86}
+.root.tvMode .side .val{width:auto;min-width:3.2em;color:#2b4a70}
+.root.tvMode .side .seg{flex-wrap:wrap}.root.tvMode .side .seg button{padding:.25em .55em}.root.tvMode .side .row{margin:12px 0;flex-wrap:wrap}
+.root.tvMode .side .btn{font-size:var(--tvM-button);padding:.4em}
+.root.tvMode .side .pName{width:auto}
+.root.tvMode input[type=range]{width:190px;height:34px}
+.root.tvMode .sideClose{display:block;width:1.8em;height:1.8em;font-size:var(--tvM-body)}
+/* Controller focus has to read from the sofa without relying on colour alone: a thick gold
+   ring over a dark halo, a lift, and a ▶ marker on focused buttons. Selected segment choices
+   carry a ✓ as well as their fill. */
+.root.tvMode :is(button,select,input,textarea,summary):focus{outline:5px solid #ffc233;outline-offset:3px;box-shadow:0 0 0 3px #0b1f3d,0 0 0 13px rgba(255,194,51,.5)}
+.root.tvMode :is(.btn,.seg button,.sfStep):focus{transform:scale(1.05)}
+.root.tvMode .btn:focus::before{content:'\\25b6\\00a0'}
+.root.tvMode .seg button.on{border-width:3px}
+.root.tvMode .seg button.on::before{content:'\\2713\\00a0'}
 .root.tvMode .onlineBar{left:calc(var(--infoX) * var(--tvS));top:calc(var(--infoY) * var(--tvS));right:auto;width:calc(var(--infoW) / var(--tvHudS));flex-wrap:wrap;transform:scale(calc(var(--tvS) * var(--tvHudS)));transform-origin:0 0}
 .root.tvMode .pad{left:calc(var(--padX) * var(--tvS));top:calc(var(--padY) * var(--tvS));bottom:auto;width:calc(var(--padW) / var(--tvHudS));flex-wrap:wrap;transform:scale(calc(var(--tvS) * var(--tvHudS)));transform-origin:0 0}
 /* The HUD is one 1920x1080 logical layer; relayout() places its slots from the layout. */
+/* HUD type is TV.hudType via --tvH-* (logical px, all >= minHudFontPx): heavy weights, a
+   dark plate behind every slot and a shadow under the text, so it holds up at 8-12 ft. */
 .root.tvMode .tvHud{display:block;position:absolute;left:0;top:0;width:1920px;height:1080px;transform:scale(var(--tvS));transform-origin:0 0;pointer-events:none;z-index:2;
- font-size:calc(20px * var(--tvHudS));color:#fff;line-height:1.1}
-.tvSlot{position:absolute;box-sizing:border-box;border-radius:28px;padding:18px 24px;background:rgba(9,26,54,.55);box-shadow:inset 0 0 0 3px rgba(255,255,255,.12);overflow:hidden}
-.tvLabel{display:block;font-size:.8em;font-weight:600;letter-spacing:.12em;color:#9fc4ff;text-transform:uppercase}
-.tvBig{display:block;font-weight:700;font-size:2.6em;font-variant-numeric:tabular-nums;letter-spacing:.01em;text-shadow:0 3px 0 rgba(0,0,0,.25);white-space:nowrap}
-.tvRound .tvBig{font-size:2.2em}
-.tvLine{display:block;margin-top:6px;font-weight:600;font-size:1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ font-size:var(--tvH-line);color:#fff;line-height:1.1;text-shadow:0 2px 4px rgba(0,0,0,.55)}
+.tvSlot{position:absolute;box-sizing:border-box;border-radius:28px;padding:16px 24px;background:rgba(6,18,40,.8);box-shadow:inset 0 0 0 3px rgba(255,255,255,.16);overflow:hidden}
+.tvLabel{display:block;font-size:var(--tvH-label);font-weight:700;letter-spacing:.08em;color:#cfe2ff;text-transform:uppercase}
+.tvBig{display:block;font-weight:700;font-size:var(--tvH-big);font-variant-numeric:tabular-nums;letter-spacing:.01em;text-shadow:0 3px 0 rgba(0,0,0,.35);white-space:nowrap}
+.tvRound .tvBig{font-size:var(--tvH-roundBig)}
+.tvLine{display:block;margin-top:4px;font-weight:600;font-size:var(--tvH-line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tvLine:empty{display:none}
-.tvWarn{color:#ffc233}.tvAlarm{color:#ff8b98}
-.tvChain{display:inline-block;margin-top:8px;padding:4px 14px;border-radius:999px;background:#a78bfa;font-weight:700;font-size:1.1em}
+/* Warnings change shape and wording, not just hue: a ⚠ marker, and the alarm gets a solid plate. */
+.tvWarn{color:#ffd35c}.tvWarn::before,.tvAlarm::before{content:'\\26a0\\00a0'}
+.tvAlarm{color:#fff;background:#c2213a;border-radius:10px;padding:0 10px;display:inline-block;max-width:100%}
+.tvChain{display:inline-block;margin-top:6px;padding:2px 14px;border-radius:999px;background:#6d4fd6;font-weight:700;font-size:var(--tvH-chain)}
 .tvChain:empty{display:none}
 .tvPower{padding:14px 20px}
 .tvMeter{height:26px;border-radius:13px;background:rgba(255,255,255,.14);overflow:hidden;margin:8px 0 0}
@@ -3620,16 +3922,56 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .tvPower.ready .tvMeter i{background:linear-gradient(90deg,#ff5b6b,#ffc233,#3ecf72,#3f9dff,#a78bfa)}
 .tvInfo{background:rgba(9,26,54,.35);padding-top:88px}
 .tvInfo:not(.calm){visibility:hidden}
-.tvInfo .tvLine{font-size:.9em;line-height:1.35;color:#d7e8ff;white-space:pre-line}
+.tvInfo .tvLine{font-size:var(--tvH-info);line-height:1.3;color:#e6f0ff;white-space:pre-line}
 .tvCard{display:grid;grid-template-rows:auto 1fr auto;border-top:10px solid var(--accent,#fff)}
-.tvName{display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.7em}
-.tvName small{font-size:.5em;font-weight:600;color:#9fc4ff;letter-spacing:.1em;text-transform:uppercase}
+.tvName{display:flex;align-items:center;gap:14px;font-weight:700;font-size:var(--tvH-name);white-space:nowrap}
+.tvName small{font-size:var(--tvH-tag);font-weight:700;color:#cfe2ff;letter-spacing:.06em;text-transform:uppercase}
 .tvBalls{display:flex;align-items:center;gap:26px}
 .tvBall{display:block;flex:none;border-radius:50%;background-size:106% 106%;background-position:center}
 .tvBall.cur{width:118px;height:118px}.tvBall.next{width:66px;height:66px;opacity:.9}
-.tvBallLabel{font-size:.7em;color:#9fc4ff;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
-.tvCard .tvStatus{font-weight:700;font-size:1.05em}
-.tvCard.small .tvBall.cur{width:78px;height:78px}.tvCard.small .tvBall.next{width:46px;height:46px}.tvCard.small .tvName{font-size:1.3em}
+.tvBallLabel{font-size:var(--tvH-tag);color:#cfe2ff;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.tvCard .tvStatus{font-weight:700;font-size:var(--tvH-status);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tvCard.small{padding-top:10px;padding-bottom:10px}.tvCard.small .tvBall.cur{width:64px;height:64px}.tvCard.small .tvBall.next{width:40px;height:40px}.tvCard.small .tvName{font-size:var(--tvH-nameSmall)}
+/* Controller legend: bottom centre of the calibrated safe area, above every card and drawer. */
+.root.tvMode .tvPrompts{display:flex;position:absolute;z-index:9;left:calc(var(--tvSafeX) * var(--tvS));width:calc(var(--tvSafeW) * var(--tvS));bottom:calc(var(--tvSafeB) * var(--tvS));
+ justify-content:center;gap:.9em;pointer-events:none;font:700 calc(var(--tvH-prompt) * var(--tvS)) Fredoka,sans-serif;color:#fff}
+.root.tvMode .tvPrompts[hidden]{display:none}
+.tvPrompts>span{display:flex;align-items:center;gap:.35em;padding:.25em .6em;border-radius:999px;background:rgba(6,18,40,.88);box-shadow:0 0 0 2px rgba(255,255,255,.2);white-space:nowrap}
+.tvKey{display:inline-grid;place-items:center;width:1.35em;height:1.35em;border-radius:50%;background:#fff;color:#0b1f3d;font-size:.9em;box-shadow:inset 0 0 0 4px var(--kc,#fff)}
+.tvKey.kA{--kc:#3ecf72}.tvKey.kB{--kc:#ff5b6b}.tvKey.kX{--kc:#3f9dff}.tvKey.kY{--kc:#ffc233}
+/* Controller connect / disconnect notice, top centre (inside the safe area on the TV stage). */
+.padToast{position:absolute;z-index:9;left:50%;top:var(--chromeGap,10px);transform:translateX(-50%);padding:8px 16px;border-radius:999px;background:rgba(6,18,40,.9);color:#fff;
+ font:700 14px Fredoka,sans-serif;pointer-events:none;opacity:0;transition:opacity .25s;white-space:nowrap}
+.padToast.on{opacity:1}
+.root.tvMode .padToast{top:calc(var(--tvSafeY) * var(--tvS));left:calc((var(--tvSafeX) + var(--tvSafeW) / 2) * var(--tvS));font-size:calc(var(--tvH-toast) * var(--tvS));padding:calc(12px * var(--tvS)) calc(28px * var(--tvS))}
+/* Screen Fit: the whole stage, darkened outside the calibrated safe rect, with bright corner
+   marks on its corners. Everything is logical px on the 1920x1080 layer. */
+.screenFit{display:none}
+.root.tvMode .overlay.screenFit{padding:0;background:none;backdrop-filter:none;z-index:8}
+.sfStage{position:absolute;left:0;top:0;width:1920px;height:1080px;transform:scale(var(--tvS));transform-origin:0 0;font-family:Fredoka,sans-serif}
+.sfFrame{position:absolute;left:var(--tvSafeX);top:var(--tvSafeY);width:var(--tvSafeW);height:var(--tvSafeH);box-sizing:border-box;border:4px dashed rgba(255,255,255,.75);
+ box-shadow:0 0 0 2400px rgba(4,12,28,.72)}
+.sfCorner{position:absolute;width:120px;height:120px;border:0 solid #ffc233;filter:drop-shadow(0 0 3px #000)}
+.sfCorner.tl{left:-4px;top:-4px;border-width:14px 0 0 14px}.sfCorner.tr{right:-4px;top:-4px;border-width:14px 14px 0 0}
+.sfCorner.bl{left:-4px;bottom:-4px;border-width:0 0 14px 14px}.sfCorner.br{right:-4px;bottom:-4px;border-width:0 14px 14px 0}
+.sfEdge{position:absolute;padding:6px 16px;border-radius:12px;background:rgba(6,18,40,.9);color:#cfe2ff;font-weight:700;font-size:var(--tvH-label);white-space:nowrap;box-shadow:0 0 0 3px rgba(255,255,255,.2)}
+.sfEdge.sel{background:#ffc233;color:#0b1f3d}
+.sfEdge[data-e=top]{top:24px;left:50%;transform:translateX(-50%)}.sfEdge[data-e=bottom]{bottom:calc(var(--tvPromptH) + 12px);left:50%;transform:translateX(-50%)}
+.sfEdge[data-e=left]{left:24px;top:50%;transform:translateY(-50%)}.sfEdge[data-e=right]{right:24px;top:50%;transform:translateY(-50%)}
+.screenFit[data-edge=top] .sfFrame{border-top:10px solid #ffc233}.screenFit[data-edge=bottom] .sfFrame{border-bottom:10px solid #ffc233}
+.screenFit[data-edge=left] .sfFrame{border-left:10px solid #ffc233}.screenFit[data-edge=right] .sfFrame{border-right:10px solid #ffc233}
+.sfPanel{position:absolute;left:calc(var(--tvSafeX) + var(--tvSafeW) / 2);top:calc(var(--tvSafeY) + var(--tvSafeH) / 2);transform:translate(-50%,-50%);width:980px;box-sizing:border-box;
+ padding:36px 44px;border-radius:32px;background:#fff;color:#17335c;text-align:center;font-size:var(--tvH-prompt);box-shadow:0 30px 80px rgba(0,0,0,.5)}
+.sfPanel h1{margin:0 0 8px;font-size:calc(var(--tvM-title) * var(--tvMenuScale))}
+.sfHelp{margin:0 0 24px;color:#3d5f86}
+.sfEdges{justify-content:center;flex-wrap:wrap;gap:10px}
+.sfPanel .seg button{font-size:var(--tvH-prompt);padding:8px 20px;border-radius:14px}
+.sfAdjust{display:flex;align-items:center;justify-content:center;gap:20px;margin:26px 0 8px}
+.sfStep{border:0;border-radius:16px;padding:12px 24px;font:700 var(--tvH-prompt) Fredoka,sans-serif;background:#eef5fd;color:#2b4a70;cursor:pointer}
+.sfPanel input.sfRange{width:420px;height:40px}
+.sfValue{font-weight:700;margin:6px 0 18px}
+.sfActions{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:16px}
+.sfActions .btn{margin:0;font-size:calc(var(--tvM-button) * var(--tvMenuScale));padding:14px}
 </style>
 <div class="root">
   <div class="gameCol">
@@ -3650,10 +3992,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h1>Bubble Together</h1><p class="sub">Play together on one device or live across different devices.</p>
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
       <div class="homeActions"><button class="btn primary createOnline">Create online room</button>
-      <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code"></div>
-      <button class="btn ghost localPlay">Local play</button></div><div class="formError"></div>
+      <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code" data-pad-chars="0123456789"></div>
+      <button class="btn ghost localPlay" data-tv-default>Local play</button></div><div class="formError"></div>
       <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
       <button class="btn primary tvOnly tvFullscreen">\u26f6 Play fullscreen</button>
+      <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
     </div></div>
     <div class="overlay lobby" style="display:none"><div class="card lobbyCard">
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
@@ -3700,9 +4043,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <button class="btn primary start">Start playing</button>
     </div></div>
     <div class="overlay pause" style="display:none"><div class="card" style="text-align:center">
-      <h1>Paused</h1><p class="sub">press P or the button to resume</p>
+      <h1>Paused</h1><p class="sub pauseSub">press P or the button to resume</p>
       <button class="btn primary resume">Resume</button>
       <button class="btn ghost tvOnly tvFullscreen">\u26f6 Fullscreen</button>
+      <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
       <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
     </div></div>
     <div class="overlay levelUp" style="display:none"><div class="card">
@@ -3718,13 +4062,27 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <h3 class="hsTitle">High scores</h3>
         <div class="hsEntry" style="display:none">
           <span class="hsPrompt">New high score! Enter your initials</span>
-          <div class="hsSlots"><input class="hsIn" maxlength="3" autocomplete="off" spellcheck="false" aria-label="Initials"><button class="btn primary hsSave">Save</button></div>
+          <div class="hsSlots"><input class="hsIn" maxlength="3" autocomplete="off" spellcheck="false" aria-label="Initials" data-pad-chars="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"><button class="btn primary hsSave">Save</button></div>
         </div>
         <div class="hsList"></div>
         <div class="hsNote"></div>
       </div>
       <button class="btn primary again">Play again</button>
     </div></div>
+    <div class="overlay screenFit" style="display:none"><div class="sfStage">
+      <div class="sfFrame"><i class="sfCorner tl"></i><i class="sfCorner tr"></i><i class="sfCorner bl"></i><i class="sfCorner br"></i>
+        <span class="sfEdge" data-e="top"></span><span class="sfEdge" data-e="right"></span><span class="sfEdge" data-e="bottom"></span><span class="sfEdge" data-e="left"></span></div>
+      <div class="sfPanel" role="dialog" aria-label="Screen Fit">
+        <h1>Screen Fit</h1>
+        <p class="sfHelp">Move the edges until all four corner marks are fully visible on your TV.</p>
+        <div class="seg sfEdges"><button data-e="all">All edges</button><button data-e="top">Top</button><button data-e="right">Right</button><button data-e="bottom">Bottom</button><button data-e="left">Left</button></div>
+        <div class="sfAdjust"><button class="sfStep" data-d="-1" aria-label="Move edge out">\u25c0 Out</button><input type="range" class="sfRange" aria-label="Edge inset"><button class="sfStep" data-d="1" aria-label="Move edge in">In \u25b6</button></div>
+        <div class="sfValue"></div>
+        <div class="sfActions"><button class="btn ghost sfReset">Reset</button><button class="btn ghost sfCancel">Cancel</button><button class="btn primary sfSave">Save</button></div>
+      </div>
+    </div></div>
+    <div class="tvPrompts tvOnly" hidden></div>
+    <div class="padToast" role="status" aria-live="polite"></div>
   </div>
   <div class="side"></div>
 </div>`;
@@ -3740,8 +4098,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.endEl = sh.querySelector('.end');
     this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');
+    this.screenFitEl = sh.querySelector('.screenFit');
+    this.promptsEl = sh.querySelector('.tvPrompts');
+    this.toastEl = sh.querySelector('.padToast');
     this.applyTouchStyle();
-    sh.querySelector('.localPlay').onclick = () => { this.tvFullscreenNudge(); this.online=false; this.homeEl.style.display='none'; this.showTutorial(); };
+    sh.querySelector('.localPlay').onclick = () => { this.tvFullscreenNudge(); this.online=false; this.homeEl.style.display='none'; this.showTutorial(); this._tutBack = 'home'; };
     sh.querySelector('.createOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('create'); };
     sh.querySelector('.joinOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('join'); };
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));
@@ -3771,6 +4132,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     fullscreenButton.onclick = () => this.toggleFullscreen();
     sh.querySelectorAll('.tvFullscreen').forEach(b => { b.onclick = () => { this._fsDeclined = false; this.enterFullscreen(); }; });
     sh.querySelectorAll('.card .dispSeg button').forEach(b => { b.onclick = () => this.setDisplayMode(b.dataset.d); });
+    sh.querySelectorAll('.card .sfOpen').forEach(b => { b.onclick = () => this.openScreenFit(); });
+    this.bindScreenFit();
     document.addEventListener('fullscreenchange', syncFullscreenButton);
     document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
     this._fullscreenUnbind = () => {
@@ -3918,6 +4281,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if (tv !== !!this.tvActive) {
       this.tvActive = tv; this.tvLay = null;
       root.classList.toggle('tvMode', tv);
+      if (!tv) this.closeScreenFit(false); // calibration is a TV screen; leaving TV cancels it
     }
     return tv;
   }
@@ -3953,18 +4317,26 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   tvPlayerCount() {
     return this.online || this.settings.mode !== 'battle' ? ((this.players || []).length || this.settings.players) : this.settings.players;
   }
+  // The Screen Fit in force: the draft while the calibration screen is open, else the saved one.
+  screenFitNow() { return this._fitDraft || this.settings.screenFit || TV.screenFit; }
   relayoutTv() {
-    const root = this.rootEl, col = this.gameColEl;
-    const st = tvStage(root.clientWidth || TV.logicalW, root.clientHeight || TV.logicalH);
+    const root = this.rootEl, col = this.gameColEl, fit = this.screenFitNow();
+    const st = tvStage(root.clientWidth || TV.logicalW, root.clientHeight || TV.logicalH, TV, fit);
     const n = this.tvPlayerCount(), key = tvLayoutKey(this.settings.mode, n);
-    const lay = this.tvLay = tvLayout(key, W / this.H, n);
-    lay.n = n; lay.H = this.H;
+    const lay = this.tvLay = tvLayout(key, W / this.H, n, TV, fit);
+    lay.n = n; lay.H = this.H; lay.fit = JSON.stringify(fit);
     root.classList.remove('wideLayout');
     col.style.width = st.w + 'px'; col.style.height = st.h + 'px';
     const set = (k, v) => root.style.setProperty(k, String(v));
     set('--tvS', st.scale.toFixed(5)); set('--tvX', st.x.toFixed(1) + 'px'); set('--tvY', st.y.toFixed(1) + 'px');
     set('--tvHudS', TV.hudScale); set('--tvMenuScale', TV.menuScale); set('--tvMenuK', (st.scale * TV.menuScale).toFixed(5));
-    set('--tvSafeX', lay.safe.x + 'px'); set('--tvSafeY', lay.safe.y + 'px'); set('--tvSafeH', lay.safe.h + 'px'); set('--tvChrome', TV.chrome + 'px');
+    const sf = lay.safe;
+    set('--tvSafeX', sf.x + 'px'); set('--tvSafeY', sf.y + 'px'); set('--tvSafeW', sf.w + 'px'); set('--tvSafeH', sf.h + 'px');
+    set('--tvSafeR', (TV.logicalW - sf.x - sf.w) + 'px'); set('--tvSafeB', (TV.logicalH - sf.y - sf.h) + 'px'); set('--tvChrome', TV.chrome + 'px'); set('--tvPromptH', TV.promptH + 'px');
+    // Couch type: HUD sizes are logical px; menu sizes are divided by menuScale because the
+    // cards are scaled by it, so what reaches the screen is exactly the table's value.
+    for (const [k, v] of Object.entries(TV.hudType)) set('--tvH-' + k, Math.max(TV.minHudFontPx, v) + 'px');
+    for (const [k, v] of Object.entries(TV.menuType)) set('--tvM-' + k, (Math.max(TV.minMenuFontPx, v) / TV.menuScale).toFixed(2) + 'px');
     for (const [name, r] of [['pf', lay.playfield], ['pad', lay.pad], ['info', lay.info]]) {
       set(`--${name}X`, r.x.toFixed(1) + 'px'); set(`--${name}Y`, r.y.toFixed(1) + 'px');
       set(`--${name}W`, r.w.toFixed(1) + 'px'); set(`--${name}H`, r.h.toFixed(1) + 'px');
@@ -4009,7 +4381,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   syncTvHud() {
     if (!this.tvActive) return;
     const lay = this.tvLay, n = this.tvPlayerCount();
-    if (!lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)) { this.relayoutTv(); return; }
+    if (!lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)
+      || lay.fit !== JSON.stringify(this.screenFitNow())) { this.relayoutTv(); return; }
     if (!lay.hud) return;
     const sh = this.shadowRoot, cache = this._tvCache || (this._tvCache = new Map());
     const put = (el, prop, v) => { const k = cache.get(el) || {}; if (k[prop] === v) return; k[prop] = v; cache.set(el, k);
@@ -4318,6 +4691,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Display</span><div class="seg dispSeg">
   <button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">TV: a 16:9 couch layout with a big HUD and controller menus · auto picks it for a big widescreen driven by a gamepad · saved on this device</div>
+<button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
 <div class="roomOwned">
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
   <button data-g="1">Full path</button><button data-g="0.5">Short</button><button data-g="0.25">Tiny</button></div></div>
@@ -4404,6 +4778,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     segWire('.sndSeg', null, b => { S.sound = +b.dataset.v === 1; if (S.sound) this.ensureAudio(); });
     segWire('.amSeg', null, b => { S.aimMode = b.dataset.am; this.applyTouchStyle(); this.saveLocalPrefs(); });
     el.querySelectorAll('.dispSeg button').forEach(b => { b.onclick = () => this.setDisplayMode(b.dataset.d); });
+    el.querySelector('.sfOpen').onclick = () => this.openScreenFit();
     const slider = (cls, fmt, set) => { const s = el.querySelector(cls);
       s.oninput = () => { set(parseFloat(s.value)); syncAll(); }; };
     slider('.rl', 0, v => S.reload = v);

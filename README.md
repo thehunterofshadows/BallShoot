@@ -46,8 +46,19 @@ controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Us
 fullscreen** for the full effect; leaving fullscreen keeps TV mode. Gamepads work in every
 display mode: stick or d-pad aims, A fires, X passes, Y fires Team Power, Start pauses, Back
 opens settings, and in menus the stick moves focus, A presses and B backs out. Auto chooses TV
-for a large widescreen with a gamepad connected. Check the layout with
-`docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
+for a large widescreen with a gamepad connected.
+
+In TV mode every menu works from the couch: the d-pad or stick moves focus to the nearest
+control in that direction (up / down wrap), each screen opens on a sensible default, **A**
+confirms and **B** always goes back one step (cancel, close, resume) — the keyboard mirrors
+it with the arrow keys, Enter and Escape — and a button legend runs along the bottom. Room
+codes and high-score initials can be entered arcade-style (up / down picks a character).
+Controllers keep their player slot; if one disconnects its launcher stops turning and local
+play pauses until it is back. **Screen Fit…** (home, pause or settings) calibrates overscan:
+move all edges or each edge in or out until the four corner marks are visible, then Save
+(Reset returns to the 5% default). It is saved on the device and every score, name, prompt
+and menu stays inside it; the background still fills the screen and the field only scales.
+Check the layout with `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
 
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields

@@ -1,5 +1,6 @@
 /* Renders TV mode at 1080p, 4K and two off-16:9 screens, and checks that the composition
-   is the same logical picture everywhere with every critical box inside the safe area.
+   is the same logical picture everywhere with every critical box inside the safe area; then
+   repeats at 4K with a calibrated Screen Fit and opens the Screen Fit screen.
    Run: docker compose run --rm --no-deps screens node scripts/tv-probe.mjs */
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -85,6 +86,65 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
   const a = JSON.parse(ref), b = JSON.parse(key(s.probe));
   const drift = a.flat().some((r, i) => { const o = b.flat()[i]; return !o || ['x','y','w','h'].some(k => Math.abs(r[k] - o[k]) > 2); });
   if (drift) { failed = true; console.log(`${s.name}: composition differs from ${shots[0].name}`); }
+}
+
+/* Issue #7: a calibrated Screen Fit moves every critical box, the Screen Fit screen and the
+   controller legend render, focus starts on each screen's default, and no critical HUD text
+   is smaller than TV.minHudFontPx (28 logical px). */
+{
+  const fit = { top: 0.1, right: 0, bottom: 0.02, left: 0.08 };
+  const safe = { x: Math.round(1920 * fit.left), y: Math.round(1080 * fit.top) };
+  safe.r = 1920 - Math.round(1920 * fit.right); safe.b = 1080 - Math.round(1080 * fit.bottom);
+  const context = await browser.newContext({ viewport: { width: 3840, height: 2160 }, deviceScaleFactor: 1 });
+  await context.addInitScript(f => localStorage.setItem('bt_prefs', JSON.stringify({ displayMode: 'tv', screenFit: f })), fit);
+  const page = await context.newPage();
+  const errors = []; page.on('pageerror', e => errors.push(String(e)));
+  await page.goto(base, { waitUntil: 'load' });
+  await page.waitForFunction(() => document.querySelector('coop-bubbles')?.shadowRoot?.querySelector('canvas')?.width > 0, null, { timeout: 15000 });
+  await page.waitForTimeout(400);
+  const home = await page.evaluate(() => { const sh = document.querySelector('coop-bubbles').shadowRoot;
+    return { focus: sh.activeElement?.className || '', prompts: !sh.querySelector('.tvPrompts').hidden, text: sh.querySelector('.tvPrompts').textContent }; });
+  await page.screenshot({ path: join(outDir, 'tv-fit-home.png') });
+  await page.evaluate(() => { const g = document.querySelector('coop-bubbles');
+    g.settings.players = 2; g.settings.human = [true, true, false, false]; g.resetGame(); });
+  const game = page.locator('coop-bubbles');
+  await game.locator('.localPlay').click();
+  await game.locator('.start').click();
+  await page.waitForTimeout(900);
+  const play = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles'), sh = g.shadowRoot, col = sh.querySelector('.gameCol').getBoundingClientRect(), s = col.width / 1920;
+    const rel = el => { const r = el.getBoundingClientRect();
+      return { q: el.className, x: Math.round((r.left - col.left) / s), y: Math.round((r.top - col.top) / s), r: Math.round((r.right - col.left) / s), b: Math.round((r.bottom - col.top) / s) }; };
+    const fonts = ['.tvScoreVal', '.tvRoundVal', '.tvRoundLabel', '.tvWho', '.tvStatus', '.tvPush']
+      .flatMap(q => [...sh.querySelectorAll(q)]).filter(el => el.textContent)
+      .map(el => ({ q: el.className, px: parseFloat(getComputedStyle(el).fontSize) }));
+    const pf = sh.querySelector('canvas').getBoundingClientRect();
+    return { critical: ['.tvScore', '.tvRound', '.tvPower', '.fullscreenButton', '.gear', '.tvCard'].flatMap(q => [...sh.querySelectorAll(q)]).map(rel),
+      fonts, aspect: pf.width / pf.height, world: 640 / g.H };
+  });
+  await page.screenshot({ path: join(outDir, 'tv-fit-play.png') });
+  await page.keyboard.press('p');
+  await page.waitForTimeout(200);
+  await game.locator('.pause .sfOpen').click();
+  await page.waitForTimeout(300);
+  const sf = await page.evaluate(() => { const sh = document.querySelector('coop-bubbles').shadowRoot, col = sh.querySelector('.gameCol').getBoundingClientRect(), s = col.width / 1920;
+    const f = sh.querySelector('.sfFrame').getBoundingClientRect();
+    return { focus: sh.activeElement?.className || '', text: sh.querySelector('.tvPrompts').textContent,
+      frame: { x: Math.round((f.left - col.left) / s), y: Math.round((f.top - col.top) / s), r: Math.round((f.right - col.left) / s), b: Math.round((f.bottom - col.top) / s) } }; });
+  await page.screenshot({ path: join(outDir, 'tv-fit-screenfit.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  const closed = await page.evaluate(() => document.querySelector('coop-bubbles').shadowRoot.querySelector('.screenFit').style.display);
+  const outside = play.critical.filter(r => r.x < safe.x - 1 || r.y < safe.y - 1 || r.r > safe.r + 1 || r.b > safe.b + 1);
+  const small = play.fonts.filter(f => f.px < 28 - 0.5); // the HUD layer is authored in logical px and scaled whole
+  const frameOk = Math.abs(sf.frame.x - safe.x) <= 2 && Math.abs(sf.frame.y - safe.y) <= 2 && Math.abs(sf.frame.r - safe.r) <= 2 && Math.abs(sf.frame.b - safe.b) <= 2;
+  const ok = home.focus.includes('localPlay') && home.prompts && sf.focus.includes('sfRange') && /Cancel/.test(sf.text)
+    && frameOk && closed === 'none' && !outside.length && !small.length && Math.abs(play.aspect - play.world) < 0.01 && !errors.length;
+  if (!ok) failed = true;
+  console.log(`tv-fit    ${ok ? 'ok ' : 'BAD'} home focus ${home.focus} · prompts "${home.text}" · screen fit focus ${sf.focus} frame ${JSON.stringify(sf.frame)}` +
+    ` · field aspect ${play.aspect.toFixed(4)} (world ${play.world.toFixed(4)}) · min HUD font ${Math.min(...play.fonts.map(f => f.px))}px · fit prompts "${sf.text}"` +
+    (outside.length ? ` outside-fit ${JSON.stringify(outside)}` : '') + (small.length ? ` small ${JSON.stringify(small)}` : '') + (errors.length ? ` errors ${errors.join(' | ')}` : ''));
+  await context.close();
 }
 await browser.close();
 server.close();

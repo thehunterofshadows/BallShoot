@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **TV Mode for the couch** (#7). *Controller-first navigation:* the d-pad and stick move
+  focus spatially (sideways along a row, up / down between rows, wrapping vertically), each
+  screen opens on its default (Local play, Resume, Save…) and returning from the drawer
+  restores the previous focus; **A** confirms and **B** / Escape always go back one step, with
+  a letter-labelled button legend along the bottom of the safe area. Room codes and initials
+  take arcade-style character entry. Controllers keep a stable slot; a disconnect releases
+  that launcher's holds, pauses local play and shows a toast, and a reconnect never counts an
+  already-held button as a press. *Couch legibility:* TV type is its own table (`hudType`,
+  `menuType`) with minimums of 28 px for the HUD and 30 px for menus (at 1080p), heavy
+  weights, near-opaque plates and darker menu greys; focus adds a ▶ marker, selected choices a
+  ✓, and warnings a ⚠ symbol or solid plate, so no state is colour-only. *Screen Fit:* a new
+  calibration screen (home, pause or settings) shows corner marks on the safe edges and moves
+  all edges or each edge from 0–10% with a live preview, Reset (5% default), Save and Cancel;
+  it persists in `bt_prefs.screenFit` and drives the HUD, corner buttons, cards, drawer,
+  prompts and toast, while the stage art keeps the full viewport and the field scales without
+  distortion. All values live in the `TV` block (`screenFit`, `fit`, `minHudFontPx`,
+  `minMenuFontPx`, `hudType`, `menuType`, `controllerNavigation`, `promptH`).
+
 - New **TV / couch Display Mode** (#6). A Display setting — **Auto / Desktop / TV** on the
   home card, the pause card and the settings panel, saved with the device prefs — switches
   presentation only; rules, world and input streams are unchanged. TV composes the game on a

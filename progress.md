@@ -1,26 +1,22 @@
-# Issue #6 - TV Mode: couch display system and 2-player co-op layout
+# Issue #7 - TV Mode: controller navigation, couch readability, screen-fit calibration
 
 **Status:** ✅ Complete
 
 ## Implementation Plan
 
-- [x] Review issue #6, AGENTS.md and the layout, render, HUD, input, fullscreen and settings code
-- [x] Centralized `TV` config + pure helpers: `resolveDisplayMode`, `tvStage` (1920×1080 logical, letterbox, safe area), `TV_LAYOUTS` (coop2, coop, battle) and `tvLayoutKey`
-- [x] Display Mode setting (Auto / Desktop / TV) on the home card, pause card and side panel, persisted in `bt_prefs`
-- [x] TV stage in `measure`/`relayout`: `.tvMode` class, stage sizing, playfield rect, world height pinned to the layout, 16:9 background art
-- [x] TV HUD (DOM, logical px × hudScale): team score, round, row push, Team Power, P1/P2 cards with large loaded/next bubbles; secondary info only when not in active play; canvas co-op HUD and sfx log suppressed in TV
-- [x] Larger canvas launcher labels / next preview in TV
-- [x] Couch menus: cards, drawer and chrome scaled by menuScale, strong focus states, larger rows
-- [x] Fullscreen: obvious TV fullscreen action, request only on user gestures, TV survives exit
-- [x] Gamepad support: per-human aim/fire/pass/power/pause in play, focus navigation + A/B in menus
-- [x] Tests: `tests/tv-mode.test.js` (mode resolution, 1080p/4K composition, safe area, non-16:9, layouts, persistence/wiring)
-- [x] Run `docker compose run --rm --no-deps test` (147/147 pass)
+- [x] Review issue #7, AGENTS.md and the existing TV block, gamepad/menu code, TV CSS and prefs
+- [x] Centralized config: `TV.screenFit` per-edge defaults (5%), fit range, `minHudFontPx`/`minMenuFontPx`, HUD/menu type tables, `controllerNavigation`; pure helpers `normalizeScreenFit`, fit-aware `tvStage`/`tvLayout`, `spatialPick`
+- [x] Screen Fit persisted in `bt_prefs`; relayoutTv applies it to HUD slots, corner buttons, menus, drawer, prompts
+- [x] Screen Fit calibration overlay (corner markers, all/per-edge, live preview, reset, save/cancel) reachable from home, pause and settings
+- [x] Controller navigation: spatial d-pad/stick focus, default selection per screen, consistent A/B (+ Escape), stable pad slots, disconnect/reconnect handling (release holds, auto-pause, toast), controller prompt bar
+- [x] Couch legibility: TV type table applied to HUD and menus, stronger contrast, non-colour state cues (focus marker, selected segments, warnings)
+- [x] Tests in `tests/tv-mode.test.js` for fit normalization, calibrated layouts, typography minimums, spatial nav, pad slots/disconnect, persistence/wiring
+- [x] Run `docker compose run --rm --no-deps test` (160/160 pass)
+- [x] Rebuild with `./rebuild.sh` (build `2026-09-27 18:05 UTC`, `coop-bubbles.js?v=9e9340040661`) and check TV in headless Chromium via `scripts/tv-probe.mjs` (default at 1080p/4K/21:9/4:3 plus a calibrated 4K fit and the Screen Fit screen) and the desktop screenshot matrix
 - [x] Update CHANGELOG and README
-- [x] Rebuild with `./rebuild.sh` (build `2026-09-27 17:49 UTC`, `coop-bubbles.js?v=323ca309f2df`) and check TV mode in headless Chromium at 1080p, 4K, 21:9 and 4:3 (`scripts/tv-probe.mjs`: identical logical composition, all critical UI in the safe area, no page errors) plus the desktop screenshot matrix (unchanged)
-- [x] Review the final diff, commit referencing #6 and push `dev`
+- [x] Review final diff, commit referencing #7 and push `dev`
 
 ## Notes
 
-- Battle keeps its own canvas HUD strip in TV; it gets the stage, safe-area chrome, menu scaling and controllers but no dedicated framing yet (`TV_LAYOUTS.battle`). 3-4 player co-op uses the generic `coop` layout.
-- Auto picks TV only when a large near-16:9 screen has a gamepad connected or no pointer; browsers only report a gamepad after its first button press.
-- Gamepad input is not a browser user gesture, so fullscreen is only requested from clicks/taps/keys (the Play fullscreen button, choosing TV, or the clicks that start play).
+- Screen Fit is capped at 10% per edge; at that inset every layout still fits (cards shrink before overlapping the power/pad rows).
+- The optional display-name field and the custom-level editor still need a keyboard; room codes and initials support controller character entry.
