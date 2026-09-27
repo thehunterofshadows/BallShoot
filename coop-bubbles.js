@@ -1898,73 +1898,79 @@ class CoopBubbles extends HTMLElement {
     const rk = p.recoilT !== undefined ? clamp((this.now - p.recoilT) / 0.18, 0, 1) : 1;
     const rec = (1 - rk) * 7, aa = clamp(p.angle, -1.22, 1.22);
     const ox = -Math.sin(aa) * rec, oy = Math.cos(aa) * rec;
-    const size = 132, px = size * 0.499, py = size * 0.515;
-    const drawLayer = img => ctx.drawImage(img, -px, -py, size, size);
 
-    // The base stays planted while the upper assembly follows aim and recoil.
+    // V2 art is intentionally smaller and simpler. Each layer has its own authored
+    // pivot instead of sharing the old generic sprite center.
+    const size = 112;
+    const drawAt = (img, ax, ay) =>
+      ctx.drawImage(img, -ax * size, -ay * size, size, size);
+
+    // Plant the shadow/base. The upper assembly pivots around the loaded bubble.
     ctx.save();
     ctx.translate(x, cy);
-    ctx.globalAlpha = 0.55; drawLayer(shadow);
-    ctx.globalAlpha = 1; drawLayer(base);
+    ctx.globalAlpha = 0.38; drawAt(shadow, 0.5, 0.585);
+    ctx.globalAlpha = 1; drawAt(base, 0.5, 0.495);
     ctx.restore();
 
-    ctx.save();
-    ctx.translate(x + ox, cy + oy);
-    ctx.rotate(aa);
-    drawLayer(turret);
-    ctx.restore();
-    // Preserve the existing reload/pass feedback and keep the live bubble renderer
-    // authoritative for color, rainbow, bomb, swaps, and loading fallbacks.
-    if (p.reload > 0) {
-      const k = 1 - p.reload / this.settings.reload;
-      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4; ctx.globalAlpha = 0.9;
-      ctx.beginPath(); ctx.arc(x, cy, 42, -Math.PI/2, -Math.PI/2 + k * 6.283); ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
+    // Preserve pass/swap behavior, but draw the live bubbles underneath the metal
+    // rims so they look seated in the chamber instead of pasted on top.
     const pk = this.passFx && (p.i === this.passFx.a || p.i === this.passFx.b)
       ? (this.now - this.passFx.t) / PASS_FX : 9;
     const cur = pk < 1 ? null : p.cur;
     const pulse = pk < 1.6 ? 1 + Math.sin((pk - 1) / 0.6 * Math.PI) * 0.18
       : cur?.swapT && this.now - cur.swapT < 0.5
         ? 1 + Math.sin((this.now - cur.swapT) * 20) * 0.12 : 1;
-    if (pk < 1.8) {
-      ctx.save(); ctx.globalAlpha = clamp(1 - pk / 1.8, 0, 1);
-      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(x + ox, cy + oy, 34 + pk * 12, 0, 7); ctx.stroke();
-      ctx.restore();
-    }
+
     ctx.globalAlpha = p.reload > 0 ? 0.45 : 1;
     if (cur) this.drawBubble(ctx, x + ox, cy + oy, 18 * pulse,
       cur.kind, cur.special, false, false);
     ctx.globalAlpha = 1;
 
-    // Keep the real next bubble in the generated side hopper instead of baking a
-    // color into the launcher artwork.
     const next = p.next;
     const npulse = next?.swapT && this.now - next.swapT < 0.5
       ? 1 + Math.sin((this.now - next.swapT) * 20) * 0.12 : 1;
     if (next) {
-      const ldx = -0.1874 * size, ldy = -0.1348 * size;
+      const ldx = -0.282 * size, ldy = -0.243 * size;
       const ca = Math.cos(aa), sa = Math.sin(aa);
       const nx = x + ox + ldx * ca - ldy * sa;
       const ny = cy + oy + ldx * sa + ldy * ca;
-      this.drawBubble(ctx, nx, ny, 11 * npulse, next.kind, next.special, false, false);
+      this.drawBubble(ctx, nx, ny, 9.5 * npulse, next.kind, next.special, false, false);
     }
 
-    // The generated muzzle layer is presentation only and rides the same transform
-    // as the barrel for the first instant of recoil.
-    const age = p.recoilT === undefined ? 9 : this.now - p.recoilT;
-    if (ready(muzzle) && age >= 0 && age < 0.12) {
-      const k = age / 0.12, fx = 92;
-      ctx.save(); ctx.translate(x + ox, cy + oy); ctx.rotate(aa);
-      ctx.globalAlpha = (1 - k) * 0.82;
-      ctx.drawImage(muzzle, -fx / 2, -104, fx, fx);
+    // The rim, clamps, barrel and hopper rotate together and sit above the ammo.
+    ctx.save();
+    ctx.translate(x + ox, cy + oy);
+    ctx.rotate(aa);
+    drawAt(turret, 0.5, 0.585);
+    ctx.restore();
+
+    // Keep the gameplay feedback on top of the art where it remains readable.
+    if (p.reload > 0) {
+      const k = 1 - p.reload / this.settings.reload;
+      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(x, cy, 39, -Math.PI/2, -Math.PI/2 + k * 6.283); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (pk < 1.8) {
+      ctx.save(); ctx.globalAlpha = clamp(1 - pk / 1.8, 0, 1);
+      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x + ox, cy + oy, 31 + pk * 10, 0, 7); ctx.stroke();
       ctx.restore();
     }
 
-    // Keep the player badge/label so co-op identity remains as clear as before.
+    // Compact firing flash aligned to the authored barrel opening.
+    const age = p.recoilT === undefined ? 9 : this.now - p.recoilT;
+    if (ready(muzzle) && age >= 0 && age < 0.12) {
+      const k = age / 0.12, fx = 72;
+      ctx.save(); ctx.translate(x + ox, cy + oy); ctx.rotate(aa);
+      ctx.globalAlpha = (1 - k) * 0.78;
+      ctx.drawImage(muzzle, -fx * 0.5, -98, fx, fx);
+      ctx.restore();
+    }
+
+    // Player identity stays outside the machine so four launchers remain scannable.
     ctx.fillStyle = meta.accent; ctx.strokeStyle = meta.accent;
-    const iy = y + 12;
+    const iy = y + 20;
     ctx.lineWidth = 3;
     if (meta.icon === 'tri') {
       ctx.beginPath(); ctx.moveTo(x, iy - 9); ctx.lineTo(x + 9, iy + 7);
