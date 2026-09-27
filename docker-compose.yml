@@ -45,6 +45,7 @@ services:
       - ./index.html:/app/index.html:ro
       - ./nginx.conf:/app/nginx.conf:ro
       - ./Dockerfile:/app/Dockerfile:ro
+      - ./AGENTS.md:/app/AGENTS.md:ro
     network_mode: none
     command:
       - /bin/sh

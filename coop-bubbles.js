@@ -791,6 +791,43 @@ const aimTick = (p, dt, aimSpeed) => {
   const rate = base * (AIM_FINE + (1 - AIM_FINE) * k * k * (3 - 2 * k));
   p.angle = clamp(p.angle + dir * rate * dt, -AIM_MAX, AIM_MAX);
 };
+/* frame-pipeline:begin — how a presented frame is made. Animation reacts to gameplay;
+   gameplay never waits for animation. Each requestAnimationFrame callback runs
+
+     freshest input (pads polled now; key/pointer events already applied)
+     → controls + simulation, in equal steps no longer than 1/simHz
+     → visual effects → render the newest state → sync DOM HUD
+
+   Presentation follows the browser's own rAF cadence (60, 120, 144 Hz…) with no cap, and the
+   simulation only ever sees elapsed seconds, so gameplay speed is the same at any refresh
+   rate. Shots already subdivide their flight by distance, so the step bound is not about
+   collisions: it keeps curved motion (gravity, the aim ramp) landing in the same place at
+   60 and 144 Hz. 120 Hz does that measurably better than 60 (see tests/frame-pipeline);
+   240 is available through ?sim=240 for comparison, not assumed to lower latency. */
+const FRAME = {
+  simHz: 120,          // longest simulation step is 1/simHz
+  simHzRange: [60, 480],
+  maxFrameDt: 0.1,     // a longer gap (tab switch, long GC) is dropped, not fast-forwarded
+  perfSample: 0.25,    // seconds between diagnostics overlay refreshes
+};
+// Equal steps covering one presented frame's elapsed time.
+const simSteps = (dt, hz = FRAME.simHz) => {
+  if (!(dt > 0)) return { n: 0, h: 0 };
+  const d = Math.min(dt, FRAME.maxFrameDt), n = Math.max(1, Math.ceil(d * hz - 1e-6));
+  return { n, h: d / n };
+};
+const TRAIL_DT = 1 / 60; // a shot's trail keeps 16 samples this far apart at any frame rate
+const DISPLAY_HZ = [24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 180, 200, 240, 360];
+/* Presentation cadence from recent rAF intervals (ms). The median ignores the odd hitch, and
+   the rate snaps to a known display refresh only when it is within 5% of one. */
+const cadence = intervals => {
+  const v = intervals.filter(x => x > 0 && Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return { fps: 0, hz: 0 };
+  const mid = v.length >> 1, med = v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2, fps = 1000 / med;
+  const near = DISPLAY_HZ.reduce((a, b) => Math.abs(b - fps) < Math.abs(a - fps) ? b : a);
+  return { fps, hz: Math.abs(near - fps) / near <= 0.05 ? near : Math.round(fps) };
+};
+/* frame-pipeline:end */
 /* Quantised to 20 virtual units so a drifting viewport — browser chrome sliding away,
    a fold animation mid-frame — cannot churn the world height on every resize tick. */
 const geom = vh => {
@@ -953,6 +990,11 @@ class CoopBubbles extends HTMLElement {
     this.resetGame();
     this.state = 'home';
     this.bindInput();
+    this.simHz = FRAME.simHz;
+    let q = null; try { q = new URLSearchParams(location.search); } catch (_) {}
+    if (q && Number(q.get('sim')) > 0) this.simHz = clamp(Math.round(Number(q.get('sim'))), ...FRAME.simHzRange);
+    if (q && q.has('perf')) this.perfToggle(true);
+    this.warmAssets();
     this._raf = requestAnimationFrame(t => this.frame(t));
     try {
       const saved=JSON.parse(localStorage.getItem('bt_online_session')||'null');
@@ -1220,7 +1262,11 @@ class CoopBubbles extends HTMLElement {
     const lim = 2 * R * 0.88;
     for (let fi = this.flights.length - 1; fi >= 0; fi--) {
       const f = this.flights[fi];
-      f.trail.push({ x: f.x, y: f.y }); if (f.trail.length > 16) f.trail.shift();
+      // The trail is presentation: sampled on its own clock, so its length on screen does not
+      // depend on how many simulation steps a frame took.
+      f.trailT = (f.trailT ?? TRAIL_DT) + dt;
+      if (f.trailT >= TRAIL_DT) { f.trailT = Math.min(f.trailT - TRAIL_DT, TRAIL_DT);
+        f.trail.push({ x: f.x, y: f.y }); if (f.trail.length > 16) f.trail.shift(); }
       f.bounceCd -= dt;
       let dist = Math.hypot(f.vx, f.vy) * dt, landed = false;
       while (dist > 0 && !landed) {
@@ -1867,23 +1913,62 @@ class CoopBubbles extends HTMLElement {
   }
 
   /* ---------- update loop ---------- */
+  /* The frame pipeline (see frame-pipeline above): read input, step the simulation, render
+     the state that input produced, and only then touch the DOM. */
   frame(t) {
     this._raf = requestAnimationFrame(tt => this.frame(tt));
-    const dt = Math.min(0.033, (t - (this._t || t)) / 1000); this._t = t;
+    const perf = this._perf, t0 = perf ? performance.now() : 0;
+    const dt = Math.max(0, (t - (this._t || t)) / 1000); this._t = t;
     this.pollGamepads();
+    const { n, h } = simSteps(dt, this.simHz || FRAME.simHz);
+    const battle = !!(this.battle && this.settings.mode === 'battle');
+    for (let s = 0; s < n; s++) {
+      if (battle) {
+        if (!this.online && this.state === 'play') this.battleUpdate(h);
+        else if (this.online && ['play','paused','spectating','won','lost'].includes(this.state)) this.updateOnlineBattleVisuals(h);
+        else break;
+      } else if (this.state === 'play' && !this.online) this.update(h);
+      else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(h);
+      else break;
+      if (perf) perf.steps++;
+    }
+    const t1 = perf ? performance.now() : 0;
+    if (battle) this.battleRender(); else this.render();
+    const t2 = perf ? performance.now() : 0;
     this.syncMenuFocus();
     this.syncTvHud();
-    if (this.battle && this.settings.mode === 'battle') {
-      if (!this.online && this.state === 'play') this.battleUpdate(dt);
-      else if (this.online && ['play','paused','spectating','won','lost'].includes(this.state)) this.updateOnlineBattleVisuals(dt);
-      this.battleRender();
-      return;
-    }
-    if (this.state === 'play' && !this.online) this.update(dt);
-    else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(dt);
-    this.syncPassButton();
-    this.syncPowerButton();
-    this.render();
+    if (!battle) { this.syncPassButton(); this.syncPowerButton(); }
+    if (perf) this.perfFrame(t, t0, t1, t2);
+  }
+  /* ---------- development diagnostics ----------
+     ?perf (or F9) shows what the display is really doing: the measured rAF cadence and the
+     refresh it matches, frame time, input → render (event timestamp to the end of the frame
+     that drew it, so scanout is not included), simulation and render time, and the step
+     rate. Off, the frame loop pays one null check. */
+  perfToggle(on = !this._perf) {
+    if (!on) { this._perf = null; if (this.perfEl) this.perfEl.style.display = 'none'; return; }
+    this._perf = { gaps: [], steps: 0, frames: 0, sim: 0, draw: 0, work: 0, lat: [], inputAt: 0, seen: 0, last: 0, shownAt: 0 };
+    if (this.perfEl) { this.perfEl.style.display = 'block'; this.perfEl.textContent = 'measuring…'; }
+  }
+  perfInput(ts) { if (this._perf) this._perf.inputAt = Math.max(this._perf.inputAt, ts || performance.now()); }
+  perfFrame(t, t0, t1, t2) {
+    const P = this._perf, end = performance.now();
+    if (P.last) { P.gaps.push(t - P.last); if (P.gaps.length > 120) P.gaps.shift(); }
+    P.last = t; P.frames++; P.sim += t1 - t0; P.draw += t2 - t1; P.work += end - t0;
+    if (P.inputAt > P.seen) { P.lat.push(end - P.inputAt); P.seen = P.inputAt; if (P.lat.length > 30) P.lat.shift(); }
+    const span = (t - (P.shownAt || t)) / 1000;
+    if (!P.shownAt) P.shownAt = t;
+    if (span < FRAME.perfSample || !this.perfEl) return;
+    const { fps, hz } = cadence(P.gaps), f = P.frames || 1, ms = x => x.toFixed(2) + ' ms';
+    const lat = P.lat.length ? P.lat.reduce((a, b) => a + b, 0) / P.lat.length : null;
+    this.perfEl.textContent = [
+      `present ${fps.toFixed(1)} fps · ~${hz} Hz`,
+      `frame   ${fps ? ms(1000 / fps) : '–'} (work ${ms(P.work / f)})`,
+      `input→render ${lat === null ? '–' : ms(lat)}`,
+      `sim     ${ms(P.sim / f)} · ${Math.round(P.steps / span)} steps/s (≤${this.simHz || FRAME.simHz} Hz)`,
+      `render  ${ms(P.draw / f)}`,
+    ].join('\n');
+    Object.assign(P, { frames: 0, steps: 0, sim: 0, draw: 0, work: 0, shownAt: t });
   }
   /* Own-launcher prediction. The server runs the same aimTick over the same input stream, so
      while the finger is down the two differ only by the round trip: the snapshot angle is
@@ -2032,9 +2117,20 @@ class CoopBubbles extends HTMLElement {
     g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + d);
     o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + d + 0.02);
   }
+  /* Every effect is synthesised at the moment of its gameplay event (fire, bounce, attach,
+     pop…), so there is nothing to fetch or decode; the only latency to remove is opening the
+     context, which the first gesture of any kind does, asking for interactive latency. */
   ensureAudio() {
-    if (!this._ac) { try { this._ac = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {} }
-    if (this._ac && this._ac.state === 'suspended') this._ac.resume();
+    if (!this._ac) { const AC = window.AudioContext || window.webkitAudioContext;
+      try { this._ac = new AC({ latencyHint: 'interactive' }); } catch (e) { try { this._ac = new AC(); } catch (_) {} } }
+    if (this._ac && this._ac.state === 'suspended') this._ac.resume().catch(() => {});
+  }
+  /* Decode every gameplay sprite and load the canvas font before play, so the first bomb,
+     rainbow or launcher frame is not the one that hitches on decode or a font swap. */
+  warmAssets() {
+    for (const img of [...Object.values(BUBBLE_SPRITES), ...Object.values(LAUNCHER_SPRITES)])
+      if (img && img.decode) img.decode().catch(() => {});
+    try { if (document.fonts && document.fonts.load) for (const w of [400, 500, 600, 700]) document.fonts.load(w + ' 20px Fredoka').catch(() => {}); } catch (_) {}
   }
 
   /* ---------- gamepads ----------
@@ -2076,6 +2172,7 @@ class CoopBubbles extends HTMLElement {
       const h = down('left') || ax < -GAMEPAD.dead ? -1 : down('right') || ax > GAMEPAD.dead ? 1 : 0;
       const v = down('up') || ay < -GAMEPAD.dead ? -1 : down('down') || ay > GAMEPAD.dead ? 1 : 0;
       const now = performance.now() / 1000;
+      if (this._perf && (h !== was.h || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
       let nav = was.nav, navT = was.navT;
       if (hit('start')) this.padStart();
       else if (hit('back')) this.toggleSide();
@@ -2506,9 +2603,20 @@ class CoopBubbles extends HTMLElement {
       if(this.battle&&this.settings.mode==='battle'&&!this.online){const hp=this.battle.human.player;if(['a','arrowleft','j'].includes(k))hp.held.l=false;if(['d','arrowright','l'].includes(k))hp.held.r=false;return;}
       if(this.online){if(['a','arrowleft','j'].includes(k))this.setOnlineHeld('l',false);if(['d','arrowright','l'].includes(k))this.setOnlineHeld('r',false);return;} const am = keymap[k];
       if (am) { const p = this.players[am[0]]; if (p) p.held[am[1]] = false; } };
+    /* Capture-phase, ahead of every handler: the first gesture of any kind opens the audio
+       context (so the first shot is not the one that pays for it), and the diagnostics
+       overlay learns when input arrived. F9 toggles that overlay. */
+    const seen = e => {
+      if (e.type !== 'pointermove' && (!this._ac || this._ac.state === 'suspended')) this.ensureAudio();
+      this.perfInput(e.timeStamp);
+      if (e.type === 'keydown' && e.key === 'F9') { this.perfToggle(); e.preventDefault(); }
+    };
+    const seenOpts = { capture: true, passive: false };
+    for (const type of ['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup']) window.addEventListener(type, seen, seenOpts);
     window.addEventListener('keydown', kd);
     window.addEventListener('keyup', ku);
-    this._unbind = () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); };
+    this._unbind = () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku);
+      for (const type of ['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup']) window.removeEventListener(type, seen, seenOpts); };
   }
   togglePause() {
     if (this.online) {
@@ -3681,6 +3789,8 @@ class CoopBubbles extends HTMLElement {
     sh.innerHTML = `
 <style>
 :host{display:block;width:100%;height:100%;font-family:'Fredoka',sans-serif;color:#17335c}
+/* Dev diagnostics: fixed box, text-only updates a few times a second, never in the flow. */
+.perfHud{display:none;position:absolute;left:8px;top:8px;z-index:99;margin:0;padding:6px 9px;border-radius:8px;background:rgba(10,20,40,.78);color:#bfffcf;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;white-space:pre;pointer-events:none;contain:layout paint}
 :host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#cfe6ff}
 *{box-sizing:border-box}
 .root{--sideW:290px;--rootGap:20px;position:relative;display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);align-items:center;justify-content:center;gap:var(--rootGap);overflow:hidden;
@@ -4085,6 +4195,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <div class="padToast" role="status" aria-live="polite"></div>
   </div>
   <div class="side"></div>
+  <pre class="perfHud" aria-hidden="true"></pre>
 </div>`;
     this.canvas = sh.querySelector('canvas');
     this.ctx = this.canvas.getContext('2d');
@@ -4095,6 +4206,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl = sh.querySelector('.lobby');
     this.reconnectEl = sh.querySelector('.reconnect');
     this.pauseEl = sh.querySelector('.pause');
+    this.perfEl = sh.querySelector('.perfHud');
     this.endEl = sh.querySelector('.end');
     this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');

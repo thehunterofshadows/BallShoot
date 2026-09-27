@@ -51,6 +51,17 @@ When changing gameplay, keep authoritative state updates separate from rendering
 as documented at the top of `coop-bubbles.js`. Preserve multiplayer input streams
 and the component lifecycle cleanup.
 
+### Gameplay Responsiveness
+
+- Gameplay must never wait for cosmetic animation; animation reacts to gameplay events.
+- Use the freshest available player input before simulation/rendering and reflect local controls in the same presented frame whenever practical.
+- Keep gameplay/simulation state separate from presentation effects such as recoil, particles, trails, shake, and transitions.
+- Render with requestAnimationFrame at the browser/display's native cadence; do not assume 60 Hz or force 120 Hz presentation on a 60 Hz browser/display.
+- Keep simulation refresh-independent and only use higher internal simulation rates when they provide a measured gameplay benefit.
+- Avoid gameplay-frame DOM/layout work when the same effect can live in the renderer.
+- Preload latency-sensitive gameplay assets and trigger audio from gameplay events, not animation completion.
+- The pipeline lives in `frame()` / `frame-pipeline` in `coop-bubbles.js`; check changes with the `?perf` (F9) overlay.
+
 ## Automated GitHub Watcher
 
 An external watcher polls this repository's GitHub Issues. Opening an issue starts

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Low-latency frame pipeline** (#8). Each `requestAnimationFrame` now runs fresh input
+  (gamepads polled first) → controls and simulation → effects → render → DOM HUD sync, so the
+  launcher turns and shots launch in the frame that read the input. Presentation follows the
+  display's native cadence with no 60 FPS cap (the old 33 ms clamp is gone); the simulation
+  steps in equal slices of at most 1/120 s (`FRAME.simHz`, `?sim=` to compare), which keeps
+  gameplay speed identical and falling motion within ~1 unit between 60 and 144 Hz. Shot
+  trails sample on their own clock, sprites are decoded and the Fredoka weights loaded up
+  front, and the Web Audio context opens with interactive latency on the first gesture. New
+  `?perf` / **F9** diagnostics overlay (presented FPS and matching refresh, frame time,
+  input → render, sim time and step rate, render time); `scripts/refresh-probe.mjs`
+  validates 60/120/144 Hz; AGENTS.md gains the Gameplay Responsiveness guardrails.
+
 - **TV Mode for the couch** (#7). *Controller-first navigation:* the d-pad and stick move
   focus spatially (sideways along a row, up / down between rows, wrapping vertically), each
   screen opens on its default (Local play, Resume, Save…) and returning from the drawer

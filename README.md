@@ -110,6 +110,18 @@ projects. `rebuild.sh` validates first and refuses to rebuild on failure.
 inner panels, a Flip cover panel, and phone landscape — and fails on horizontal
 overflow. It needs network egress because `support.js` boots React from a CDN.
 
+### Responsiveness and diagnostics
+
+Every presented frame reads the freshest input (controllers are polled in the frame), steps
+the simulation, renders the newest state and only then updates DOM HUD pieces. Rendering
+follows the browser's `requestAnimationFrame` cadence with no 60 FPS cap; the simulation
+runs in equal steps of at most 1/120 s, so gameplay speed is the same at 60, 120 or 144 Hz.
+Add `?perf` to the URL (or press **F9**) for a diagnostics overlay: presented FPS and the
+refresh it matches, frame time, input → render, simulation time and step rate, and render
+time. `?sim=240` changes the simulation step bound for comparison.
+`docker compose run --rm --no-deps screens node scripts/refresh-probe.mjs` drives the game
+loop at 60, 120 and 144 Hz and checks the gameplay clock, aim and shot travel match.
+
 ## Source layout
 
 - `index.html` — document shell
