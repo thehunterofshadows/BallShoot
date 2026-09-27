@@ -51,6 +51,47 @@ if (typeof Image !== 'undefined') {
     const img = new Image(); img.decoding = 'async'; img.src = src; LAUNCHER_SPRITES[id] = img;
   }
 }
+/* theme:begin — fantasy-arcade cabinet art. Presentation only: every piece is laid out
+   around the existing field geometry and nothing here feeds the simulation. Each piece is
+   optional; until (or unless) an image loads, render() keeps the procedural chamber, so a
+   missing file never costs a playable, readable board. */
+const THEME_ASSET_VERSION = encodeURIComponent(BUILD_STAMP);
+const THEME_URLS = {
+  background:`assets/theme/fantasy-night.webp?v=${THEME_ASSET_VERSION}`,
+  glass:`assets/theme/playfield-glass.webp?v=${THEME_ASSET_VERSION}`,
+  top:`assets/theme/frame-top.webp?v=${THEME_ASSET_VERSION}`,
+  left:`assets/theme/frame-left.webp?v=${THEME_ASSET_VERSION}`,
+  right:`assets/theme/frame-right.webp?v=${THEME_ASSET_VERSION}`,
+  bottom:`assets/theme/frame-bottom.webp?v=${THEME_ASSET_VERSION}`,
+  deck:`assets/theme/launcher-deck.webp?v=${THEME_ASSET_VERSION}`,
+};
+const THEME_SPRITES = {};
+if (typeof Image !== 'undefined') {
+  for (const [id, src] of Object.entries(THEME_URLS)) {
+    const img = new Image(); img.decoding = 'async'; img.src = src; THEME_SPRITES[id] = img;
+  }
+}
+const themeImg = id => { const img = THEME_SPRITES[id]; return img && img.complete && img.naturalWidth ? img : null; };
+/* Source rectangles are measured from the authored art (px); placements are in world units.
+   - glass: the panel's opaque box. Scaled to the field width; a tall field repeats `band`
+     (a quiet stretch of starfield, mirrored so it joins seamlessly) instead of stretching.
+   - rails: top cap / repeating tube section / bottom cap, so a 1080–1560 view gains whole
+     tubes rather than taller ones. `bar` is the rail's centre column in the art, `at` where
+     that column sits on screen.
+   - top: the marquee is scaled so its sign fits between the HUD boxes and cropped at
+     `floor`, just above GRIDTOP0, so it never reaches a cell.
+   - bottom / deck: the tray is placed under the launchers; the deck's sockets (`sockets`,
+     `socketY`) are scaled onto the two live launchers and it is only used when they fit. */
+const THEME_ART = {
+  glass: { sx:63, sy:90, sw:897, sh:1177, band:[545, 655] },
+  rails: { scale:0.16, top:60,
+    left:  { bar:236, at:6,   tile:[565, 1015] },
+    right: { bar:513, at:634, tile:[585, 1065] } },
+  top: { scale:0.42, y:-7, floor:104 },
+  bottom: { scale:0.95, trayY:177, gap:6 },
+  deck: { sockets:[314, 712], socketY:145, drop:8, minScale:0.7, maxScale:0.95 },
+};
+/* theme:end */
 /* levels:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds them
    equal), so every room builds exactly the board a local game does.
 
@@ -2125,10 +2166,10 @@ class CoopBubbles extends HTMLElement {
       try { this._ac = new AC({ latencyHint: 'interactive' }); } catch (e) { try { this._ac = new AC(); } catch (_) {} } }
     if (this._ac && this._ac.state === 'suspended') this._ac.resume().catch(() => {});
   }
-  /* Decode every gameplay sprite and load the canvas font before play, so the first bomb,
-     rainbow or launcher frame is not the one that hitches on decode or a font swap. */
+  /* Decode every gameplay sprite, the cabinet art and the canvas font before play, so the
+     first bomb, rainbow or launcher frame is not the one that hitches on decode or a font swap. */
   warmAssets() {
-    for (const img of [...Object.values(BUBBLE_SPRITES), ...Object.values(LAUNCHER_SPRITES)])
+    for (const img of [...Object.values(BUBBLE_SPRITES), ...Object.values(LAUNCHER_SPRITES), ...Object.values(THEME_SPRITES)])
       if (img && img.decode) img.decode().catch(() => {});
     try { if (document.fonts && document.fonts.load) for (const w of [400, 500, 600, 700]) document.fonts.load(w + ' 20px Fredoka').catch(() => {}); } catch (_) {}
   }
@@ -2633,40 +2674,31 @@ class CoopBubbles extends HTMLElement {
   render() {
     const ctx = this.ctx; if (!ctx) return;
     const sc = this.canvas.width / W;
+    /* The canvas is see-through: the fantasy world behind it is the root's CSS background,
+       so it stays screen-fixed and the cabinet reads as sitting inside it. */
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(sc, 0, 0, sc, 0, 0);
     if (this.shake > 0) ctx.translate(rnd(-this.shake, this.shake) * 0.4, rnd(-this.shake, this.shake) * 0.4);
-    // background
-    const bg = ctx.createLinearGradient(0, 0, 0, this.H);
-    bg.addColorStop(0, '#eaf4ff'); bg.addColorStop(1, '#d8ecff');
-    ctx.fillStyle = bg; ctx.fillRect(-20, -20, W + 40, this.H + 40);
     ctx.save(); ctx.translate(-this.camX, 0);
     const vwL = this.camX - 2 * R, vwR = this.camX + W + 2 * R;
-    // field panel
-    ctx.fillStyle = '#f9fcff';
-    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), this.LAUNCH_Y - 60, 26); ctx.fill();
-    ctx.strokeStyle = '#c4ddf5'; ctx.lineWidth = 3; ctx.stroke();
-    // honeycomb ghost grid
+    const fx = X0 - 6, fy = 92, fw = this.WW - 2 * (X0 - 6), fh = this.LAUNCH_Y - 60;
+    // recessed glass playfield: screen-fixed art clipped to the (possibly scrolling) field
     ctx.save(); ctx.beginPath();
-    this.rrect(ctx, X0 - 6, 92, this.WW - 2 * (X0 - 6), this.LAUNCH_Y - 60, 26); ctx.clip();
+    this.rrect(ctx, fx, fy, fw, fh, 26); ctx.clip();
+    this.drawGlass(ctx, this.camX + fx, fy, W - 2 * fx, fh);
     // parallax backdrop bubbles
     for (let i = 0; i < 12; i++) {
       let px = (i * 173.3 - this.camX * 0.45) % (W + 160); if (px < 0) px += W + 160;
       px += this.camX - 80;
       const py = 960 - ((i * 97 + this.now * (14 + (i % 5) * 7)) % 860);
       const pr = 14 + (i % 4) * 12;
-      ctx.fillStyle = 'rgba(120,170,220,0.06)';
+      ctx.fillStyle = 'rgba(150,170,255,0.05)';
       ctx.beginPath(); ctx.arc(px, py, pr, 0, 7); ctx.fill();
-      ctx.strokeStyle = 'rgba(120,170,220,0.05)'; ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(170,190,255,0.08)'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(px, py, pr, 0, 7); ctx.stroke();
     }
-    // wall inner shadows
-    let sg = ctx.createLinearGradient(X0 - 6, 0, X0 + 26, 0);
-    sg.addColorStop(0, 'rgba(60,100,150,0.14)'); sg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = sg; ctx.fillRect(X0 - 6, 92, 32, this.LAUNCH_Y - 60);
-    sg = ctx.createLinearGradient(this.WW - X0 + 6, 0, this.WW - X0 - 26, 0);
-    sg.addColorStop(0, 'rgba(60,100,150,0.14)'); sg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = sg; ctx.fillRect(this.WW - X0 - 26, 92, 32, this.LAUNCH_Y - 60);
-    ctx.strokeStyle = 'rgba(90,140,190,0.10)'; ctx.lineWidth = 1.4;
+    // honeycomb ghost grid
+    ctx.strokeStyle = 'rgba(160,180,255,0.09)'; ctx.lineWidth = 1.4;
     const maxR = Math.ceil((this.DANGER_Y - this.gridTop) / ROWH);
     for (let r = this.anchorRow; r <= maxR; r++) {
       const n = this.colsIn(r);
@@ -2678,18 +2710,20 @@ class CoopBubbles extends HTMLElement {
     ctx.restore();
     // ceiling (rides down with the pack as rows are pushed in)
     const cy = this.ceilingY();
-    const cg = ctx.createLinearGradient(0, 60, 0, cy);
-    cg.addColorStop(0, '#9fc4e8'); cg.addColorStop(1, '#b9d7f2');
-    ctx.fillStyle = cg; ctx.fillRect(X0 - 6, 60, this.WW - 2*(X0-6), cy - 60);
-    ctx.strokeStyle = '#8fb6dd'; ctx.lineWidth = 2;
+    const cg = ctx.createLinearGradient(0, fy, 0, cy);
+    cg.addColorStop(0, '#231d5c'); cg.addColorStop(1, '#3a3290');
+    ctx.fillStyle = cg; ctx.fillRect(fx, fy, fw, cy - fy);
+    ctx.strokeStyle = 'rgba(170,160,255,0.45)'; ctx.lineWidth = 2;
     const hx0 = Math.floor(Math.max(X0, this.camX) / 26) * 26;
     for (let x = hx0; x < Math.min(this.WW - X0, this.camX + W); x += 26) {
       ctx.beginPath(); ctx.moveTo(x, cy - 3); ctx.lineTo(x + 12, cy - 16); ctx.stroke();
     }
-    ctx.fillStyle = '#7ba7d1'; ctx.fillRect(X0 - 6, cy - 4, this.WW - 2*(X0-6), 4);
+    ctx.fillStyle = '#8fdcff'; ctx.fillRect(fx, cy - 4, fw, 4);
     const tg = ctx.createLinearGradient(0, cy, 0, cy + 22);
-    tg.addColorStop(0, 'rgba(60,100,150,0.16)'); tg.addColorStop(1, 'rgba(60,100,150,0)');
-    ctx.fillStyle = tg; ctx.fillRect(X0 - 6, cy, this.WW - 2*(X0-6), 22);
+    tg.addColorStop(0, 'rgba(120,200,255,0.22)'); tg.addColorStop(1, 'rgba(120,200,255,0)');
+    ctx.fillStyle = tg; ctx.fillRect(fx, cy, fw, 22);
+    // cabinet frame (screen-fixed, behind every live object)
+    ctx.save(); ctx.translate(this.camX, 0); this.drawCabinet(ctx); ctx.restore();
     // attached bubbles; the pack shakes for the last shots before the ceiling drops
     const jit = this.packJitter();
     this.grid.forEach(b => {
@@ -3138,9 +3172,7 @@ class CoopBubbles extends HTMLElement {
         ctx.lineTo(x + Math.cos(a)*10, iy + Math.sin(a)*10); ctx.stroke();
       }
     }
-    ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
-    ctx.textAlign = 'center';
-    ctx.fillText(meta.name + (p.bot ? ' · bot' : ''), x, y + 44);
+    this.drawLauncherName(ctx, p, x, y + 44);
     return true;
   }
 
@@ -3205,29 +3237,119 @@ class CoopBubbles extends HTMLElement {
     else if (meta.icon === 'ring') { ctx.beginPath(); ctx.arc(x, iy, 8, 0, 7); ctx.stroke(); }
     else { for (let i = 0; i < 4; i++) { const a = i * Math.PI/2 + Math.PI/4;
       ctx.beginPath(); ctx.moveTo(x, iy); ctx.lineTo(x + Math.cos(a)*10, iy + Math.sin(a)*10); ctx.stroke(); } }
-    ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
-    ctx.fillText(meta.name + (p.bot ? ' \u00b7 bot' : ''), x, y + 44);
+    this.drawLauncherName(ctx, p, x, y + 44);
   }
+  // Outlined so the name reads on the tray art, its dark wells and the procedural plate alike.
+  drawLauncherName(ctx, p, x, y) {
+    ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.textAlign = 'center';
+    const text = p.meta.name + (p.bot ? ' \u00b7 bot' : '');
+    ctx.lineJoin = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(18,14,56,0.85)'; ctx.strokeText(text, x, y);
+    ctx.fillStyle = '#fff'; ctx.fillText(text, x, y);
+  }
+  /* The glass panel at (x, y, w, h). The width sets the scale; a taller field repeats the
+     quiet starfield `band`, mirrored so every join is seamless, and only the few percent left
+     over is stretched, so a 1560-tall view never smears the art. Without the art it is a
+     procedural night gradient with a neon rim. */
+  drawGlass(ctx, x, y, w, h) {
+    const img = themeImg('glass');
+    if (!img) {
+      const g = ctx.createLinearGradient(0, y, 0, y + h);
+      g.addColorStop(0, '#0b1240'); g.addColorStop(0.7, '#1a1f66'); g.addColorStop(1, '#3a2584');
+      ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(120,150,255,0.55)'; ctx.lineWidth = 4;
+      this.rrect(ctx, x + 2, y + 2, w - 4, h - 4, 24); ctx.stroke();
+      return;
+    }
+    const G = THEME_ART.glass, [b0, b1] = G.band, band = b1 - b0, end = G.sy + G.sh, s = w / G.sw;
+    const reps = Math.max(0, Math.round((h / s - G.sh) / (2 * band))), k = h / (G.sh + 2 * reps * band);
+    // [from, to] source rows in draw order; from > to runs the band upside down
+    const parts = [];
+    if (!reps) parts.push([G.sy, end]);
+    else { parts.push([G.sy, b1]); for (let i = 0; i < 2 * reps - 1; i++) parts.push(i % 2 ? [b0, b1] : [b1, b0]); parts.push([b0, end]); }
+    let dy = y;
+    for (const [a, b] of parts) {
+      const len = Math.abs(b - a), dh = len * k, pad = b === end ? 0 : 0.6; // overlap hides hairline seams
+      if (b > a) ctx.drawImage(img, G.sx, a, G.sw, len, x, dy, w, dh + pad);
+      else { ctx.save(); ctx.translate(0, dy + dh + pad); ctx.scale(1, -1);
+        ctx.drawImage(img, G.sx, b, G.sw, len, x, 0, w, dh + pad); ctx.restore(); }
+      dy += dh;
+    }
+  }
+  /* The launcher deck is authored with two sockets. It is used only when both live launchers
+     sit in them at a sane scale (two players on a classic field); anything else keeps the
+     lower frame, so no player is forced into the two-socket art. */
+  deckFit() {
+    const img = themeImg('deck'), D = THEME_ART.deck;
+    if (!img || this.WW !== W || !this.players || this.players.length !== 2) return null;
+    const [a, b] = this.players, s = (b.x - a.x) / (D.sockets[1] - D.sockets[0]);
+    if (!(s >= D.minScale && s <= D.maxScale)) return null;
+    return { img, s, x: a.x - this.camX - D.sockets[0] * s, y: this.LAUNCH_Y - 44 + D.drop - D.socketY * s };
+  }
+  /* One side rail from y0 to y1: top cap, then as many whole tube sections as fit, then the
+     foot. The small remainder is absorbed by scaling the whole rail a few percent. */
+  drawRail(ctx, img, spec, y0, y1) {
+    const sc = THEME_ART.rails.scale, iw = img.naturalWidth, ih = img.naturalHeight;
+    const [t0, t1] = spec.tile, tile = t1 - t0, fixed = t0 + ih - t1, span = (y1 - y0) / sc;
+    const n = Math.max(0, Math.round((span - fixed) / tile)), k = span / (fixed + n * tile);
+    const dx = spec.at - spec.bar * sc;
+    let y = y0;
+    const piece = (a, b) => { const dh = (b - a) * sc * k;
+      ctx.drawImage(img, 0, a, iw, b - a, dx, y, iw * sc, dh + (b === ih ? 0 : 0.6)); y += dh; };
+    piece(0, t0); for (let i = 0; i < n; i++) piece(t0, t1); piece(t1, ih);
+  }
+  /* The cabinet, in screen space so a wide field scrolls beneath it. Drawn before any live
+     object, so the art can never hide a bubble, an aim guide or the danger rail. */
+  drawCabinet(ctx) {
+    const RL = THEME_ART.rails, B = THEME_ART.bottom, deck = this.deckFit();
+    const bottom = themeImg('bottom'), top = themeImg('top');
+    const by = this.LAUNCH_Y + B.gap - B.trayY * B.scale;
+    const railEnd = deck ? deck.y + 110 * deck.s : bottom ? by : this.LAUNCH_Y + 20;
+    for (const side of ['left', 'right']) {
+      const img = themeImg(side);
+      if (img) this.drawRail(ctx, img, RL[side], RL.top, railEnd);
+    }
+    if (top) { const T = THEME_ART.top, tw = top.naturalWidth * T.scale, sh = Math.min(top.naturalHeight, (T.floor - T.y) / T.scale);
+      ctx.drawImage(top, 0, 0, top.naturalWidth, sh, (W - tw) / 2, T.y, tw, sh * T.scale); }
+    if (deck) ctx.drawImage(deck.img, deck.x, deck.y, deck.img.naturalWidth * deck.s, deck.img.naturalHeight * deck.s);
+    else if (bottom) { const bw = bottom.naturalWidth * B.scale;
+      ctx.drawImage(bottom, (W - bw) / 2, by, bw, bottom.naturalHeight * B.scale); }
+    else { // procedural tray so the launcher labels always sit on a light plate
+      const ty = this.LAUNCH_Y + 4;
+      ctx.fillStyle = 'rgba(232,236,255,0.92)'; this.rrect(ctx, X0 - 6, ty, W - 2 * (X0 - 6), this.H - ty - 6, 22); ctx.fill();
+    }
+  }
+  /* A neon rail set into the chamber: dim and steady until the pack crosses it, then bright
+     and pulsing. The rule itself (DANGER_Y) stays entirely in the simulation. */
   drawDanger(ctx) {
-    ctx.setLineDash([12, 10]); ctx.lineWidth = 3;
-    ctx.strokeStyle = this.danger ? '#ff5b6b' : 'rgba(255,91,107,0.45)';
-    ctx.beginPath(); ctx.moveTo(X0, this.DANGER_Y); ctx.lineTo(this.WW - X0, this.DANGER_Y); ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = '600 14px Fredoka, sans-serif'; ctx.fillStyle = 'rgba(255,91,107,0.7)'; ctx.textAlign = 'right';
-    ctx.fillText('danger line', this.camX + W - X0 - 8, this.DANGER_Y - 8);
+    const y = this.DANGER_Y, x0 = Math.max(X0, this.camX - 20), x1 = Math.min(this.WW - X0, this.camX + W + 20);
+    const on = !!this.danger, pulse = on ? 0.5 + Math.sin(this.now * 8) * 0.5 : 0;
+    const line = () => { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); };
+    ctx.save(); ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(14,10,48,0.6)'; ctx.lineWidth = 9; line(); // housing
+    ctx.shadowColor = on ? '#ff3b5c' : 'rgba(255,110,170,0.7)'; ctx.shadowBlur = on ? 12 + pulse * 14 : 6;
+    ctx.strokeStyle = on ? 'rgb(255,' + Math.round(80 + pulse * 70) + ',110)' : 'rgba(255,120,175,0.6)';
+    ctx.lineWidth = on ? 4 : 2.5; line();
+    ctx.shadowBlur = 0; ctx.strokeStyle = 'rgba(255,235,245,' + (on ? 0.5 + pulse * 0.4 : 0.35).toFixed(3) + ')';
+    ctx.lineWidth = 1; line();
+    ctx.restore();
+    // outlined, since on a two-player deck the label sits over the socket art
+    ctx.font = '600 14px Fredoka, sans-serif'; ctx.textAlign = 'right'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(18,14,56,0.8)'; ctx.strokeText('danger line', this.camX + W - X0 - 8, y - 8);
+    ctx.fillStyle = on ? '#ffb3c0' : '#ff9fbd'; ctx.fillText('danger line', this.camX + W - X0 - 8, y - 8);
     if (this.danger) {
       const pulse = 0.10 + Math.sin(this.now * 8) * 0.07;
       ctx.fillStyle = 'rgba(255,91,107,' + pulse + ')';
-      ctx.fillRect(X0 - 6, this.DANGER_Y - ROWH * 1.6, this.WW - 2*(X0-6), ROWH * 1.6);
+      ctx.fillRect(X0 - 6, y - ROWH * 1.6, this.WW - 2*(X0-6), ROWH * 1.6);
       // countdown
       const t = Math.max(0, this.danger.t), cx0 = this.camX + W / 2;
       ctx.textAlign = 'center';
       ctx.font = '700 84px Fredoka, sans-serif';
       ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
-      ctx.strokeText(t.toFixed(1), cx0, this.DANGER_Y - 60);
-      ctx.fillStyle = '#ff5b6b'; ctx.fillText(t.toFixed(1), cx0, this.DANGER_Y - 60);
+      ctx.strokeText(t.toFixed(1), cx0, y - 60);
+      ctx.fillStyle = '#ff5b6b'; ctx.fillText(t.toFixed(1), cx0, y - 60);
       ctx.font = '600 22px Fredoka, sans-serif';
-      ctx.lineWidth = 6; ctx.strokeText('CLEAR THE GLOWING BUBBLES!', cx0, this.DANGER_Y - 20);
-      ctx.fillText('CLEAR THE GLOWING BUBBLES!', cx0, this.DANGER_Y - 20);
+      ctx.lineWidth = 6; ctx.strokeText('CLEAR THE GLOWING BUBBLES!', cx0, y - 20);
+      ctx.fillText('CLEAR THE GLOWING BUBBLES!', cx0, y - 20);
     }
   }
   // Launcher labels grow with the TV HUD; everywhere else they keep their desktop size.
@@ -3269,10 +3391,11 @@ class CoopBubbles extends HTMLElement {
       ctx.restore();
     } else {
       /* The strapline is decoration between two boxes whose width is fixed but whose
-         inset grows on a narrow board. Drop it rather than run it underneath them. */
+         inset grows on a narrow board. Drop it rather than run it underneath them, and
+         leave the space to the cabinet marquee when that is drawn. */
       ctx.fillStyle = '#9db8d4'; ctx.font = '600 17px Fredoka, sans-serif';
       const tag = this.settings.mode === 'clear' ? 'clear the field together!' : 'endless survival';
-      if (ctx.measureText(tag).width + 16 <= (mx - 12) - (hx + 190)) ctx.fillText(tag, W/2, 42);
+      if (!themeImg('top') && ctx.measureText(tag).width + 16 <= (mx - 12) - (hx + 190)) ctx.fillText(tag, W/2, 42);
     }
     // miss meter (secondary)
     ctx.textAlign = 'right'; ctx.font = '600 13px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5';
@@ -3739,13 +3862,14 @@ class CoopBubbles extends HTMLElement {
     const k = s.w / W;
     this.bindBoard(b);
     ctx.save(); ctx.translate(s.x, s.y); ctx.scale(k, k);
-    ctx.fillStyle = b.alive ? '#f2f8ff' : '#dfe7f0';
-    this.rrect(ctx, 0, 0, W, this.H, 36); ctx.fill();
+    ctx.save(); this.rrect(ctx, 0, 0, W, this.H, 36); ctx.clip();
+    this.drawGlass(ctx, 0, 0, W, this.H); ctx.restore();
+    this.rrect(ctx, 0, 0, W, this.H, 36);
     const selectable = tg && tg.by === this.battle.human.i && b.alive && b.i !== tg.by;
     ctx.lineWidth = hov ? 16 : 8;
     ctx.strokeStyle = hov ? '#ff8a3c' : selectable ? b.meta.accent : 'rgba(120,150,190,0.5)';
     ctx.stroke();
-    ctx.fillStyle = '#9fc4e8'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.ceilingY() - 40));
+    ctx.fillStyle = '#3a3290'; ctx.fillRect(18, 40, W - 36, Math.max(0, this.ceilingY() - 40));
     const left = b.perDrop ? b.perDrop - (b.pressure || 0) : 0, jit = b.alive && left > 0 && left <= PACE.warnShots
       ? { x: Math.sin(this.now * 47 + b.i) * 4, y: 0 } : { x: 0, y: 0 };
     this.grid.forEach(g => {
@@ -3791,16 +3915,19 @@ class CoopBubbles extends HTMLElement {
 :host{display:block;width:100%;height:100%;font-family:'Fredoka',sans-serif;color:#17335c}
 /* Dev diagnostics: fixed box, text-only updates a few times a second, never in the flow. */
 .perfHud{display:none;position:absolute;left:8px;top:8px;z-index:99;margin:0;padding:6px 9px;border-radius:8px;background:rgba(10,20,40,.78);color:#bfffcf;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;white-space:pre;pointer-events:none;contain:layout paint}
-:host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#cfe6ff}
+:host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#0c1030}
 *{box-sizing:border-box}
-.root{--sideW:290px;--rootGap:20px;position:relative;display:flex;width:100%;height:100%;background:linear-gradient(#dbedff,#cfe6ff);align-items:center;justify-content:center;gap:var(--rootGap);overflow:hidden;
+/* The fantasy world: screen-fixed and cover-cropped, darkened toward the middle so the
+   cabinet stays the focus. The trailing gradient is the fallback if the art never loads. */
+.root{--worldBg:radial-gradient(ellipse 60% 70% at 50% 50%,rgba(6,8,30,.62),rgba(6,8,30,.3) 70%,rgba(6,8,30,.15)),url(${THEME_URLS.background}) center/cover no-repeat,linear-gradient(#1c2160,#0c1030);
+ --sideW:290px;--rootGap:20px;position:relative;display:flex;width:100%;height:100%;background:var(--worldBg);align-items:center;justify-content:center;gap:var(--rootGap);overflow:hidden;
  padding:max(14px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
 /* relayout() sets the board's pixel size outright. Letterboxing it in pure CSS needs a
    definite height, and a definite height plus max-width makes the browser break the
    aspect ratio rather than shrink — hence the old viewport-unit calc(). The rules below
    are only the pre-measure first paint. */
 .gameCol{position:relative;flex:none;height:100%;width:auto;max-width:100%;max-height:100%;aspect-ratio:var(--fieldAspect,.59259);min-width:0}
-canvas{width:100%;height:100%;display:block;border-radius:22px;box-shadow:0 12px 40px rgba(40,80,140,.18);touch-action:none}
+canvas{width:100%;height:100%;display:block;border-radius:22px;touch-action:none}
 .pad{position:absolute;left:50%;transform:translateX(-50%);bottom:4px;display:flex;gap:10px;z-index:4}
 /* The UA tap highlight is its own blue wash on top of ours, so an aim half tinted at 0%
    still flashed on touch. Ours is the only pressed feedback these controls get. */
@@ -3957,13 +4084,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
    so 1080p and 4K get the same composition and a non-16:9 screen letterboxes. The root colour
    is the letterbox; the stage art fills the whole 16:9 surface around the playfield. */
 .tvHud,.tvOnly{display:none}
-.root.tvMode{padding:0;gap:0;background:#0b1f3d}
+.root.tvMode{padding:0;gap:0;background:#070a22}
 .root.tvMode .gameCol{flex:none;aspect-ratio:auto;max-width:none;max-height:none;overflow:hidden;
- background:radial-gradient(circle at 12% 22%,rgba(255,111,177,.28) 0 70px,transparent 71px),radial-gradient(circle at 20% 70%,rgba(63,157,255,.22) 0 110px,transparent 111px),
- radial-gradient(circle at 86% 30%,rgba(167,139,250,.30) 0 90px,transparent 91px),radial-gradient(circle at 80% 82%,rgba(62,207,114,.20) 0 130px,transparent 131px),
- radial-gradient(circle at 50% 50%,rgba(255,255,255,.10),transparent 60%),linear-gradient(160deg,#27508f,#1a3766 55%,#122a52)}
+ background:var(--worldBg)}
 .root.tvMode canvas{position:absolute;left:calc(var(--pfX) * var(--tvS));top:calc(var(--pfY) * var(--tvS));width:calc(var(--pfW) * var(--tvS));height:calc(var(--pfH) * var(--tvS));
- border-radius:calc(26px * var(--tvS));box-shadow:0 0 0 calc(6px * var(--tvS)) rgba(255,255,255,.18),0 calc(18px * var(--tvS)) calc(60px * var(--tvS)) rgba(0,0,0,.4)}
+ border-radius:calc(26px * var(--tvS))}
 .root.tvMode .overlay{border-radius:0;box-sizing:border-box;background:rgba(8,22,46,.62);
  padding:calc(var(--tvSafeY) * var(--tvS)) calc(var(--tvSafeR) * var(--tvS)) calc((var(--tvSafeB) + var(--tvPromptH)) * var(--tvS)) calc(var(--tvSafeX) * var(--tvS))}
 .root.tvMode .tvOnly{display:block}.root.tvMode .tvOnly[hidden]{display:none}

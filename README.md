@@ -109,6 +109,10 @@ projects. `rebuild.sh` validates first and refuses to rebuild on failure.
 `screens` renders the game at nine device shapes — including Galaxy Z Fold cover and
 inner panels, a Flip cover panel, and phone landscape — and fails on horizontal
 overflow. It needs network egress because `support.js` boots React from a CDN.
+`docker compose run --rm --no-deps screens node scripts/theme-probe.mjs` renders the
+fantasy-arcade cabinet (2/3/4 players, wide, 1560-tall, battle, danger, TV and a run with
+every theme image blocked) to `./screenshots/theme` and fails if any of the seven
+`assets/theme/` images is not loaded or the two-socket deck lands on the wrong layout.
 
 ### Responsiveness and diagnostics
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fantasy arcade theme** (#11). The board is now a cabinet in the floating-islands night
+  world: `fantasy-night` is the screen-fixed, cover-cropped root background (darkened behind
+  the game; also the TV stage), the field is the recessed `playfield-glass` panel (a tall
+  view repeats a mirrored band of starfield rather than stretching it), and the modular frame
+  wraps it — `frame-left` / `frame-right` rails that gain whole tube sections as the view
+  grows from 1080 to 1560, a `frame-top` marquee cropped above `GRIDTOP0` so it never covers
+  a cell, and `frame-bottom` under the launchers. Classic two-player co-op seats its live
+  launchers in `launcher-deck`'s two sockets; 3/4-player, wide and battle layouts keep the
+  lower frame. The frame stays put while a wide field scrolls beneath it, and all art is drawn
+  behind live bubbles, aim guides and the danger rail. The danger line is a neon rail that
+  only brightens and pulses in danger. Theme art is preloaded with the other sprites and
+  cache-busted with the build stamp; if any piece fails to load the procedural chamber, tray
+  and gradient background take its place. Launcher names are outlined for the darker field.
+  Battle mini boards reuse the glass. No gameplay, collision or layout geometry changed.
+
 - **Low-latency frame pipeline** (#8). Each `requestAnimationFrame` now runs fresh input
   (gamepads polled first) → controls and simulation → effects → render → DOM HUD sync, so the
   launcher turns and shots launch in the frame that read the input. Presentation follows the

@@ -240,7 +240,7 @@ test('calibration never distorts the playfield; the stage art keeps the whole vi
     assert.ok(pf.x >= 0 && pf.y >= 0 && pf.x + pf.w <= 1920 + 1e-9 && pf.y + pf.h <= 1080 + 1e-9, 'on the stage');
   }
   // The background belongs to .gameCol (the full stage), not to the safe rect.
-  assert.match(component, /\.root\.tvMode \.gameCol\{[^}]*background:radial-gradient/);
+  assert.match(component, /\.root\.tvMode \.gameCol\{[^}]*background:var\(--worldBg\)/);
   assert.doesNotMatch(component.match(/\.root\.tvMode \.gameCol\{[^}]*\}/)[0], /tvSafe/);
 });
 
