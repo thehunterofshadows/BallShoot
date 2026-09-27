@@ -36,6 +36,18 @@ if (typeof Image !== 'undefined') {
     const img = new Image(); img.decoding = 'async'; img.src = src; BUBBLE_SPRITES[id] = img;
   }
 }
+const LAUNCHER_SPRITE_URLS = {
+  base:'assets/launcher/base.webp',
+  turret:'assets/launcher/turret.webp',
+  shadow:'assets/launcher/shadow.webp',
+  muzzle:'assets/launcher/muzzle.webp',
+};
+const LAUNCHER_SPRITES = {};
+if (typeof Image !== 'undefined') {
+  for (const [id, src] of Object.entries(LAUNCHER_SPRITE_URLS)) {
+    const img = new Image(); img.decoding = 'async'; img.src = src; LAUNCHER_SPRITES[id] = img;
+  }
+}
 /* Level library — rows alternate 11/10 wide; even rows anchor to the ceiling.
    Designed on Puzzle Bobble principles: readable clusters, big payoffs for cutting
    narrow supports, bank-shot channels, and setups one player leaves for another. */
@@ -1876,7 +1888,106 @@ class CoopBubbles extends HTMLElement {
     }
     ctx.restore();
   }
+  drawLauncherSprite(ctx, p) {
+    const base = LAUNCHER_SPRITES.base, turret = LAUNCHER_SPRITES.turret;
+    const shadow = LAUNCHER_SPRITES.shadow, muzzle = LAUNCHER_SPRITES.muzzle;
+    const ready = img => img && img.complete && img.naturalWidth;
+    if (!ready(base) || !ready(turret) || !ready(shadow)) return false;
+
+    const x = p.x, y = this.LAUNCH_Y, meta = p.meta, cy = y - 44;
+    const rk = p.recoilT !== undefined ? clamp((this.now - p.recoilT) / 0.18, 0, 1) : 1;
+    const rec = (1 - rk) * 7, aa = clamp(p.angle, -1.22, 1.22);
+    const ox = -Math.sin(aa) * rec, oy = Math.cos(aa) * rec;
+    const size = 132, px = size * 0.499, py = size * 0.515;
+    const drawLayer = img => ctx.drawImage(img, -px, -py, size, size);
+
+    // The base stays planted while the upper assembly follows aim and recoil.
+    ctx.save();
+    ctx.translate(x, cy);
+    ctx.globalAlpha = 0.55; drawLayer(shadow);
+    ctx.globalAlpha = 1; drawLayer(base);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(x + ox, cy + oy);
+    ctx.rotate(aa);
+    drawLayer(turret);
+    ctx.restore();
+    // Preserve the existing reload/pass feedback and keep the live bubble renderer
+    // authoritative for color, rainbow, bomb, swaps, and loading fallbacks.
+    if (p.reload > 0) {
+      const k = 1 - p.reload / this.settings.reload;
+      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(x, cy, 42, -Math.PI/2, -Math.PI/2 + k * 6.283); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    const pk = this.passFx && (p.i === this.passFx.a || p.i === this.passFx.b)
+      ? (this.now - this.passFx.t) / PASS_FX : 9;
+    const cur = pk < 1 ? null : p.cur;
+    const pulse = pk < 1.6 ? 1 + Math.sin((pk - 1) / 0.6 * Math.PI) * 0.18
+      : cur?.swapT && this.now - cur.swapT < 0.5
+        ? 1 + Math.sin((this.now - cur.swapT) * 20) * 0.12 : 1;
+    if (pk < 1.8) {
+      ctx.save(); ctx.globalAlpha = clamp(1 - pk / 1.8, 0, 1);
+      ctx.strokeStyle = meta.accent; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x + ox, cy + oy, 34 + pk * 12, 0, 7); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha = p.reload > 0 ? 0.45 : 1;
+    if (cur) this.drawBubble(ctx, x + ox, cy + oy, 18 * pulse,
+      cur.kind, cur.special, false, false);
+    ctx.globalAlpha = 1;
+
+    // Keep the real next bubble in the generated side hopper instead of baking a
+    // color into the launcher artwork.
+    const next = p.next;
+    const npulse = next?.swapT && this.now - next.swapT < 0.5
+      ? 1 + Math.sin((this.now - next.swapT) * 20) * 0.12 : 1;
+    if (next) {
+      const ldx = -0.1874 * size, ldy = -0.1348 * size;
+      const ca = Math.cos(aa), sa = Math.sin(aa);
+      const nx = x + ox + ldx * ca - ldy * sa;
+      const ny = cy + oy + ldx * sa + ldy * ca;
+      this.drawBubble(ctx, nx, ny, 11 * npulse, next.kind, next.special, false, false);
+    }
+
+    // The generated muzzle layer is presentation only and rides the same transform
+    // as the barrel for the first instant of recoil.
+    const age = p.recoilT === undefined ? 9 : this.now - p.recoilT;
+    if (ready(muzzle) && age >= 0 && age < 0.12) {
+      const k = age / 0.12, fx = 92;
+      ctx.save(); ctx.translate(x + ox, cy + oy); ctx.rotate(aa);
+      ctx.globalAlpha = (1 - k) * 0.82;
+      ctx.drawImage(muzzle, -fx / 2, -104, fx, fx);
+      ctx.restore();
+    }
+
+    // Keep the player badge/label so co-op identity remains as clear as before.
+    ctx.fillStyle = meta.accent; ctx.strokeStyle = meta.accent;
+    const iy = y + 12;
+    ctx.lineWidth = 3;
+    if (meta.icon === 'tri') {
+      ctx.beginPath(); ctx.moveTo(x, iy - 9); ctx.lineTo(x + 9, iy + 7);
+      ctx.lineTo(x - 9, iy + 7); ctx.closePath(); ctx.fill();
+    } else if (meta.icon === 'square') {
+      this.rrect(ctx, x - 8, iy - 8, 16, 16, 4); ctx.fill();
+    } else if (meta.icon === 'ring') {
+      ctx.beginPath(); ctx.arc(x, iy, 8, 0, 7); ctx.stroke();
+    } else {
+      for (let i = 0; i < 4; i++) {
+        const a = i * Math.PI/2 + Math.PI/4;
+        ctx.beginPath(); ctx.moveTo(x, iy);
+        ctx.lineTo(x + Math.cos(a)*10, iy + Math.sin(a)*10); ctx.stroke();
+      }
+    }
+    ctx.font = '700 16px Fredoka, sans-serif'; ctx.fillStyle = '#2b4a70';
+    ctx.textAlign = 'center';
+    ctx.fillText(meta.name + (p.bot ? ' · bot' : ''), x, y + 44);
+    return true;
+  }
+
   drawLauncher(ctx, p) {
+    if (this.drawLauncherSprite(ctx, p)) return;
     const x = p.x, y = this.LAUNCH_Y, meta = p.meta;
     const rk = p.recoilT !== undefined ? clamp((this.now - p.recoilT) / 0.18, 0, 1) : 1;
     const rec = (1 - rk) * 7, aa = clamp(p.angle, -1.22, 1.22);

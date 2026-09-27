@@ -78,6 +78,7 @@ services:
       - ./coop-bubbles.js:/app/coop-bubbles.js:ro
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
+      - ./assets:/app/assets:ro
       - ./screenshots:/app/screenshots
     # The game is served on loopback, but support.js boots by fetching React (and the
     # Fredoka webfont) from a CDN, so this one needs egress unlike the `test` service.
