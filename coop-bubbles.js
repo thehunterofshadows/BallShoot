@@ -36,11 +36,12 @@ if (typeof Image !== 'undefined') {
     const img = new Image(); img.decoding = 'async'; img.src = src; BUBBLE_SPRITES[id] = img;
   }
 }
+const LAUNCHER_ASSET_VERSION = encodeURIComponent(BUILD_STAMP);
 const LAUNCHER_SPRITE_URLS = {
-  base:'assets/launcher/base.webp',
-  turret:'assets/launcher/turret.webp',
-  shadow:'assets/launcher/shadow.webp',
-  muzzle:'assets/launcher/muzzle.webp',
+  base:`assets/launcher/base.webp?v=${LAUNCHER_ASSET_VERSION}`,
+  turret:`assets/launcher/turret.webp?v=${LAUNCHER_ASSET_VERSION}`,
+  shadow:`assets/launcher/shadow.webp?v=${LAUNCHER_ASSET_VERSION}`,
+  muzzle:`assets/launcher/muzzle.webp?v=${LAUNCHER_ASSET_VERSION}`,
 };
 const LAUNCHER_SPRITES = {};
 if (typeof Image !== 'undefined') {
