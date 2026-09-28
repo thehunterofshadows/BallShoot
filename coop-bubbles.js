@@ -857,6 +857,8 @@ const simSteps = (dt, hz = FRAME.simHz) => {
   const d = Math.min(dt, FRAME.maxFrameDt), n = Math.max(1, Math.ceil(d * hz - 1e-6));
   return { n, h: d / n };
 };
+// The longest a cleared board holds before its card shows, so the final drop can land.
+const OUTRO_MAX = 1.6;
 const TRAIL_DT = 1 / 60; // a shot's trail keeps 16 samples this far apart at any frame rate
 const DISPLAY_HZ = [24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 180, 200, 240, 360];
 /* Presentation cadence from recent rAF intervals (ms). The median ignores the odd hitch, and
@@ -1103,7 +1105,7 @@ class CoopBubbles extends HTMLElement {
      OnlineGame.reset: score, stats and the clock survive, the miss meter does not. */
   resetGame(carry = null) {
     if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
-    this.battle = null;
+    this.battle = null; this._outro = null;
     if (!carry) { this._runStartLevel = this.settings.level; this._pendingLevel = null; }
     this.WW = this.settings.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
@@ -1466,7 +1468,8 @@ class CoopBubbles extends HTMLElement {
     this.state = 'levelup'; this.sfx('win');
     this._pendingLevel = next;
     // Everyone on this device is looking at the same screen, so one Continue is the gate.
-    this.showLevelCard({ from, next, bonus, timeBonus, secs, score: this.score, rows: this.playerStatRows(this.players) });
+    const card = { from, next, bonus, timeBonus, secs, score: this.score, rows: this.playerStatRows(this.players) };
+    this.beginOutro(() => this.showLevelCard(card));
   }
   /* One row per player, the same shape the game-over card uses. It takes plain rows rather
      than players because online the numbers come from the server's summary. */
@@ -1884,7 +1887,7 @@ class CoopBubbles extends HTMLElement {
   endGame(won) {
     this.state = won ? 'won' : 'lost';
     this.sfx(won ? 'win' : 'lose');
-    this.showEnd(won);
+    this.beginOutro(() => this.showEnd(won));
   }
 
   /* ---------- bots ---------- */
@@ -1969,10 +1972,12 @@ class CoopBubbles extends HTMLElement {
         else if (this.online && ['play','paused','spectating','won','lost'].includes(this.state)) this.updateOnlineBattleVisuals(h);
         else break;
       } else if (this.state === 'play' && !this.online) this.update(h);
+      else if (!this.online && this._outro) { this.now += h; this.stepFx(h); this.fxTick(); }
       else if (this.online && ['play','paused','levelup','won','lost'].includes(this.state)) this.updateOnlineVisuals(h);
       else break;
       if (perf) perf.steps++;
     }
+    this.tickOutro();
     const t1 = perf ? performance.now() : 0;
     if (battle) this.battleRender(); else this.render();
     const t2 = perf ? performance.now() : 0;
@@ -2095,6 +2100,28 @@ class CoopBubbles extends HTMLElement {
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
     const perDrop = this.shotsPerDrop();
     if (perDrop && this.pressure >= perDrop && !this.resolveAt && !powerHolds(this.teamPowerActive, 'holdPressure')) this.pressureDescend();
+    this.stepFx(dt);
+    this.dispScore += (this.score - this.dispScore) * Math.min(1, 10 * rdt);
+    // chain timer
+    if (this.chain.t > 0) { this.chain.t -= rdt; if (this.chain.t <= 0) { this.chain.mult = 1; this.chain.players.clear(); this.chain.last = -1; } }
+    // danger / rescue (real time)
+    const inDanger = this.anyDangerCells();
+    if (inDanger && !this.danger) { this.danger = { t: this.settings.rescueDur, max: this.settings.rescueDur }; this.callout('DANGER! CLEAR THE LINE!', '#ff5b6b'); this.sfx('warn'); }
+    else if (!inDanger && this.danger) { this.danger = null; }
+    if (this.danger && !powerHolds(this.teamPowerActive, 'holdRescue')) { this.danger.t -= rdt; if (this.danger.t <= 0) return this.endGame(false); }
+    // endless rows
+    if (this.settings.mode === 'endless') {
+      this.rowTimer += rdt;
+      const interval = Math.max(10, 24 - this.now / 30);
+      if (this.rowTimer > interval && !this.resolveAt) { this.rowTimer = 0; this.addRow(); }
+      if (this.grid.size === 0) { this.addRow(); this.addRow(); }
+    }
+    this.shake = Math.max(0, this.shake - 40 * rdt);
+    this.fxTick();
+  }
+  /* Cosmetic stepping only: falling bubbles and sparks. It runs inside update() during play
+     and on its own after a clear, so the last drop lands before the card covers the board. */
+  stepFx(dt) {
     // falling bubbles (bounce once on the floor edge, splash, fade)
     const FLOOR = 92 + this.LAUNCH_Y - 60 - R + 6;
     for (let i = this.falling.length - 1; i >= 0; i--) {
@@ -2114,23 +2141,14 @@ class CoopBubbles extends HTMLElement {
       s.vy += (s.g || 0) * dt; s.x += s.vx * dt; s.y += s.vy * dt;
       if (this.now - s.t > s.life) this.sparks.splice(i, 1);
     }
-    this.dispScore += (this.score - this.dispScore) * Math.min(1, 10 * rdt);
-    // chain timer
-    if (this.chain.t > 0) { this.chain.t -= rdt; if (this.chain.t <= 0) { this.chain.mult = 1; this.chain.players.clear(); this.chain.last = -1; } }
-    // danger / rescue (real time)
-    const inDanger = this.anyDangerCells();
-    if (inDanger && !this.danger) { this.danger = { t: this.settings.rescueDur, max: this.settings.rescueDur }; this.callout('DANGER! CLEAR THE LINE!', '#ff5b6b'); this.sfx('warn'); }
-    else if (!inDanger && this.danger) { this.danger = null; }
-    if (this.danger && !powerHolds(this.teamPowerActive, 'holdRescue')) { this.danger.t -= rdt; if (this.danger.t <= 0) return this.endGame(false); }
-    // endless rows
-    if (this.settings.mode === 'endless') {
-      this.rowTimer += rdt;
-      const interval = Math.max(10, 24 - this.now / 30);
-      if (this.rowTimer > interval && !this.resolveAt) { this.rowTimer = 0; this.addRow(); }
-      if (this.grid.size === 0) { this.addRow(); this.addRow(); }
-    }
-    this.shake = Math.max(0, this.shake - 40 * rdt);
-    this.fxTick();
+  }
+  /* A clear is decided at once (score, state, progress); only the card waits, until the last
+     fallers have landed or OUTRO_MAX runs out. Online snapshots swap in a fresher `show`. */
+  beginOutro(show) { this._outro = { show, until: this.now + OUTRO_MAX }; }
+  tickOutro() {
+    const o = this._outro; if (!o) return;
+    if (this.now < o.until && (this.falling.length || this.pops.length)) return;
+    this._outro = null; o.show();
   }
   fxTick() {
     this.pops = this.pops.filter(p => this.now - p.t < 0.62);
@@ -4673,7 +4691,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       put(c.status, 'class', 'tvStatus' + (hurry ? ' tvAlarm' : ''));
     });
   }
-  hideOverlays() { this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; this.levelUpEl.style.display = 'none'; }
+  hideOverlays() { this._outro = null; this.pauseEl.style.display = 'none'; this.endEl.style.display = 'none'; this.levelUpEl.style.display = 'none'; }
   showEnd(won) {
     const sh = this.shadowRoot;
     sh.querySelector('.endTitle').textContent = won ? '\u2b50 Field cleared!' : 'The bubbles won\u2026';
@@ -4811,12 +4829,15 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     // Between levels the room sits on a scoreboard until everyone says go; the snapshot
     // carries the summary and the ready list, so a rejoin lands on the same card.
+    // A clear seen live holds its card until the final drop lands (tickOutro); a rejoin shows it at once.
+    if(oldState==='play'&&(s.state==='levelup'||s.state==='won'))this.beginOutro(()=>{});
+    const present=show=>{if(this._outro)this._outro.show=show;else show();};
     if(s.levelSummary){const su=s.levelSummary,ready=s.levelReady||[];
-      this.showLevelCard({from:su.from,next:su.next,bonus:su.bonus,timeBonus:su.timeBonus,secs:su.secs,score:su.score,
+      present(()=>this.showLevelCard({from:su.from,next:su.next,bonus:su.bonus,timeBonus:su.timeBonus,secs:su.secs,score:su.score,
         rows:this.playerStatRows(su.players),
-        ready:{count:ready.length,total:(this.players||[]).filter(p=>p.connected!==false).length,secs:s.levelSecs,me:ready.includes(this.onlinePlayerId)}});}
-    else if(oldState==='levelup'&&s.state!=='levelup')this.levelUpEl.style.display='none';
-    if((s.state==='won'||s.state==='lost')&&oldState!==s.state)this.showEnd(s.state==='won');
+        ready:{count:ready.length,total:(this.players||[]).filter(p=>p.connected!==false).length,secs:s.levelSecs,me:ready.includes(this.onlinePlayerId)}}));}
+    else if(oldState==='levelup'&&s.state!=='levelup'){this._outro=null;this.levelUpEl.style.display='none';}
+    if((s.state==='won'||s.state==='lost')&&oldState!==s.state)present(()=>this.showEnd(s.state==='won'));
   }
   battleBoardFromSnapshot(summary,data,old={}){
     const seat=summary.seat,wirePlayer=(data?.players||[])[0]||data?.player||null,wasPlayer=old.player?.id===summary.id?old.player:null;

@@ -146,3 +146,26 @@ test('AGENTS.md carries the responsiveness guardrails', () => {
   for (const k of ['never wait for cosmetic animation', 'freshest available player input', 'requestAnimationFrame',
     'refresh-independent', 'DOM/layout', 'trigger audio from gameplay events']) assert.ok(agents.includes(k), k);
 });
+
+/* A clear is decided on the clearing shot, but its card waits for the last drop to land, so
+   the finishing cut is seen falling instead of freezing under the scoreboard. */
+test('a cleared board plays out its final drop before the card shows', () => {
+  const method = name => { const m = component.match(new RegExp(`^  ${name}\\([^)]*\\) \\{[\\s\\S]*?^  \\}$|^  ${name}\\([^)]*\\) \\{.*\\}$`, 'm'));
+    assert.ok(m, `${name}() not found`); return m[0].trim(); };
+  const max = Number(component.match(/^const OUTRO_MAX = ([\d.]+);/m)?.[1]);
+  assert.ok(max > 0.8 && max <= 2, 'OUTRO_MAX keeps the wait short');
+  const Game = vm.runInNewContext(`const OUTRO_MAX=${max}; (class { ${method('beginOutro')} ${method('tickOutro')} })`);
+  const g = new Game(); g.now = 0; g.falling = [{}]; g.pops = [{}];
+  let shown = 0; g.beginOutro(() => shown++);
+  g.tickOutro(); assert.equal(shown, 0, 'card waits while bubbles are still falling');
+  g.falling = []; g.pops = []; g.tickOutro(); assert.equal(shown, 1, 'card shows once the drop has landed');
+  g.tickOutro(); assert.equal(shown, 1, 'and only once');
+  g.falling = [{}]; g.beginOutro(() => shown++); g.now = max; g.tickOutro();
+  assert.equal(shown, 2, 'OUTRO_MAX is a hard cap');
+
+  assert.match(method('clearLevel'), /beginOutro\(\(\) => this\.showLevelCard/, 'clearLevel gates its card');
+  assert.match(method('endGame'), /beginOutro\(\(\) => this\.showEnd/, 'endGame gates its card');
+  assert.match(frameBody, /this\._outro\) \{ this\.now \+= h; this\.stepFx\(h\);/, 'frame() keeps FX running after the clear');
+  assert.match(frameBody, /this\.tickOutro\(\)/);
+  assert.match(component, /present\(\(\)=>this\.showLevelCard/, 'online level card is gated too');
+});
