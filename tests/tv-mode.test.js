@@ -19,7 +19,7 @@ const { TV, resolveDisplayMode, normalizeScreenFit, tvStage, tvTooSmall, tvLayou
    Screen Fit behaviour can be driven on a hand-built instance without a browser. */
 const loadComponent = (env = {}) => {
   let Cls;
-  const ctx = { HTMLElement: class {}, customElements: { get: () => null, define: (n, c) => { Cls = c; } },
+  const ctx = { CoopObjects: require('../coop-objects'), HTMLElement: class {}, customElements: { get: () => null, define: (n, c) => { Cls = c; } },
     document: env.document || { addEventListener() {}, removeEventListener() {} }, Image: class {},
     navigator: env.navigator || {}, performance: { now: () => env.now || 0 }, console,
     location: {}, localStorage: env.localStorage || { getItem: () => null, setItem() {} },

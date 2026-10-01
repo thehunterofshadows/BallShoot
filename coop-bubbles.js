@@ -4,6 +4,8 @@
    independent pointer, key-pair, bot, or WebSocket input stream. */
 (() => {
 if (customElements.get('coop-bubbles')) return;
+// Loaded by the document before this component; local play and the server share rules.
+const CoopObjects = globalThis.CoopObjects;
 
 /* Stamped by the image build (see Dockerfile). It is substituted before the cache-busting
    hash is taken, so a rebuild always yields a new ?v= and the corner tag on screen always
@@ -508,7 +510,10 @@ const LEVELS = [
     'RGB.....RGB',
     'BY.......Y',
   ]},
-  { name: 'Chandeliers', drop: 6, rows: [ // dense field, three solid pendants: pop direct or cut the cells above
+  { name: 'Chandeliers', drop: 6, objects: [
+    { id:'leftShield', type:'shield', cells:[[8,0]] },
+    { id:'rightShield', type:'shield', cells:[[8,9]] },
+  ], rows: [ // dense field, three solid pendants: pop direct or cut the cells above
     'YYRBOYRBBYR',
     'RGGPRBGYRB',
     'GYYBG*RBGYR',
@@ -519,7 +524,10 @@ const LEVELS = [
     'OO.PP...OO',
     'OO.PP....OO',
   ]},
-  { name: 'The Canyon', drop: 6, rows: [ // 11-row wall towers; coordinated cuts drop big chunks
+  { name: 'The Canyon', drop: 6, objects: [
+    { id:'westLock', type:'syncLock', cells:[[10,0]], pair:'eastLock', barrier:[[7,3],[7,7]] },
+    { id:'eastLock', type:'syncLock', cells:[[10,9]], pair:'westLock', barrier:[[7,3],[7,7]] },
+  ], rows: [ // 11-row wall towers; coordinated cuts drop big chunks
     'RRYGBOYGGRY',
     'YBBPYGBRYG',
     'BRRGBRYOBRY',
@@ -532,7 +540,11 @@ const LEVELS = [
     'YGB.....YG',
     'PO.......OP',
   ]},
-  { name: 'Hive Bridge', drop: 6, rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
+  { name: 'Hive Bridge', drop: 6, objects: [
+    { id:'westArmor', type:'teamArmor', cells:[[9,0]] },
+    { id:'eastArmor', type:'teamArmor', cells:[[9,9]] },
+    { id:'pressure', type:'corruption', cells:[[8,6]], every:4, maxSpread:4 },
+  ], rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
     'YBPRY......',
     'GOYBGG....',
     'YBGRY.BROBG',
@@ -592,7 +604,7 @@ const META = [
 const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   launch:[540,.07,'triangle',-120], bounce:[300,.05,'sine',60], attach:[220,.06,'sine',0],
   pop:[660,.12,'triangle',240], bigpop:[520,.22,'triangle',380], drop:[160,.35,'sawtooth',-90],
-  chain:[880,.14,'triangle',220], warn:[240,.3,'square',-60], rescue:[720,.4,'triangle',300],
+  chain:[880,.14,'triangle',220], warn:[240,.3,'square',-60], pressure:[170,.24,'sawtooth',-100], rescue:[720,.4,'triangle',300],
   win:[620,.6,'triangle',400], lose:[220,.7,'sawtooth',-140], swap:[430,.08,'sine',120], ceiling:[190,.3,'square',-50],
   attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
   teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
@@ -1150,6 +1162,15 @@ class CoopBubbles extends HTMLElement {
       for (const [nr,nc] of this.neighbors(b.r,b.c)) { const k = key(nr,nc), nb = this.grid.get(k);
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
+    const level = this.settings.level === 'custom' ? null : LEVELS[Number(this.settings.level) || 0];
+    const objectHumans = (this.settings.human || []).filter(Boolean).length;
+    this.objects = CoopObjects.create(level || {name:'Custom',rows}, this.settings.mode === 'clear' && objectHumans >= 2, objectHumans)
+      .flatMap(o => offs.map((off,i) => {
+        const copy = structuredClone(o); copy.id += `_${i}`; if (copy.pair) copy.pair += `_${i}`;
+        copy.cells.forEach(c => { c[1] += off; }); copy.barrier?.forEach(c => { c[1] += off; }); return copy;
+      }));
+    this.objectAlone = 0; this.objectFallback = false;
+    if (!carry) this.objectHintsShown = new Set();
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
     this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.passFx = null; this.passCd = 0;
     this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0; this.teamPowerActive = null; this.teamPowerTimer = 0; this.powerFx = null;
@@ -1166,6 +1187,7 @@ class CoopBubbles extends HTMLElement {
     this.camX = clamp(pf0.x - W / 2, 0, Math.max(0, this.WW - W));
     this.updateLowest();
     if (this.state !== 'tutorial') this.state = 'play';
+    this.showObjectGuide();
     this.hideOverlays();
   }
   spawnPlayers(carry = null) {
@@ -1274,7 +1296,7 @@ class CoopBubbles extends HTMLElement {
       for (const [nr,nc] of this.neighbors(cr,cc)) {
         const k = key(nr,nc); if (seen.has(k)) continue;
         const b = this.grid.get(k);
-        if (b && (b.kind === kind || b.special === 'rainbow')) { seen.add(k); st.push([nr,nc]); }
+        if (b && !CoopObjects.protectedCell(this,k) && (b.kind === kind || b.special === 'rainbow')) { seen.add(k); st.push([nr,nc]); }
       }
     }
     return seen;
@@ -1291,6 +1313,7 @@ class CoopBubbles extends HTMLElement {
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
     p.cur = p.next; p.next = this.genBubble();
     p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now; p.idle = 0;
+    CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) { this.pressure++; this.dropWarnSfx(); }
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
       vx: Math.sin(a) * rnd(60, 180) + rnd(-40, 40), vy: -Math.cos(a) * rnd(60, 180) + rnd(-40, 40),
@@ -1350,6 +1373,8 @@ class CoopBubbles extends HTMLElement {
     }
   }
   land(f) {
+    const object = CoopObjects.hit(this, f.x, f.y);
+    if (object) { CoopObjects.interact(this, object, f.p); return; }
     let cell = this.snapCell(f.x, f.y);
     if (!cell) return; // no space at all — vanish gracefully (practically unreachable)
     // placement assistance: nudge into a match-completing neighbor cell
@@ -1384,6 +1409,48 @@ class CoopBubbles extends HTMLElement {
       this.showTriLock({ r, c, by:b.placedBy, contributors:[...lock.contributors], unlocked });
     }
   }
+  objectWhere(o) { const [r,c] = o.cells[0]; return {x:this.cellX(r,c),y:this.cellY(r),r,c}; }
+  objectEvent(kind,data) { this.showObjectEvent(kind,data); }
+  objectReward(by,setup,where) {
+    this.score += 150;
+    if (this.players[setup]) this.players[setup].stats.assists++;
+    const handoff = this._resolvingBatch ? 0 : (this.registerClear(by) ? 1 : 0);
+    const team = {assists:[{by,setup:[setup]}],rescue:null,drop:null,bonus:150};
+    this.showTeamPlay(team,where);
+    this.chargeTeamPower(team,handoff,where);
+  }
+  objectRemove(keys,by) {
+    for (const k of keys) { const b=this.grid.get(k); if (!b) continue; this.grid.delete(k);
+      this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]}); }
+    this.supportCheck(); this.updateLowest(); this.refreshQueues();
+    CoopObjects.removed(this);
+    if (this.settings.mode === 'clear' && !this.grid.size && this.state === 'play') this.clearLevel();
+  }
+  showObjectEvent(kind,d) {
+    if (kind === 'object_warning') { this.callout('PRESSURE ABOUT TO SPREAD!', '#d772ea'); this.sfx('pressure'); return; }
+    if (kind === 'object_spread') { this.sfx('pressure'); this.callout('PRESSURE SPREADS!', '#9b69d8'); return; }
+    if (kind === 'object_fallback') { this.callout('SOLO FALLBACK ACTIVE', '#8fdcff'); return; }
+    if (kind === 'object_complete') {
+      const label = d.type === 'syncLock' ? 'SYNC!' : d.type === 'teamArmor' ? 'ARMOR BROKEN!' : 'SHIELD CLEARED!';
+      this.callout(label + (d.cooperative ? ' +150' : ''), '#8fdcff'); this.sfx('teamPower');
+      this.shake = Math.max(this.shake || 0,8); return;
+    }
+    if (kind === 'object_state' && d.state === 'done' && d.type === 'corruption') {
+      this.callout('PRESSURE STOPPED!', '#3ecf72'); this.sfx('rescue'); return;
+    }
+    if (kind === 'object_state' && (d.state === 'exposed' || d.state === 'armed' || d.state === 'marked')) {
+      this.addPopup({x:d.x,y:d.y}, d.state === 'exposed' ? 'SHIELD DOWN' : d.state === 'armed' ? 'LOCK ARMED' : 'ARMOR 1/2', (META[d.by] || META[0]).accent);
+      this.sfx('chain');
+    }
+  }
+  showObjectGuide() {
+    this.objectHintsShown ||= new Set();
+    const guide = {shield:'SHIELD: BREAK IT, THEN TEAMMATE CLEARS',syncLock:'LOCKS: DIFFERENT PLAYERS, 5 SECONDS',
+      teamArmor:'ARMOR: BOTH PLAYERS MUST HIT',corruption:'PRESSURE: CLEAR THE DARK NODE'};
+    for (const o of this.objects || []) if (!this.objectHintsShown.has(o.type)) {
+      this.objectHintsShown.add(o.type); this.callout(guide[o.type], '#8fdcff');
+    }
+  }
   showTriLock(d) {
     const col = (META[d.by] || META[0]).accent;
     if (d.unlocked) { this.callout('TRI-LOCK OPEN! +200', col); this.sfx('teamPower'); this.shake = Math.max(this.shake || 0, 9); }
@@ -1391,6 +1458,7 @@ class CoopBubbles extends HTMLElement {
   }
   /* ---------- batch resolution ---------- */
   resolveBatch() {
+    this._resolvingBatch = true;
     const landed = this.batch; this.batch = []; this.resolveAt = 0;
     const results = []; // {shooter, popped:Set|null}
     for (const b of landed) {
@@ -1419,8 +1487,9 @@ class CoopBubbles extends HTMLElement {
     for (const r of results) {
       if (!r.popped) continue;
       const fresh = [];
-      r.popped.forEach(k => { if (!allPopped.has(k) && this.grid.has(k)) {
+      r.popped.forEach(k => { if (!allPopped.has(k) && this.grid.has(k) && !CoopObjects.protectedCell(this,k)) {
         const b = this.grid.get(k);
+        CoopObjects.onPop(this,k,r.shooter);
         if (b.placedBy >= 0 && b.placedBy !== r.shooter) owners.add(b.placedBy);
         allPopped.add(k); fresh.push(b);
       }});
@@ -1435,6 +1504,7 @@ class CoopBubbles extends HTMLElement {
     // unsupported drop check
     const dropped = this.supportCheck();
     this.updateLowest();
+    CoopObjects.removed(this);
     // Same rules as OnlineGame.resolveBatch: what the shot removed and who placed it. The
     // rescue half is decided at the rescue, after any ceiling descent.
     const humans = this.teamHumans(), teamOn = humans.length >= 2;
@@ -1489,6 +1559,7 @@ class CoopBubbles extends HTMLElement {
     this.refreshQueues();
     // victory (coop clear)
     if (this.settings.mode === 'clear' && this.grid.size === 0 && this.state === 'play') this.clearLevel();
+    this._resolvingBatch = false;
   }
   /* ---------- clear-mode level chain (mirrors OnlineGame.clearLevel) ---------- */
   levelIndex() { return this.settings.level === 'custom' ? -1 : (Number(this.settings.level) || 0); }
@@ -1899,6 +1970,7 @@ class CoopBubbles extends HTMLElement {
   descendRow() {
     const ng = new Map();
     this.grid.forEach(b => { b.r += 1; ng.set(key(b.r,b.c), b); });
+    if (this.settings.mode === 'clear') CoopObjects.shift(this.objects,1);
     this.grid = ng; this.parityFlip ^= 1;
     this.anchorRow += 1; this.gridTop -= ROWH;
     this.updateLowest(); this.refreshQueues();
@@ -2133,6 +2205,7 @@ class CoopBubbles extends HTMLElement {
     const ts = this.danger ? 0.55 : 1; // dramatic slow-mo during rescue window
     const dt = rdt * ts;
     this.now += rdt;
+    CoopObjects.tick(this,rdt);
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - rdt); // real time, like the chain window
     if (this.teamPowerActive && (this.teamPowerTimer -= rdt) <= 0) this.endTeamPower();
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*rdt, 80*rdt);
@@ -2837,6 +2910,12 @@ class CoopBubbles extends HTMLElement {
       const dangerB = this.danger && this.cellY(b.r) + R > this.DANGER_Y;
       ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
       this.drawBubble(ctx, 0, 0, R - 1, b.kind, b.special, true, dangerB);
+      if (b.corrupted) {
+        ctx.fillStyle = 'rgba(45,23,59,.72)'; ctx.strokeStyle = '#d772ea'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(0,0,23,0,7); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#f2a7ff'; ctx.lineWidth = 4; ctx.beginPath();
+        ctx.moveTo(-9,-9); ctx.lineTo(9,9); ctx.moveTo(9,-9); ctx.lineTo(-9,9); ctx.stroke();
+      }
       if (b.special === 'triLock') {
         for (let plate = 0; plate < 3; plate++) {
           const owner = (b.contributors || [])[plate], a = -Math.PI / 2 + plate * Math.PI * 2 / 3;
@@ -2847,6 +2926,7 @@ class CoopBubbles extends HTMLElement {
       }
       ctx.restore();
     });
+    this.drawObjects(ctx,vwL,vwR);
     // danger line + rescue drama
     this.drawDanger(ctx);
     // falling
@@ -3030,6 +3110,61 @@ class CoopBubbles extends HTMLElement {
     ctx.beginPath(); ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  drawObjects(ctx, left, right) {
+    if (this.settings.mode !== 'clear') return;
+    const objects = this.objects || [];
+    ctx.save();
+    for (const o of objects) if (o.type === 'syncLock' && o.state !== 'open') {
+      const pair = objects.find(p => p.id === o.pair);
+      if (!pair || o.id > pair.id) continue;
+      const [r,c] = o.cells[0], [pr,pc] = pair.cells[0];
+      ctx.strokeStyle = '#8ddcff'; ctx.globalAlpha = .38; ctx.lineWidth = 3;
+      ctx.setLineDash([8,7]); ctx.beginPath(); ctx.moveTo(this.cellX(r,c),this.cellY(r));
+      ctx.lineTo(this.cellX(pr,pc),this.cellY(pr)); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    for (const o of objects) {
+      if (o.state === 'done' || o.state === 'open') continue;
+      const [r,c] = o.cells[0], x = this.cellX(r,c), y = this.cellY(r);
+      if (x < left || x > right || !this.grid.has(key(r,c))) continue;
+      ctx.save(); ctx.translate(x,y);
+      const pulse = Math.sin(this.now * 7) * 1.5;
+      if (o.type === 'shield') {
+        ctx.fillStyle = o.state === 'ready' ? 'rgba(109,220,255,.32)' : 'rgba(109,220,255,.12)';
+        ctx.strokeStyle = o.state === 'ready' ? '#a9f4ff' : '#ffe599'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(0,0,25+pulse,0,7); ctx.fill(); ctx.stroke();
+        if (o.state === 'exposed') {
+          ctx.beginPath(); ctx.moveTo(-13,-18); ctx.lineTo(-2,-5); ctx.lineTo(7,-11); ctx.lineTo(15,3); ctx.stroke();
+        }
+      } else if (o.type === 'syncLock') {
+        const partner = objects.find(p => p.id === o.pair);
+        if (partner?.state === 'armed' && o.state !== 'armed') {
+          ctx.strokeStyle = '#fff4ae'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0,0,30+pulse,0,7); ctx.stroke();
+        }
+        ctx.fillStyle = o.state === 'armed' ? (META[o.by] || META[0]).accent : '#8ddcff';
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath();
+        ctx.moveTo(0,-23-pulse); ctx.lineTo(22+pulse,0); ctx.lineTo(0,23+pulse); ctx.lineTo(-22-pulse,0);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#12395f'; ctx.font = 'bold 18px Fredoka'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('L',0,1);
+      } else if (o.type === 'teamArmor') {
+        for (let half = 0; half < 2; half++) {
+          ctx.fillStyle = o.contributors[half] === undefined ? '#72829b' : (META[o.contributors[half]] || META[0]).accent;
+          ctx.strokeStyle = '#e7f6ff'; ctx.lineWidth = 3; ctx.beginPath();
+          ctx.arc(0,0,24+pulse,half ? Math.PI/2 : -Math.PI/2,half ? 3*Math.PI/2 : Math.PI/2);
+          ctx.lineTo(0,0); ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      } else if (o.type === 'corruption') {
+        ctx.fillStyle = '#372147'; ctx.strokeStyle = '#d772ea'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(0,0,24+pulse,0,7); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#f2a7ff'; ctx.font = 'bold 24px Fredoka'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!',0,1);
+      }
+      if (o.timer > 0 && (o.state === 'armed' || o.state === 'exposed')) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.beginPath();
+        ctx.arc(0,0,31,-Math.PI/2,-Math.PI/2 + Math.PI*2*o.timer/(o.type === 'shield' ? 6 : 5)); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
   }
   drawBubble(ctx, x, y, rad, kind, special, face, dangerPulse) {
     const spriteKey = (special === 'rainbow' || special === 'bomb') ? special : kind;
@@ -5012,9 +5147,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
-    const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.flights=s.flights||[];
+    const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.objects=s.objects||[];this.objectFallback=!!s.objectFallback;this.flights=s.flights||[];
     this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.onlineMissLimit=s.missLimit;this.pressure=s.pressure||0;this.onlinePerDrop=s.perDrop||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
+    this.showObjectGuide();
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
     const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
@@ -5067,7 +5203,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at

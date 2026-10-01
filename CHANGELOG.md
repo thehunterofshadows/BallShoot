@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Co-op level objects** (#4). Chandeliers gains shield nodes, The Canyon gains paired
+  sync locks and an unlockable barrier, and Hive Bridge gains two-player armor and a bounded
+  pressure node. Shared rules support local co-op and server-authoritative online rooms,
+  with snapshot recovery, reconnect grace, solo fallback, object feedback, and event-based
+  team rewards. The Vault remains a classic introduction.
+
 - **First-class three-player co-op** (#9). Co-op rules now support 2–4 humans on one
   shared board: modestly eased shot/miss pressure for larger active rosters, three-way
   setup assists and chains, directed left/right bubble passes, and Synergy Burst across

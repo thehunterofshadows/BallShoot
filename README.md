@@ -27,6 +27,17 @@ while shot pressure, the ceiling and any rescue countdown hold for 8 seconds. On
 three or more players also meet a three-plate lock: each distinct player must land a shot
 beside it to open the star. The plate colors show who has contributed.
 
+The late set pieces add co-op board objects for two or more human players. **The Vault**
+stays classic. **Chandeliers** has shielded bubbles: one player breaks the shell and a
+teammate clears the exposed bubble within six seconds for a setup bonus. **The Canyon**
+has linked locks: different players hit the two targets within five seconds to remove
+the stone barrier. **Hive Bridge** has two-plate armor that needs hits from different
+players and a dark pressure node that adds at most four blocked cells, one every four
+team shots until cleared. Object completions award one team bonus and fill Team Power;
+rings and plates show the current state. Solo, custom levels and Battle omit these
+objects. Online object state survives reconnects. If only one player remains connected
+for ten seconds, required objects allow that player to finish without a co-op bonus.
+
 Co-op Clear plays 52 Puzzle Bobble–style rounds as a chain: clearing one carries your score
 and stats into the next, pays an accuracy bonus plus a **time bonus** (the full 5,000 inside
 15 seconds, sliding to nothing at two minutes), and only the last round ends the run. The

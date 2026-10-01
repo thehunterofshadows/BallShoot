@@ -1,4 +1,5 @@
 'use strict';
+const CoopObjects = require('../coop-objects');
 
 const W = 640, R = 28, X0 = 12;
 const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108;
@@ -424,7 +425,10 @@ const LEVELS = [
     'RGB.....RGB',
     'BY.......Y',
   ]},
-  { name: 'Chandeliers', drop: 6, rows: [ // dense field, three solid pendants: pop direct or cut the cells above
+  { name: 'Chandeliers', drop: 6, objects: [
+    { id:'leftShield', type:'shield', cells:[[8,0]] },
+    { id:'rightShield', type:'shield', cells:[[8,9]] },
+  ], rows: [ // dense field, three solid pendants: pop direct or cut the cells above
     'YYRBOYRBBYR',
     'RGGPRBGYRB',
     'GYYBG*RBGYR',
@@ -435,7 +439,10 @@ const LEVELS = [
     'OO.PP...OO',
     'OO.PP....OO',
   ]},
-  { name: 'The Canyon', drop: 6, rows: [ // 11-row wall towers; coordinated cuts drop big chunks
+  { name: 'The Canyon', drop: 6, objects: [
+    { id:'westLock', type:'syncLock', cells:[[10,0]], pair:'eastLock', barrier:[[7,3],[7,7]] },
+    { id:'eastLock', type:'syncLock', cells:[[10,9]], pair:'westLock', barrier:[[7,3],[7,7]] },
+  ], rows: [ // 11-row wall towers; coordinated cuts drop big chunks
     'RRYGBOYGGRY',
     'YBBPYGBRYG',
     'BRRGBRYOBRY',
@@ -448,7 +455,11 @@ const LEVELS = [
     'YGB.....YG',
     'PO.......OP',
   ]},
-  { name: 'Hive Bridge', drop: 6, rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
+  { name: 'Hive Bridge', drop: 6, objects: [
+    { id:'westArmor', type:'teamArmor', cells:[[9,0]] },
+    { id:'eastArmor', type:'teamArmor', cells:[[9,9]] },
+    { id:'pressure', type:'corruption', cells:[[8,6]], every:4, maxSpread:4 },
+  ], rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
     'YBPRY......',
     'GOYBGG....',
     'YBGRY.BROBG',
@@ -727,6 +738,13 @@ class OnlineGame {
     });
     this.levelColors = levelColors(rows);
     this.removeFloaters();
+    const level = S.level === 'custom' ? null : LEVELS[Number(S.level) || 0];
+    this.objects = CoopObjects.create(level || {name:'Custom',rows}, S.mode === 'clear' && this.roster.length >= 2, this.roster.length)
+      .flatMap(o => offs.map((off, i) => {
+        const copy = structuredClone(o); copy.id += `_${i}`; if (copy.pair) copy.pair += `_${i}`;
+        copy.cells.forEach(c => { c[1] += off; }); copy.barrier?.forEach(c => { c[1] += off; }); return copy;
+      }));
+    this.objectAlone = 0; this.objectFallback = false;
     this.flights = []; this.batch = []; this.resolveAt = 0;
     this.score = carry ? carry.score : 0;
     this.dispScore = carry ? carry.score : 0; this.missMeter = 0; this.danger = null;
@@ -838,14 +856,37 @@ class OnlineGame {
       const [rr,cc] = stack.pop();
       for (const [nr,nc] of this.neighbors(rr,cc)) {
         const k = key(nr,nc), b = this.grid.get(k);
-        if (!seen.has(k) && b && (b.kind === kind || b.special === 'rainbow')) { seen.add(k); stack.push([nr,nc]); }
+        if (!seen.has(k) && b && !CoopObjects.protectedCell(this,k) && (b.kind === kind || b.special === 'rainbow')) { seen.add(k); stack.push([nr,nc]); }
       }
     }
     return seen;
   }
   hypoSize(r, c, kind) { return this.matchGroup(r, c, kind).size; }
 
-  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.heldT = 0; this.checkLevelGate(); } } }
+  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.heldT = 0; this.checkLevelGate(); }
+    else if (this.players.filter(q => !q.bot && q.connected).length >= 2) { this.objectAlone = 0; this.objectFallback = false; }
+  } }
+  objectWhere(o) { const [r,c] = o.cells[0]; return { x:this.cellX(r,c), y:this.cellY(r), r, c }; }
+  objectEvent(kind, data) { this.emit(kind, data); }
+  objectReward(by, setup, where) {
+    this.score += 150;
+    if (this.players[setup]) this.players[setup].stats.assists++;
+    const handoff = this._resolvingBatch ? 0 : (this.registerClear(by) ? 1 : 0);
+    this.emit('team_play', { assists:[{by,setup:[setup]}], bonus:150, ...where });
+    this.chargeTeamPower({assists:[{by,setup:[setup]}],rescue:null,drop:null},handoff,where);
+  }
+  objectRemove(keys, by) {
+    const removed = [];
+    for (const k of keys) { const b = this.grid.get(k); if (b) { removed.push(b); this.grid.delete(k); } }
+    if (removed.length) {
+      this.emit('pop', { bubbles:removed, points:0, shooters:by === null ? [] : [by] });
+      const dropped = this.removeFloaters();
+      if (dropped.length) this.emit('drop', {bubbles:dropped,points:0,shooters:by === null ? [] : [by]});
+      this.updateLowest(); this.refreshQueues();
+    }
+    CoopObjects.removed(this);
+    if (this.settings.mode === 'clear' && !this.grid.size && this.state === 'play') this.clearLevel();
+  }
   /* `aim` is the point-to-aim absolute angle; anything that is not a finite number — including
      the client clearing it on finger-up — puts the launcher back on the held-direction stream. */
   input(id, held, aim) {
@@ -863,6 +904,7 @@ class OnlineGame {
     this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
     p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; p.idle = 0;
+    CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a, auto: auto || undefined });
     return true;
@@ -924,6 +966,7 @@ class OnlineGame {
     }
     if (this.state !== 'play' || this.paused) return;
     dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
+    CoopObjects.tick(this, dt);
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - dt);
     if (this.teamPowerActive && (this.teamPowerTimer -= dt) <= 0) this.endTeamPower();
     const holdPressure = powerHolds(this.teamPowerActive, 'holdPressure');
@@ -975,6 +1018,8 @@ class OnlineGame {
     }
   }
   land(f) {
+    const object = CoopObjects.hit(this, f.x, f.y);
+    if (object) { CoopObjects.interact(this, object, f.p); return; }
     let cell = this.snapCell(f.x,f.y); if (!cell) return;
     if (!f.special && this.settings.assist > 0 && this.hypoSize(cell.r,cell.c,f.kind) < 3) {
       for (const [r,c] of this.neighbors(cell.r,cell.c)) if (this.validCell(r,c) &&
@@ -998,6 +1043,7 @@ class OnlineGame {
     }
   }
   resolveBatch() {
+    this._resolvingBatch = true;
     const landed=this.batch; this.batch=[]; this.resolveAt=0; const results=[];
     for (const b of landed) {
       if (!this.grid.has(key(b.r,b.c))) { results.push({shooter:b.placedBy,at:b.fired,gone:true}); continue; }
@@ -1017,9 +1063,10 @@ class OnlineGame {
       }
     }
     const all=new Set(), owners=new Set(), clearers=[], shots=[];
-    for(const result of results) if(result.popped){const fresh=[]; result.popped.forEach(k=>{if(!all.has(k)&&this.grid.has(k)){const b=this.grid.get(k);if(b.placedBy>=0&&b.placedBy!==result.shooter)owners.add(b.placedBy);all.add(k);fresh.push(b);}});if(fresh.length){clearers.push(result.shooter);shots.push({shooter:result.shooter,at:result.at,bubbles:fresh});}}
+    for(const result of results) if(result.popped){const fresh=[]; result.popped.forEach(k=>{if(!all.has(k)&&this.grid.has(k)&&!CoopObjects.protectedCell(this,k)){const b=this.grid.get(k);CoopObjects.onPop(this,k,result.shooter);if(b.placedBy>=0&&b.placedBy!==result.shooter)owners.add(b.placedBy);all.add(k);fresh.push(b);}});if(fresh.length){clearers.push(result.shooter);shots.push({shooter:result.shooter,at:result.at,bubbles:fresh});}}
     const popped=[]; all.forEach(k=>{const b=this.grid.get(k);if(b){popped.push(b);this.grid.delete(k);}});
     const dropped=this.removeFloaters(); this.updateLowest();
+    CoopObjects.removed(this);
     // Team rules read what the shot removed and who placed it. The rescue half is decided
     // where the rescue itself is, after any ceiling descent. Solo and Battle have no team events.
     const humans=this.teamHumans(), teamOn=humans.length>=2, where=this.centerOf(popped.concat(dropped));
@@ -1037,6 +1084,7 @@ class OnlineGame {
     if(this.battle&&total>=6){const amount=clamp(2+Math.round(total*.7),3,14);this.emit('attack_ready',{amount});this.hooks.onAttack?.(amount);}
     if(this.battle&&!this.grid.size)this.refillBattleBoard();
     if(this.settings.mode==='clear'&&!this.grid.size&&this.state==='play')this.clearLevel();
+    this._resolvingBatch = false;
   }
   /* Clear mode chains the authored levels instead of stopping at the first one. A
      custom level has nowhere to advance to, so it still ends the run. */
@@ -1166,6 +1214,7 @@ class OnlineGame {
   // gridTop -> gridTopTarget easing plays the slide out over ~0.6s.
   descendRow(){
     const ng=new Map();this.grid.forEach(b=>{b.r++;ng.set(key(b.r,b.c),b);});this.grid=ng;
+    CoopObjects.shift(this.objects,1);
     this.parityFlip^=1;this.anchorRow++;this.gridTop-=ROWH;
     this.updateLowest();this.refreshQueues();
   }
@@ -1179,7 +1228,7 @@ class OnlineGame {
       tick:this.tickId, state:this.paused?'paused':this.state, now:this.now, settings:this.settings,
       WW:this.WW, cols:this.cols, parityFlip:this.parityFlip, anchorRow:this.anchorRow,
       gridTop:this.gridTop, gridTopTarget:this.gridTopTarget, pressure:this.pressure, perDrop:this.shotsPerDrop(),
-      lowestY:this.lowestY, grid:[...this.grid.values()], flights:this.flights,
+      lowestY:this.lowestY, grid:[...this.grid.values()], objects:this.objects, objectFallback:this.objectFallback, flights:this.flights,
       players:this.players.map(p=>({...p,held:undefined,aimTarget:undefined})), score:this.score, dispScore:this.dispScore,
       missMeter:this.missMeter, missLimit:this.missLimit(), danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,

@@ -41,6 +41,7 @@ services:
       - ./server:/app/server:ro
       - ./tests:/app/tests:ro
       - ./coop-bubbles.js:/app/coop-bubbles.js:ro
+      - ./coop-objects.js:/app/coop-objects.js:ro
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
       - ./nginx.conf:/app/nginx.conf:ro
@@ -57,6 +58,7 @@ services:
         test -s /app/support.js
         grep -q 'coop-bubbles.js' /app/index.html
         node --check /app/coop-bubbles.js
+        node --check /app/coop-objects.js
         node --check /app/support.js
         node --check /app/server/game.js
         node --check /app/server/battle.js
@@ -78,6 +80,7 @@ services:
     volumes:
       - ./scripts:/app/scripts:ro
       - ./coop-bubbles.js:/app/coop-bubbles.js:ro
+      - ./coop-objects.js:/app/coop-objects.js:ro
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
       - ./assets:/app/assets:ro
