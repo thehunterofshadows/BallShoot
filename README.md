@@ -12,13 +12,20 @@ players share one server-authoritative field, while Battle gives each person a
 private field.
 
 Aim with the arrow keys or the touch halves and fire; you shoot the colour you were dealt,
-with the `next` preview for planning. In two-player Co-op Clear either player can **PASS**
-(`E`, or the PASS button) to swap both players' loaded bubbles — `next` bubbles stay put,
-specials travel with their bubble, and a shared 5-second cooldown follows each pass.
-Teamwork there also fills a shared **Team Power** meter (setup assists, chain handoffs, team
-rescues and team drops — solo-style clears add nothing). At 100% either player presses `Q`
-or the TEAM POWER button for **SYNERGY BURST**: both loaded bubbles turn rainbow and shot
-pressure, the ceiling and any rescue countdown hold for 8 seconds.
+with the `next` preview for planning. In Co-op Clear, **PASS** swaps your loaded bubble
+with the adjacent teammate to the left or right. Use the left/right PASS buttons or
+controller LB/RB; on a keyboard use the player's pass key (`E`, `/`, or `I`), with Shift
+for left. Online players can use `E` for right and `R` for left. Either direction reaches
+the same partner in two-player play. `next` bubbles stay put, specials travel with their
+bubble, and a shared 5-second cooldown follows each pass.
+
+Setup assists, chain handoffs, team rescues and team drops fill one shared **Team Power**
+meter. Three players can earn a **TRIPLE ASSIST** when two teammates set up one clear, and
+three distinct clearers in one live chain earn **TRIO CHAIN**. At 100%, any teammate presses
+`Q`, controller Y, or TEAM POWER for **SYNERGY BURST**: every loaded bubble turns rainbow
+while shot pressure, the ceiling and any rescue countdown hold for 8 seconds. On round 35,
+three or more players also meet a three-plate lock: each distinct player must land a shot
+beside it to open the star. The plate colors show who has contributed.
 
 Co-op Clear plays 52 Puzzle Bobble–style rounds as a chain: clearing one carries your score
 and stats into the next, pays an accuracy bonus plus a **time bonus** (the full 5,000 inside
@@ -33,9 +40,10 @@ arcade cabinet, not a record.
 
 Every few shots the field pushes down a row, and the ceiling comes with it. Each round sets
 its own pace (10 shots early, down to 6 at the end), the pack shakes for the last two shots
-before it goes, and the threshold tightens as the round's colours disappear from the board,
-so endgames accelerate on their own. Hosts scale it with the **Shot pressure** slider (8 plays
-rounds as authored; `0` turns it off). A player who sits on a loaded launcher is told
+before it goes, and the threshold tightens as the round's colours disappear from the board.
+With three or four active humans, shot and miss thresholds rise moderately so additional
+shooters do not push the shared board down at the two-player rate. Hosts scale it with
+the **Shot pressure** slider (8 plays rounds as authored; `0` turns it off). A player who sits on a loaded launcher is told
 **HURRY UP!** and then fires at whatever angle they hold; the **Hurry-up** setting is the
 idle limit in seconds (default 8, `0` off). Bots and Battle boards are exempt.
 
@@ -45,8 +53,9 @@ viewport with cover cropping, while its content sits inside a bounded safe area 
 each edge, from 24px to 80px on larger screens). Compact touch screens keep their tighter
 spacing. The playfield still sizes independently of the background. TV remains an optional
 couch layout on a fixed 16:9 stage: a big centred field,
-score and round across the top, a large card per player in two-player co-op, and bigger,
-controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Wide (pillarbox)
+score and round across the top, a large card per player in two-player co-op,
+launcher-aligned names, previews and statuses with no extra panels in three-player co-op,
+and bigger, controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Wide (pillarbox)
 and tall (letterbox) viewports bleed the theme art into extra space outside the stage rather
 than showing flat colour bars. Forced TV enforces a 960×540 minimum viewport (stage scale 0.5)
 to guarantee HUD legibility; smaller windows show a prompt with Fullscreen and Use Desktop
@@ -54,8 +63,8 @@ actions and pause offline play without resetting match state. Auto mode includes
 (staying TV within aspect 1.2–3.6) to avoid flip jitter, and TV↔Desktop switches during an
 active offline match lock gameplay geometry (`H`, danger line) so resizing never alters play.
 Use **Play fullscreen** for the full effect; leaving fullscreen keeps TV mode. Gamepads work in every
-display mode: stick or d-pad aims, A fires, X passes, Y fires Team Power, Start pauses, Back
-opens settings, and in menus the stick moves focus, A presses and B backs out. Auto chooses TV
+display mode: stick or d-pad aims, A fires, LB passes left, RB or X passes right,
+Y fires Team Power, Start pauses, Back opens settings, and in menus the stick moves focus, A presses and B backs out. Auto chooses TV
 for a large widescreen with a gamepad connected.
 
 In TV mode every menu works from the couch: the d-pad or stick moves focus to the nearest
@@ -68,8 +77,9 @@ play pauses until it is back. **Screen Fit…** (home, pause or settings) calibr
 move all edges or each edge in or out until the four corner marks are visible, then Save
 (Reset returns to the 5% default). It is saved on the device and every score, name, prompt
 and menu stays inside it; the background still fills the screen and the field only scales.
-Check the default safe area and TV layout with `docker compose run --rm --no-deps screens node scripts/safe-area-probe.mjs`
-and `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
+Check the default safe area and TV layout with `docker compose run --rm --no-deps screens node scripts/safe-area-probe.mjs`,
+`docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`, and
+`docker compose run --rm --no-deps screens node scripts/trio-probe.mjs`.
 
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields

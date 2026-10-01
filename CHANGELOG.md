@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **First-class three-player co-op** (#9). Co-op rules now support 2–4 humans on one
+  shared board: modestly eased shot/miss pressure for larger active rosters, three-way
+  setup assists and chains, directed left/right bubble passes, and Synergy Burst across
+  every teammate. Round 35 gains a selective three-contributor lock for trio and four-player
+  teams. The trio TV layout keeps one shared HUD and shows chain contributors beside
+  launcher-aligned identities; launchers retain their individual color and
+  current/next bubbles, and controller shoulders target pass direction. Added roster and
+  objective tests while retaining two-player behavior.
+
 - **Viewport background and UI safe area** (#12). The default browser layout now keeps
   background art edge-to-edge with cover cropping while placing content about 5% inward,
   bounded to 24–80px on larger screens. The playfield and TV Screen Fit continue to use

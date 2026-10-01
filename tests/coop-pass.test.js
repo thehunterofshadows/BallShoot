@@ -79,12 +79,12 @@ test('two requests in the same instant make exactly one swap', () => {
   assert.equal(game.players[0].cur.kind, 'B', 'swapped once, not swapped back');
 });
 
-test('no pass outside two-player Co-op Clear', () => {
+test('no pass outside cooperative Clear', () => {
   const endless = room(duo, { mode:'endless' });
   assert.equal(endless.requestPass('a'), false);
   assert.equal(endless.players[0].cur.kind, 'R');
   const three = room(trio);
-  assert.equal(three.requestPass('a'), false, 'three players is not the two-player pass');
+  assert.equal(three.requestPass('a'), true, 'three players can pass to the next teammate');
   const solo = room([duo[0]]);
   assert.equal(solo.requestPass('a'), false);
   const battle = new BattleGame({ ...DEFAULT_SETTINGS, mode:'battle' }, duo, 9);
@@ -153,9 +153,9 @@ test('the pass rules are byte-identical in the server and the client', () => {
 
 test('the client asks the server for a pass and never predicts the swap', () => {
   const client = fs.readFileSync(path.join(root, 'coop-bubbles.js'), 'utf8');
-  const request = client.match(/requestPass\(i\) \{[\s\S]*?\n  \}/)[0];
-  assert.ok(request.indexOf("this.sendOnline('pass')") < request.indexOf('passSwap('), 'online returns before swapping');
-  assert.match(request, /if \(this\.online\) \{ this\.sendOnline\('pass'\); return; \}/);
+  const request = client.match(/requestPass\(i, direction = 1\) \{[\s\S]*?\n  \}/)[0];
+  assert.ok(request.indexOf("this.sendOnline('pass', { direction })") < request.indexOf('passSwap('), 'online returns before swapping');
+  assert.match(request, /if \(this\.online\) \{ this\.sendOnline\('pass', \{ direction \}\); return; \}/);
   assert.match(client, /e\.kind==='pass'\)\{this\.showPass\(d\);\}/);
   assert.match(client, /this\.passCd=s\.passCd\|\|0;/);
   assert.match(client, /class="padP"/);

@@ -1,17 +1,18 @@
-# Issue #12 - Progress
+# Issue #9 — First-class trio co-op
 
 **Status:** ✅ Complete
 
 ## Implementation Plan
 
-- [x] Review issue #12, checkout state, default layout, and existing TV-fit behavior
-- [x] Give the default browser layout a bounded viewport safe area while keeping background edge-to-edge
-- [x] Add browser coverage for background edges, responsive inset, resizing, and TV-fit override
-- [x] Update README and CHANGELOG for issue #12
-- [x] Run foreground Docker validation, inspect the final diff, and rebuild Dev (`?v=075c344dc049`)
-- [x] Commit and push all issue #12 work
+- [x] Read issue #9, repository instructions, and the existing local/server co-op paths
+- [x] Generalize shared pacing, assists, chains, passing, and Team Power for 2–4 humans
+- [x] Add a selective three-contributor board objective with clear ownership feedback
+- [x] Update local, controller, online, and TV presentation for trio identity and directed passes
+- [x] Add focused 2/3/4-player tests and update player-facing documentation and changelog
+- [x] Run Docker tests, browser checks, and rebuild Dev in the foreground
+- [x] Review the final diff, mark this checklist complete, commit, and push issue #9
 
 ## Notes
 
-- Default browser layout uses viewport-aware spacing; existing TV stage and Screen Fit remain available through the Display setting.
-- Docker tests passed (182/182); safe-area and TV browser probes passed. The optional desktop/mobile screenshot matrix stalled after its phone cases and was interrupted.
+- The three-plate lock appears on round 35 when at least three humans join Co-op Clear.
+- Dev build: `coop-bubbles.js?v=e37324b1eca8`.

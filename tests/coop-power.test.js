@@ -213,7 +213,7 @@ test('the meter carries into the next level; a running burst does not', () => {
   assert.equal(game.teamPowerCharge, 0);
 });
 
-test('solo, endless, three players and battle never gain or use Team Power', () => {
+test('solo, endless and battle cannot use Team Power; trio can', () => {
   const solo = board([duo[0]]);
   solo.put(0, 0, 'R', 0, 1); solo.put(0, 1, 'R', 0, 1);
   solo.shoot(0, 0, 2, 'R');
@@ -230,7 +230,9 @@ test('solo, endless, three players and battle never gain or use Team Power', () 
   const three = board([...duo, { id:'c', name:'Cy' }]);
   cutColumn(three, 0, 10);
   three.shoot(1, 0, 5, 'R');
-  assert.equal(three.teamPowerCharge, 0);
+  assert.equal(three.teamPowerCharge, C.assist + C.hugeDrop);
+  full(three).activateTeamPower('c');
+  assert.deepEqual(three.players.map(p => p.cur.special), ['rainbow', 'rainbow', 'rainbow']);
 
   const battle = new BattleGame({ ...DEFAULT_SETTINGS, mode:'battle' }, duo, 4);
   assert.equal(typeof battle.activateTeamPower, 'undefined', 'battle has no Team Power at all');

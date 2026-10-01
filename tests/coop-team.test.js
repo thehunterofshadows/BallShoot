@@ -151,7 +151,7 @@ test('alternating clears build the team chain and count as contributions', () =>
   assert.equal(game.players[1].stats.chains, 2);
   const chains = game.events.filter(e => e.kind === 'team_chain').map(e => e.data);
   assert.deepEqual(chains.map(c => c.handoff), [false, true, true, true], 'a handoff is announced');
-  assert.deepEqual(chains[1], { by:1, from:0, mult:3, handoff:true });
+  assert.deepEqual(chains[1], { by:1, from:0, mult:3, handoff:true, players:[0,1], trio:false });
   // Anti-spam is unchanged: one player hogging the field drops the chain.
   game.registerClear(1); game.registerClear(1); game.registerClear(1);
   assert.equal(game.chain.mult, 1);
@@ -171,7 +171,7 @@ test('the chain lapses on timeout and on a heavy miss meter, as before', () => {
   assert.equal(miss.chain.mult, 1, 'the miss reset it');
 });
 
-test('solo, three-player co-op, endless and battle get no team events', () => {
+test('solo, endless and battle get no team events while trio does', () => {
   const solo = board([duo[0]]);
   solo.put(0, 0, 'R', 0, 1); solo.put(0, 1, 'R', 0, 1);
   solo.shoot(0, 0, 2, 'R');
@@ -183,8 +183,8 @@ test('solo, three-player co-op, endless and battle get no team events', () => {
   three.put(0, 0, 'R', 0, 1); three.put(0, 1, 'R', 0, 1);
   const before = three.score;
   three.shoot(1, 0, 2, 'R');
-  assert.equal(three.teamEvents().length, 0);
-  assert.equal(three.score - before, three.popPoints(3) * 2, 'score is the old formula');
+  assert.equal(three.teamEvents().length, 1);
+  assert.equal(three.score - before, three.popPoints(3) * 2 + TEAM.assistBonus, 'the trio gets ordinary setup credit');
   assert.equal(three.players[0].stats.assists, 1, 'the old owner assist stat is kept');
 
   const endless = board(duo, { mode:'endless' });
@@ -197,11 +197,11 @@ test('solo, three-player co-op, endless and battle get no team events', () => {
   assert.deepEqual(new OnlineGame({ ...DEFAULT_SETTINGS, mode:'battle' }, duo, 1).teamHumans(), []);
 });
 
-test('the pure rules ignore anything that is not exactly two humans', () => {
+test('the pure rules credit any cooperative roster and exclude bots', () => {
   const shots = [{ shooter:1, at:5, bubbles:[{ placedBy:0, at:1 }] }];
   assert.equal(teamPlay(TEAM, [0, 1], shots, [], false).bonus, TEAM.assistBonus);
   assert.equal(teamPlay(TEAM, [], shots, [], false).bonus, 0);
-  assert.equal(teamPlay(TEAM, [0, 1, 2], shots, [], false).bonus, 0);
+  assert.equal(teamPlay(TEAM, [0, 1, 2], shots, [], false).bonus, TEAM.assistBonus);
   // A bot teammate (not in the human list) neither gives nor receives credit locally.
   assert.equal(teamPlay(TEAM, [0, 2], shots, [], false).bonus, 0);
 });

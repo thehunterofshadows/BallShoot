@@ -153,10 +153,12 @@ test('critical UI sits inside the 5% safe area and never on the playfield', () =
 test('two-player co-op has its own layout: a dominant field framed by one card per player', () => {
   assert.equal(tvLayoutKey('clear', 2), 'coop2');
   assert.equal(tvLayoutKey('endless', 2), 'coop2');
+  assert.equal(tvLayoutKey('clear', 3), 'coop3');
   assert.equal(tvLayoutKey('clear', 4), 'coop');
   assert.equal(tvLayoutKey('battle', 2), 'battle');
   const lay = tvLayout('coop2', FIELD, 2), pf = lay.playfield;
   assert.equal(lay.cards.length, 2);
+  assert.equal(tvLayout('coop3', FIELD, 3).cards.length, 0, 'trio uses launcher labels and one shared HUD');
   assert.ok(lay.cards[0].x + lay.cards[0].w <= pf.x && lay.cards[1].x >= pf.x + pf.w, 'P1 left of the field, P2 right');
   assert.ok(lay.score.x < pf.x && lay.round.x > pf.x + pf.w, 'score and round frame the top');
   // The field keeps the world's shape and fills the stage height — more than the safe
@@ -227,7 +229,7 @@ test('controllers drive play and every menu', () => {
   for (const m of ['menuRoot', 'menuMove', 'menuActivate', 'menuBack', 'padPlay', 'padStart'])
     assert.match(component, new RegExp(`  ${m}\\(`), m);
   // Pads map onto the existing per-player input streams rather than a new one.
-  assert.match(component, /this\.requestPass\(i\)/);
+  assert.match(component, /this\.requestPass\(i, passLeft \? -1 : 1\)/);
   assert.match(component, /this\.requestTeamPower\(i\)/);
 });
 

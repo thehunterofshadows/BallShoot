@@ -532,7 +532,7 @@ const aimTick = (p, dt, aimSpeed) => {
 /* team-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so local co-op and an online room qualify the same moments the same way.
 
-   Two-player Co-op Clear makes teamwork the scoring, not a side effect. Every bubble
+   Co-op Clear makes teamwork the scoring, not a side effect. Every bubble
    remembers who placed it (`placedBy`) and when (`at`); every resolving shot knows when it
    was fired. A shot that clears or drops bubbles the teammate placed *before* it was fired
    is a setup assist: one flat bonus per resolving shot, however many of the teammate's
@@ -540,9 +540,9 @@ const aimTick = (p, dt, aimSpeed) => {
    bubbles (placedBy -1), your own bubbles, and a teammate's bubble that landed after you
    fired are never a setup. If an assisted shot is also the one that clears the danger
    line it is a team rescue, and a support cut that drops the teammate's bubbles in bulk is
-   a team drop. Anything other than exactly two humans gets no team events at all, which
-   is how Solo, Battle and 3-4 player rooms stay exactly as they were. */
+   a team drop. Solo and Battle get no team events; every co-op roster of two or more qualifies. */
 const TEAM = {
+  tripleBonus: 200, // two distinct setup players plus the clearer
   assistBonus: 100,   // per resolving shot with at least one setup assist
   rescueBonus: 250,   // on top of the ordinary +500 rescue, when the rescue was set up
   dropBonus: 150, hugeDropBonus: 300,
@@ -552,13 +552,13 @@ const TEAM = {
 };
 const teamPlay = (T, humans, shots, dropped, rescued) => {
   const out = { assists: [], rescue: null, drop: null, bonus: 0 };
-  if (!humans || humans.length !== 2) return out;
+  if (!humans || humans.length < 2) return out;
   const setup = (s, list) => [...new Set(list.filter(b => b.placedBy >= 0 && b.placedBy !== s.shooter &&
     humans.includes(b.placedBy) && b.at < s.at).map(b => b.placedBy))];
   for (const s of shots) {
     if (!humans.includes(s.shooter)) continue;
     const from = setup(s, s.bubbles.concat(dropped));
-    if (from.length) { out.assists.push({ by: s.shooter, setup: from }); out.bonus += T.assistBonus; }
+    if (from.length) { out.assists.push({ by: s.shooter, setup: from }); out.bonus += T.assistBonus + (from.length >= 2 ? T.tripleBonus : 0); }
   }
   if (rescued && out.assists.length) {
     out.rescue = { by: out.assists[0].by, setup: out.assists[0].setup };
@@ -579,19 +579,22 @@ const teamPlay = (T, humans, shots, dropped, rescued) => {
 /* pass-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so a local pass and an online one are allowed at exactly the same moments.
 
-   Two-player Co-op Clear lets either human PASS: the two players' *current* bubbles swap
+   Co-op Clear lets a human PASS left or right: the chosen teammates' *current* bubbles swap
    in one step. A swap rather than a gift keeps the bubble economy untouched and leaves both
    launchers loaded; the `next` bubbles never move, and a bomb or rainbow travels with its
-   bubble. One cooldown is shared by the pair, so whoever asks first spends it for both and
+   bubble. One cooldown is shared by the roster, so whoever asks first spends it for everyone and
    a near-simultaneous second request is simply refused. A pass is not a shot: it touches
    no shot count, miss meter, pressure, score or chain. `passPair` answers whether a pass
    may happen and between whom — it returns the two launchers to swap, or null. */
 const PASS = {
   cooldown: 5, // seconds of shared cooldown after a pass
 };
-const passPair = (humans, players, by, state, cd) => {
-  if (state !== 'play' || cd > 0 || !humans || humans.length !== 2 || !humans.includes(by)) return null;
-  const pair = humans.map(i => players[i]);
+const passPair = (humans, players, by, state, cd, direction = 1) => {
+  if (state !== 'play' || cd > 0 || !humans || humans.length < 2 || !humans.includes(by)) return null;
+  const live = humans.filter(i => players[i] && players[i].connected !== false);
+  if (live.length < 2 || !live.includes(by)) return null;
+  const at = live.indexOf(by), to = live[(at + (direction < 0 ? -1 : 1) + live.length) % live.length];
+  const pair = [players[by], players[to]];
   if (pair.some(p => !p || p.connected === false || !p.cur)) return null;
   return pair;
 };
@@ -600,15 +603,15 @@ const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur 
 /* power-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so local co-op and an online room charge and fire Team Power identically.
 
-   Two-player Co-op Clear shares one Team Power meter. It fills from the resolved teamwork
+   Co-op Clear shares one Team Power meter. It fills from the resolved teamwork
    events the team rules already decide — one amount per event, never per bubble, so a big
    cascade cannot farm it — and a clear with no teammate involvement adds nothing. At full
-   either human may cash it in for the equipped power; the meter empties on the spot, so a
+   any human may cash it in for the equipped power; the meter empties on the spot, so a
    second request in the same instant finds nothing to spend. The meter does not fill while
    a power runs. Powers are plain definitions: a duration, which clocks they hold, and what
-   they do to the pair at the moment they start. A later power is one more entry in POWERS
+   they do to active teammates at the moment they start. A later power is one more entry in POWERS
    and a different `equipped`. `powerPair` answers whether a power may start and on whom —
-   it returns the two launchers, or null. */
+   it returns the active launchers, or null. */
 const TEAM_POWER = {
   max: 100,
   charge: { assist: 15, chain: 10, rescue: 25, drop: 10, hugeDrop: 20 }, // per resolved event
@@ -635,10 +638,10 @@ const powerCharge = (T, team, handoffs, active) => {
   return { amount: reasons.reduce((s, r) => s + T.charge[r], 0), reasons };
 };
 const powerPair = (T, humans, players, by, state, charge, active) => {
-  if (state !== 'play' || active || charge < T.max || !humans || humans.length !== 2 || !humans.includes(by)) return null;
+  if (state !== 'play' || active || charge < T.max || !humans || humans.length < 2 || !humans.includes(by)) return null;
   const me = players[by];
   if (!me || me.connected === false || me.bot) return null;
-  return humans.map(i => players[i]).filter(Boolean);
+  return humans.map(i => players[i]).filter(p => p && p.connected !== false);
 };
 const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
 /* power-rules:end */
@@ -660,10 +663,11 @@ const PACE = {
   timeBonus: 5000, timeFull: 15, timeZero: 120,
   hurryWarn: 5,
 };
-const dropPace = (drop, setting, colors, left) => {
+const dropPace = (drop, setting, colors, left, humans = 1) => {
   if (!setting) return 0;
   const base = drop ? Math.max(3, Math.round(drop * setting / PACE.basePressure)) : setting;
-  return Math.max(3, base - Math.max(0, colors - left));
+  const eased = Math.max(3, base - Math.max(0, colors - left));
+  return Math.round(eased * (1 + 0.35 * Math.max(0, humans - 2)));
 };
 const clearTimeBonus = secs => Math.round(PACE.timeBonus *
   Math.max(0, Math.min(1, (PACE.timeZero - secs) / (PACE.timeZero - PACE.timeFull))));
@@ -718,7 +722,7 @@ class OnlineGame {
     for (const off of offs) rows.forEach((row, r) => {
       for (let i = 0; i < row.length; i++) {
         const cell = levelCell(row[i]), c = i + off;
-        if (cell) this.grid.set(key(r, c), { r, c, ...cell, placedBy: -1 });
+        if (cell) this.grid.set(key(r, c), { r, c, ...cell, special: S.level === 34 && r === 1 && i === 4 && this.roster.length >= 3 && S.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
       }
     });
     this.levelColors = levelColors(rows);
@@ -727,7 +731,7 @@ class OnlineGame {
     this.score = carry ? carry.score : 0;
     this.dispScore = carry ? carry.score : 0; this.missMeter = 0; this.danger = null;
     this.rowTimer = 0; this.shotCount = 0; this.specialFlip = 0; this.pressure = 0;
-    this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0 };
+    this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0, trioAwarded: false };
     this.passCd = 0;
     // The meter is the team's, so it carries into the next level; a running power does not.
     this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0;
@@ -869,10 +873,10 @@ class OnlineGame {
   /* The client only asks. What each launcher ends up holding is whatever this authority
      already had, never a bubble the request carried, and the shared cooldown is what makes a
      second request in the same instant a no-op rather than a swap back. */
-  requestPass(id) {
+  requestPass(id, direction = 1) {
     const p = this.players.find(q => q.id === id);
     if (!p || this.inputLocked) return false;
-    const pair = passPair(this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state, this.passCd);
+    const pair = passPair(this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state, this.passCd, direction);
     if (!pair) return false;
     passSwap(pair); this.passCd = PASS.cooldown; p.idle = 0;
     this.emit('pass', { by: p.i, players: pair.map(q => q.i), cur: pair.map(q => ({ ...q.cur })), cooldown: PASS.cooldown });
@@ -943,7 +947,7 @@ class OnlineGame {
     if (perDrop && this.pressure >= perDrop && !this.resolveAt && !holdPressure) {
       this.pressure = 0; this.descendRow(); this.emit('ceiling');
     }
-    if (this.chain.t > 0 && (this.chain.t -= dt) <= 0) this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0 };
+    if (this.chain.t > 0 && (this.chain.t -= dt) <= 0) this.chain = { mult:1, last:-1, same:0, players:new Set(), t:0, trioAwarded:false };
     const danger = this.anyDangerCells();
     if (danger && !this.danger) { this.danger = { t:this.settings.rescueDur, max:this.settings.rescueDur }; this.emit('warn'); }
     else if (!danger && this.danger) this.danger = null;
@@ -977,8 +981,21 @@ class OnlineGame {
         Math.hypot(this.cellX(r,c)-f.x,this.cellY(r)-f.y) < 2.7*R && this.hypoSize(r,c,f.kind) >= 3 && this.random() < this.settings.assist) { cell={r,c}; break; }
     }
     const b = { ...cell, kind:f.kind, special:f.special, placedBy:f.p, at:this.now, fired:f.at };
-    this.grid.set(key(cell.r,cell.c),b); this.batch.push(b); this.resolveAt ||= this.now+.2; this.updateLowest();
+    this.grid.set(key(cell.r,cell.c),b); this.markTriLocks(b); this.batch.push(b); this.resolveAt ||= this.now+.2; this.updateLowest();
     this.emit('attach',{player:f.p,r:cell.r,c:cell.c});
+  }
+  markTriLocks(b) {
+    const humans = this.teamHumans();
+    if (humans.length < 3 || !humans.includes(b.placedBy)) return;
+    for (const [r,c] of this.neighbors(b.r,b.c)) {
+      const lock = this.grid.get(key(r,c)); if (!lock || lock.special !== 'triLock') continue;
+      lock.contributors ||= [];
+      if (lock.contributors.includes(b.placedBy)) continue;
+      lock.contributors.push(b.placedBy);
+      const unlocked = lock.contributors.length >= 3;
+      if (unlocked) { lock.special = 'star'; this.score += 200; }
+      this.emit('tri_lock', { r, c, by:b.placedBy, contributors:[...lock.contributors], unlocked });
+    }
   }
   resolveBatch() {
     const landed=this.batch; this.batch=[]; this.resolveAt=0; const results=[];
@@ -986,7 +1003,7 @@ class OnlineGame {
       if (!this.grid.has(key(b.r,b.c))) { results.push({shooter:b.placedBy,at:b.fired,gone:true}); continue; }
       if (b.special==='bomb') {
         const bx=this.cellX(b.r,b.c), by=this.cellY(b.r), popped=new Set([key(b.r,b.c)]);
-        this.grid.forEach((g,k)=>{ if(g.special!=='stone'&&Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
+        this.grid.forEach((g,k)=>{ if(g.special!=='stone'&&g.special!=='triLock'&&Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
         results.push({shooter:b.placedBy,at:b.fired,popped,bomb:true});
       } else {
         let kind=b.kind;
@@ -1004,14 +1021,13 @@ class OnlineGame {
     const popped=[]; all.forEach(k=>{const b=this.grid.get(k);if(b){popped.push(b);this.grid.delete(k);}});
     const dropped=this.removeFloaters(); this.updateLowest();
     // Team rules read what the shot removed and who placed it. The rescue half is decided
-    // where the rescue itself is, after any ceiling descent. Solo, Battle and 3-4 player
-    // rooms get no team events at all.
-    const humans=this.teamHumans(), teamOn=humans.length===2, where=this.centerOf(popped.concat(dropped));
+    // where the rescue itself is, after any ceiling descent. Solo and Battle have no team events.
+    const humans=this.teamHumans(), teamOn=humans.length>=2, where=this.centerOf(popped.concat(dropped));
     let team=teamPlay(TEAM,humans,shots,dropped,false),handoffs=0;
     if(popped.length){if(!this.battle)clearers.forEach(i=>{if(this.registerClear(i))handoffs++;});const pts=this.popPoints(popped.length)*(this.battle?1:this.chain.mult);this.score+=pts;for(const i of clearers){const p=this.players[i];if(p){p.stats.pops++;p.stats.bubbles+=popped.length;}}(teamOn?new Set(team.assists.flatMap(a=>a.setup)):owners).forEach(i=>{if(this.players[i])this.players[i].stats.assists++;});this.missMeter=Math.max(0,this.missMeter-1);this.emit('pop',{bubbles:popped,points:pts,shooters:clearers,team:teamOn?team:undefined});}
     // A power that holds the pressure holds the miss meter too: both are the ceiling's clock.
     const misses=powerHolds(this.teamPowerActive,'holdPressure')?0:results.filter(r=>!r.popped&&!r.gone&&!r.bomb).length;
-    if(misses){this.missMeter+=misses;if(this.missMeter>=this.settings.missMax*0.6){this.chain.mult=1;this.chain.players.clear();}if(this.missMeter>=this.settings.missMax){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
+    if(misses){this.missMeter+=misses;if(this.missMeter>=this.missLimit()*0.6){this.chain.mult=1;this.chain.players.clear(); this.chain.trioAwarded = false;}if(this.missMeter>=this.missLimit()){this.missMeter=0;this.descendRow();this.emit('ceiling');}}
     if(dropped.length){const pts=this.dropPoints(dropped.length,this.countComponents(dropped))*(this.battle?1:this.chain.mult);this.score+=pts;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.drops+=dropped.length;});this.missMeter=dropped.length>=8?0:Math.max(0,this.missMeter-3);this.emit('drop',{bubbles:dropped,points:pts,shooters:clearers,team:teamOn?team:undefined});}
     if(this.danger&&!this.anyDangerCells()){if(team.assists.length)team=teamPlay(TEAM,humans,shots,dropped,true);this.danger=null;this.score+=500;clearers.forEach(i=>{if(this.players[i])this.players[i].stats.rescues++;});this.emit('rescue',{team:!!team.rescue});}
     if(team.bonus){this.score+=team.bonus;this.emit('team_play',{...team,...where});}
@@ -1033,7 +1049,7 @@ class OnlineGame {
     let shots = 0, pops = 0;
     for (const p of this.players) { shots += p.stats.shots; pops += p.stats.pops; }
     const accuracy = shots ? pops / shots : 0;
-    const headroom = Math.max(0, this.settings.missMax - this.missMeter) / Math.max(1, this.settings.missMax);
+    const headroom = Math.max(0, this.missLimit() - this.missMeter) / Math.max(1, this.missLimit());
     return Math.round(accuracy * 1500) + Math.round(headroom * 500);
   }
   /* A cleared level is an intermission, not a cut. The run pauses on a scoreboard and the
@@ -1115,11 +1131,32 @@ class OnlineGame {
   }
   /* Solo runs have no second clearer to hand the chain to, so consecutive clears by
      the only player must build the multiplier instead of resetting it. */
-  /* In two-player Co-op Clear every clear that grows the chain is a contribution, and a
-     handoff (the other player keeping it alive) is announced so the client can flash it. */
+  /* In Co-op Clear each new human clearer contributes to the live chain; a handoff
+     is announced so the client can flash it. */
   // Returns whether this clear was a handoff: the teammate keeping the chain alive.
-  registerClear(i){const c=this.chain,solo=this.players.length<=1,team=this.teamHumans().length===2,from=c.last;let handoff=false;if(solo||c.last!==i){c.mult=Math.min(c.mult+1,4);c.same=0;if(team&&this.players[i]){handoff=from>=0&&from!==i;this.players[i].stats.chains=(this.players[i].stats.chains||0)+1;this.emit('team_chain',{by:i,from,mult:c.mult,handoff});}}else if(++c.same>=3){c.mult=1;c.players.clear();c.same=0;}c.last=i;c.players.add(i);c.t=TEAM.chainSecs;return handoff;}
-  teamHumans(){return !this.battle&&this.settings.mode==='clear'&&this.players.length===2?[0,1]:[];}
+  registerClear(i) {
+    const c = this.chain, humans = this.teamHumans(), solo = this.players.length <= 1;
+    const team = humans.length >= 2, from = c.last;
+    let handoff = false;
+    if (solo || from !== i) {
+      c.mult = Math.min(c.mult + 1, 4); c.same = 0;
+      if (team && this.players[i]) {
+        handoff = from >= 0 && from !== i;
+        this.players[i].stats.chains = (this.players[i].stats.chains || 0) + 1;
+      }
+    } else if (++c.same >= 3) { c.mult = 1; c.players.clear(); c.trioAwarded = false; c.same = 0; }
+    c.last = i; c.players.add(i); c.t = TEAM.chainSecs;
+    if (team && (from !== i || c.players.size >= 3)) {
+      const trio = humans.length >= 3 && humans.filter(h => c.players.has(h)).length === 3 && from !== i && !c.trioAwarded;
+      if (trio) c.trioAwarded = true;
+      this.emit('team_chain', { by:i, from, mult:c.mult, handoff, players:[...c.players], trio });
+      if (trio) { this.score += 300; this.emit('trio_chain', { by:i, players:[...c.players], bonus:300 }); }
+    }
+    return handoff;
+  }
+  teamHumans() { return !this.battle && this.settings.mode === 'clear'
+    ? this.players.filter(p => !p.bot).map(p => p.i) : []; }
+  missLimit() { return Math.round(this.settings.missMax * (1 + 0.25 * Math.max(0, (this.battle ? 1 : this.players.filter(p => !p.bot && p.connected).length) - 2))); }
   centerOf(bubbles){if(!bubbles.length)return{x:this.WW/2,y:300};let x=0,y=0;for(const b of bubbles){x+=this.cellX(b.r,b.c);y+=this.cellY(b.r);}return{x:Math.round(x/bubbles.length),y:Math.round(y/bubbles.length)};}
   anyDangerCells(){let hit=false;this.grid.forEach(b=>{if(this.cellY(b.r)+R>this.DANGER_Y)hit=true;});return hit;}
   // Puzzle Bobble ceiling descent: the whole pack slides down one row and the
@@ -1132,7 +1169,7 @@ class OnlineGame {
     this.parityFlip^=1;this.anchorRow++;this.gridTop-=ROWH;
     this.updateLowest();this.refreshQueues();
   }
-  shotsPerDrop(){ return dropPace(this.levelDrop(),this.settings.pressureShots,this.levelColors,this.availKinds().length); }
+  shotsPerDrop(){ return dropPace(this.levelDrop(),this.settings.pressureShots,this.levelColors,this.availKinds().length,this.battle ? 1 : this.players.filter(p => !p.bot && p.connected).length); }
   addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;const a=this.anchorRow;for(let c=0;c<this.colsIn(a);c++)if(this.random()<.85)this.grid.set(key(a,c),{r:a,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
   end(won){if(this.state!=='play')return;this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
   setPaused(value){if(this.state==='play'){this.paused=!!value;this.emit(this.paused?'paused':'resumed');}}
@@ -1144,10 +1181,10 @@ class OnlineGame {
       gridTop:this.gridTop, gridTopTarget:this.gridTopTarget, pressure:this.pressure, perDrop:this.shotsPerDrop(),
       lowestY:this.lowestY, grid:[...this.grid.values()], flights:this.flights,
       players:this.players.map(p=>({...p,held:undefined,aimTarget:undefined})), score:this.score, dispScore:this.dispScore,
-      missMeter:this.missMeter, danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
+      missMeter:this.missMeter, missLimit:this.missLimit(), danger:this.danger, chain:{...this.chain,players:[...this.chain.players]},
       events:this.events.slice(-32), eventId:this.eventId,
       passCd:this.passCd, passMax:PASS.cooldown,
-      teamPowerOn:this.teamHumans().length===2, teamPowerCharge:this.teamPowerCharge, teamPowerMax:TEAM_POWER.max,
+      teamPowerOn:this.teamHumans().length>=2, teamPowerCharge:this.teamPowerCharge, teamPowerMax:TEAM_POWER.max,
       teamPowerActive:this.teamPowerActive, teamPowerTimer:this.teamPowerTimer,
       teamPowerSecs:this.teamPowerActive?POWERS[this.teamPowerActive].secs:0,
       levelSummary:this.levelSummary||null,
