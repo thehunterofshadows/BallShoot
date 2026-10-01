@@ -4625,7 +4625,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if (tv !== !!this.tvActive) {
       this.tvActive = tv; this.tvLay = null;
       root.classList.toggle('tvMode', tv);
-      if (!tv) this.closeScreenFit(false); // calibration is a TV screen; leaving TV cancels it
+      if (!tv && typeof this.closeScreenFit === 'function') this.closeScreenFit(false); // calibration is a TV screen; leaving TV cancels it
+    }
+    if (!tv) {
+      this._tvTooSmall = false;
+      root.classList.remove('tvTooSmall');
     }
     return tv;
   }

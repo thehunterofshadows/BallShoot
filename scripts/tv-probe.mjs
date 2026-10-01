@@ -348,14 +348,72 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
     return g.state === 'play';
   });
 
-  const liveResizePass = resizeOk && tooSmallOk && lockOk && restoredOk && resumedOk && !errors.length;
+  // Mode round trip: drop below minimum, choose Desktop layout, resume, and switch back to TV
+  await page.setViewportSize({ width: 800, height: 450 });
+  await page.waitForTimeout(200);
+
+  // Click "Use Desktop layout" on the too-small notice
+  await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles'), sh = g.shadowRoot;
+    sh.querySelector('.tvSmallDesktop').click();
+  });
+  await page.waitForTimeout(100);
+
+  const desktopProbe = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles'), sh = g.shadowRoot;
+    return {
+      tvActive: g.tvActive,
+      displayMode: g.settings.displayMode,
+      hasTooSmallCls: sh.querySelector('.root').classList.contains('tvTooSmall'),
+      hasTvModeCls: sh.querySelector('.root').classList.contains('tvMode'),
+      state: g.state,
+    };
+  });
+
+  // Resume offline match in Desktop layout
+  await page.keyboard.press('p');
+  await page.waitForTimeout(50);
+  const desktopPlayOk = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles');
+    return g.state === 'play';
+  });
+
+  // Switch back to TV at the same small size (< 960x540) with fullscreen unavailable / declined
+  await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles');
+    g._fsDeclined = true;
+    g.setDisplayMode('tv');
+  });
+  await page.waitForTimeout(200);
+
+  const roundTripTvProbe = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles'), sh = g.shadowRoot;
+    const rootEl = sh.querySelector('.root');
+    const notice = sh.querySelector('.tvSmall');
+    const cs = getComputedStyle(notice);
+    return {
+      tvActive: g.tvActive,
+      displayMode: g.settings.displayMode,
+      hasTooSmallCls: rootEl.classList.contains('tvTooSmall'),
+      noticeVisible: cs.display !== 'none',
+      state: g.state,
+    };
+  });
+
+  const roundTripOk = !desktopProbe.tvActive && !desktopProbe.hasTooSmallCls &&
+    desktopPlayOk &&
+    roundTripTvProbe.tvActive && roundTripTvProbe.hasTooSmallCls &&
+    roundTripTvProbe.noticeVisible && roundTripTvProbe.state === 'paused';
+
+  const liveResizePass = resizeOk && tooSmallOk && lockOk && restoredOk && resumedOk && roundTripOk && !errors.length;
   if (!liveResizePass) failed = true;
   console.log(`tv-resize     ${liveResizePass ? 'ok ' : 'BAD'} multi-resize ${resizeOk ? 'ok' : 'DRIFT'} ` +
     `· too-small notice ${tooSmallProbe.noticeVisible ? 'visible' : 'HIDDEN'} & paused ${tooSmallProbe.state === 'paused'} ` +
     `· pause-locked ${lockOk} · restored notice ${!restoredProbe.noticeVisible ? 'hidden' : 'VISIBLE'} & stays paused ${restoredProbe.state === 'paused'} ` +
-    `· resumed with Start ${resumedOk}` +
+    `· resumed with Start ${resumedOk} · desktop/tv round-trip ${roundTripOk ? 'ok' : 'FAIL'}` +
     (!tooSmallOk ? ` tooSmallFail(${JSON.stringify(tooSmallProbe)})` : '') +
     (!restoredOk ? ` restoredFail(${JSON.stringify(restoredProbe)})` : '') +
+    (!roundTripOk ? ` roundTripFail(desktop:${JSON.stringify(desktopProbe)},resumed:${desktopPlayOk},tv:${JSON.stringify(roundTripTvProbe)})` : '') +
     (errors.length ? ` errors ${errors.join(' | ')}` : ''));
   await context.close();
 }

@@ -584,6 +584,7 @@ test('forced TV below 960x540 pauses offline play without reset, locks pause aga
     settings: { displayMode: 'tv', mode: 'clear', players: 2 },
     tvActive: true, H: 1080, state: 'play', online: false, fit() {},
     syncButtons() {},
+    connectedPads() { return []; },
     closeScreenFit(save) { closedFit++; },
   });
 
@@ -614,6 +615,33 @@ test('forced TV below 960x540 pauses offline play without reset, locks pause aga
   // After restoring above minimum, player can resume with padStart
   g.padStart();
   assert.equal(g.state, 'play', 'padStart resumes play once restored above minimum');
+
+  // Mode round trip: drop below minimum, choose Desktop layout, resume, and switch back to TV
+  root.clientWidth = 800; root.clientHeight = 450;
+  g.tvApplyStage();
+  assert.equal(g._tvTooSmall, true);
+  assert.equal(root.classList.contains('tvTooSmall'), true);
+  assert.equal(g.state, 'paused', 'offline play paused on shrinking below minimum');
+
+  // Choose Use Desktop layout
+  g.settings.displayMode = 'desktop';
+  g.syncDisplayMode();
+  assert.equal(g.tvActive, false, 'leaving TV sets tvActive to false');
+  assert.equal(g._tvTooSmall, false, 'leaving TV clears _tvTooSmall');
+  assert.equal(root.classList.contains('tvTooSmall'), false, 'leaving TV clears tvTooSmall class');
+
+  // Resume offline match while in desktop mode
+  g.togglePause();
+  assert.equal(g.state, 'play', 'offline play resumed while in desktop layout');
+
+  // Switch back to TV at the same small size (< 960x540)
+  g.settings.displayMode = 'tv';
+  g.syncDisplayMode();
+  assert.equal(g.tvActive, true, 're-entering TV sets tvActive to true');
+  g.tvApplyStage();
+  assert.equal(g._tvTooSmall, true, 're-entering TV below minimum sets _tvTooSmall');
+  assert.equal(root.classList.contains('tvTooSmall'), true, 'tvTooSmall class reapplied');
+  assert.equal(g.state, 'paused', 'offline play paused again on switching back to TV below minimum');
 
   // Online match does not pause
   let onlinePaused = 0;
