@@ -25,6 +25,7 @@ const loadComponent = (env = {}) => {
     location: {}, localStorage: env.localStorage || { getItem: () => null, setItem() {} },
     setTimeout: () => 0, clearTimeout() {}, cancelAnimationFrame: () => {}, Event: class { constructor(t) { this.type = t; } },
     matchMedia: env.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })),
+    get devicePixelRatio() { return env.getDpr ? env.getDpr() : (env.devicePixelRatio || 1); },
     getComputedStyle: env.getComputedStyle || (() => ({ paddingLeft: '0', paddingRight: '0', paddingTop: '0', paddingBottom: '0', getPropertyValue: () => '' })) };
   ctx.window = ctx;
   vm.runInNewContext(component, ctx);
@@ -558,29 +559,61 @@ test('size-only relayoutTv does not call placeTvHud', () => {
   assert.equal(placed, 2, 'fit change rebuilds HUD DOM');
 });
 
-test('forced TV below 960x540 pauses offline play without reset, and never pauses online', () => {
+test('forced TV below 960x540 pauses offline play without reset, locks pause against Start/P, and never pauses online', () => {
   const C = loadComponent();
-  const root = { clientWidth: 800, clientHeight: 450, style: { setProperty() {} }, classList: { toggle() {}, remove() {}, contains: () => false } };
+  const classes = new Set();
+  const root = {
+    clientWidth: 800, clientHeight: 450,
+    style: { setProperty() {} },
+    classList: {
+      add: c => classes.add(c),
+      remove: c => classes.delete(c),
+      toggle: (c, v) => (v ?? !classes.has(c)) ? classes.add(c) : classes.delete(c),
+      contains: c => classes.has(c),
+    },
+  };
   const col = { style: {} };
   const canvas = { style: {}, clientWidth: 400 };
-  let paused = 0, closedFit = 0;
+  let closedFit = 0;
+  const pauseEl = { style: {}, querySelectorAll: () => [] };
+  const tvSmallEl = { style: {}, querySelectorAll: () => [] };
+  const sideEl = { classList: { contains: () => false } };
+  const shadowRoot = { querySelector: () => ({ textContent: '' }) };
   const g = Object.assign(Object.create(C.prototype), {
-    rootEl: root, gameColEl: col, canvas,
+    rootEl: root, gameColEl: col, canvas, pauseEl, tvSmallEl, sideEl, shadowRoot,
     settings: { displayMode: 'tv', mode: 'clear', players: 2 },
     tvActive: true, H: 1080, state: 'play', online: false, fit() {},
-    togglePause() { paused++; this.state = 'paused'; },
+    syncButtons() {},
     closeScreenFit(save) { closedFit++; },
   });
+
+  // Enter too-small state
   g.tvApplyStage();
-  assert.equal(paused, 1, 'offline play paused on entry to too-small');
-  assert.equal(closedFit, 1, 'screen fit cancelled on entry to too-small');
   assert.equal(g._tvTooSmall, true);
+  assert.equal(root.classList.contains('tvTooSmall'), true);
+  assert.equal(g.state, 'paused', 'offline play paused on entry to too-small');
+  assert.equal(closedFit, 1, 'screen fit cancelled on entry to too-small');
+
+  // Verify padStart, togglePause, and menuBack cannot resume while notice is active
+  g.padStart();
+  assert.equal(g.state, 'paused', 'padStart does not unpause while too-small notice is active');
+
+  g.togglePause();
+  assert.equal(g.state, 'paused', 'togglePause does not unpause while too-small notice is active');
+
+  g.menuBack();
+  assert.equal(g.state, 'paused', 'menuBack does not unpause while too-small notice is active');
 
   // Growing back hides notice and leaves game paused (no auto-resume)
   root.clientWidth = 1920; root.clientHeight = 1080;
   g.tvApplyStage();
   assert.equal(g._tvTooSmall, false);
+  assert.equal(root.classList.contains('tvTooSmall'), false);
   assert.equal(g.state, 'paused', 'game remains paused after window grows back');
+
+  // After restoring above minimum, player can resume with padStart
+  g.padStart();
+  assert.equal(g.state, 'play', 'padStart resumes play once restored above minimum');
 
   // Online match does not pause
   let onlinePaused = 0;
@@ -598,34 +631,54 @@ test('forced TV below 960x540 pauses offline play without reset, and never pause
 });
 
 test('changing devicePixelRatio re-fits canvas backing store and cleans up on disconnect', () => {
-  let changeHandler = null, removed = false;
-  const mq = {
-    addEventListener(evt, fn) { if (evt === 'change') changeHandler = fn; },
-    removeEventListener(evt, fn) { if (evt === 'change') removed = true; },
+  const queryMap = new Map();
+  const createMq = q => {
+    let handler = null;
+    const mq = {
+      media: q,
+      addEventListener(evt, fn) { if (evt === 'change') handler = fn; },
+      removeEventListener(evt, fn) { if (evt === 'change' && handler === fn) handler = null; },
+      fire() { handler && handler(); },
+      hasHandler: () => handler !== null,
+    };
+    queryMap.set(q, mq);
+    return mq;
   };
+
+  let curDpr = 1;
   const C = loadComponent({
-    matchMedia: q => mq,
+    matchMedia: q => createMq(q),
+    getDpr: () => curDpr,
   });
+
   let fitCalls = 0;
   const g = Object.assign(Object.create(C.prototype), {
     fit() { fitCalls++; },
   });
-  let dprMq = null;
-  const onDprChange = () => { g.fit(); armDpr(); };
-  const armDpr = () => {
-    if (dprMq) dprMq.removeEventListener('change', onDprChange);
-    dprMq = mq;
-    dprMq.addEventListener('change', onDprChange);
-  };
-  armDpr();
-  g._dprUnbind = () => { if (dprMq) dprMq.removeEventListener('change', onDprChange); dprMq = null; };
 
-  // Trigger DPR change event
-  changeHandler();
-  assert.equal(fitCalls, 1, 'fit called on DPR change');
+  // Call the component's actual setupDprListener() method
+  g.setupDprListener();
 
-  // Calling disconnectedCallback cleans up
-  g.disconnectedCallback = C.prototype.disconnectedCallback;
+  // Initial listener is registered on (resolution: 1dppx)
+  assert.equal(queryMap.get('(resolution: 1dppx)')?.hasHandler(), true, 'registered listener on initial resolution');
+  assert.equal(fitCalls, 0);
+
+  // Pixel ratio changes to 2 (e.g. window moved to 2x display)
+  curDpr = 2;
+  queryMap.get('(resolution: 1dppx)').fire();
+  assert.equal(fitCalls, 1, 'component.fit() called by component listener on DPR change');
+  assert.equal(queryMap.get('(resolution: 1dppx)')?.hasHandler(), false, 'old listener unhooked when re-arming');
+  assert.equal(queryMap.get('(resolution: 2dppx)')?.hasHandler(), true, 're-armed listener on new resolution');
+
+  // Trigger again on new resolution
+  queryMap.get('(resolution: 2dppx)').fire();
+  assert.equal(fitCalls, 2, 'second DPR change calls fit again');
+
+  // Calling component's disconnectedCallback removes listener
   g.disconnectedCallback();
-  assert.equal(removed, true, 'listener removed on disconnect');
+  assert.equal(queryMap.get('(resolution: 2dppx)')?.hasHandler(), false, 'listener removed on disconnect');
+
+  // Firing after disconnect does nothing
+  queryMap.get('(resolution: 2dppx)').fire();
+  assert.equal(fitCalls, 2, 'no further fit calls after disconnect');
 });

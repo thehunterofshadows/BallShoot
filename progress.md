@@ -22,8 +22,12 @@
 ## Notes
 
 - ai-runner -multi mode: Claude designs, AGY implements, Codex independently tests.
-- Foreground validation:
-  - `docker compose run --rm --no-deps test`: 182/182 tests passing (unit tests for TV mode stage math, safe-area bounds, Auto hysteresis, minimum viewport boundaries, geometry lock, DPR listener cleanup, and DOM rebuild skipping).
-  - `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`: All 10 aspect matrix and arbitrary resolutions passed without drift, 4K Screen Fit passed, live resize sequence passed (no match reset, too-small notice + pause verified, restore verified), and fullscreen enter/exit toggle verified.
+- Correction pass (QA findings):
+  - Fixed pause-lock in `coop-bubbles.js`: guarded `padStart()`, keyboard `p` handler, and `togglePause()` against unpausing when `tvTooSmall` notice is active. Offline play stays paused until the window is restored above 960x540.
+  - Fixed DPR test in `tests/tv-mode.test.js`: component's own `setupDprListener()` and `disconnectedCallback()` are now directly exercised, verifying real listener attachment, `fit()` callback, re-arming on resolution change, and unbind cleanup.
+  - Updated `scripts/tv-probe.mjs`: samples rendered pixels outside the stage across letterbox and pillarbox bars to verify theme background paint (opaque, non-flat `#070a22`, non-black art); verifies pause lock under `.tvSmall` and resume via Start after recovery.
+- Validation:
+  - `docker compose run --rm --no-deps test`: 182/182 tests passing.
+  - `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`: All 10 aspect matrix and arbitrary resolutions passed (with bar pixel paint verified), 4K Screen Fit passed, live resize sequence passed (pause-lock under too-small verified, Start recovery verified), and fullscreen enter/exit verified.
   - `docker compose run --rm --no-deps screens`: 18 desktop and mobile device shape screenshots verified without horizontal overflow.
-  - Deployed build stamp: `2026-10-01 01:28 UTC`, game version: `?v=cb230a5f3375` (support: `?v=ae4f0ac84496`).
+  - Deployed dev container: game version `?v=044154987f86` (support: `?v=ae4f0ac84496`).

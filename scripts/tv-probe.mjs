@@ -83,7 +83,7 @@ for (const vp of VIEWPORTS) {
       colBg: colCs.backgroundColor,
     };
   });
-  await page.screenshot({ path: join(outDir, `${vp.name}-play.png`) });
+  const pngBuffer = await page.screenshot({ path: join(outDir, `${vp.name}-play.png`) });
 
   const expectedScale = Math.min(vp.width / 1920, vp.height / 1080);
   const expectedW = Math.round(1920 * expectedScale);
@@ -102,7 +102,43 @@ for (const vp of VIEWPORTS) {
   const aspectOk = Math.abs(probe.pfAspect - probe.worldAspect) < 0.01;
   const bgOk = probe.rootBg && probe.rootBg !== 'none' && probe.rootBg.includes('url(');
 
-  const ok = probe.tv && probe.layout === 'coop2' && stageOk && aspectOk && bgOk && !outside.length && !errors.length;
+  let paintOk = true;
+  let paintedPixels = [];
+  if (expectedX > 10 || expectedY > 10) {
+    const points = [];
+    if (expectedX > 10) {
+      points.push([Math.floor(expectedX * 0.5), Math.floor(vp.height * 0.25)]);
+      points.push([Math.floor(expectedX * 0.5), Math.floor(vp.height * 0.5)]);
+      points.push([Math.floor(vp.width - expectedX * 0.5), Math.floor(vp.height * 0.5)]);
+    }
+    if (expectedY > 10) {
+      points.push([Math.floor(vp.width * 0.25), Math.floor(expectedY * 0.5)]);
+      points.push([Math.floor(vp.width * 0.5), Math.floor(expectedY * 0.5)]);
+      points.push([Math.floor(vp.width * 0.5), Math.floor(vp.height - expectedY * 0.5)]);
+    }
+    paintedPixels = await page.evaluate(async ({ dataUrl, points }) => {
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = dataUrl; });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      return points.map(([x, y]) => {
+        const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+        return [p[0], p[1], p[2], p[3]];
+      });
+    }, { dataUrl: `data:image/png;base64,${pngBuffer.toString('base64')}`, points });
+
+    const FLAT_BAR_RGB = [7, 10, 34];
+    paintOk = paintedPixels.length > 0 && paintedPixels.every(p => {
+      const isOpaque = p[3] === 255;
+      const isNotFlat = !(p[0] === FLAT_BAR_RGB[0] && p[1] === FLAT_BAR_RGB[1] && p[2] === FLAT_BAR_RGB[2]);
+      const isNotBlack = p[0] > 0 || p[1] > 0 || p[2] > 0;
+      return isOpaque && isNotFlat && isNotBlack;
+    });
+  }
+
+  const ok = probe.tv && probe.layout === 'coop2' && stageOk && aspectOk && bgOk && paintOk && !outside.length && !errors.length;
   if (!ok) failed = true;
   shots.push({ name: vp.name, probe });
   console.log(`${vp.name.padEnd(13)} ${ok ? 'ok ' : 'BAD'} stage ${probe.stage.w}x${probe.stage.h}@${probe.stage.x},${probe.stage.y} ` +
@@ -110,6 +146,7 @@ for (const vp of VIEWPORTS) {
     (outside.length ? ` outside-safe ${JSON.stringify(outside)}` : '') +
     (!stageOk ? ` stageMismatch(exp ${expectedW}x${expectedH}@${expectedX},${expectedY})` : '') +
     (!bgOk ? ' missingRootBg' : '') +
+    (!paintOk ? ' unpaintedBars' : '') +
     (errors.length ? ` errors ${errors.join(' | ')}` : ''));
   await context.close();
 }
@@ -268,6 +305,15 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
     tooSmallProbe.level === initial.level &&
     tooSmallProbe.H === initial.H;
 
+  // Verify Start / P cannot resume while too-small notice is open
+  await page.keyboard.press('p');
+  const padStartBlocked = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles');
+    g.padStart();
+    return g.state === 'paused';
+  });
+  const lockOk = padStartBlocked;
+
   // Restore to 1920x1080
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.waitForTimeout(200);
@@ -295,11 +341,21 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
     restoredProbe.level === initial.level &&
     restoredProbe.H === initial.H;
 
-  const liveResizePass = resizeOk && tooSmallOk && restoredOk && !errors.length;
+  // Resume with padStart once restored above minimum
+  const resumedOk = await page.evaluate(() => {
+    const g = document.querySelector('coop-bubbles');
+    g.padStart();
+    return g.state === 'play';
+  });
+
+  const liveResizePass = resizeOk && tooSmallOk && lockOk && restoredOk && resumedOk && !errors.length;
   if (!liveResizePass) failed = true;
   console.log(`tv-resize     ${liveResizePass ? 'ok ' : 'BAD'} multi-resize ${resizeOk ? 'ok' : 'DRIFT'} ` +
     `· too-small notice ${tooSmallProbe.noticeVisible ? 'visible' : 'HIDDEN'} & paused ${tooSmallProbe.state === 'paused'} ` +
-    `· restored notice ${!restoredProbe.noticeVisible ? 'hidden' : 'VISIBLE'} & stays paused ${restoredProbe.state === 'paused'}` +
+    `· pause-locked ${lockOk} · restored notice ${!restoredProbe.noticeVisible ? 'hidden' : 'VISIBLE'} & stays paused ${restoredProbe.state === 'paused'} ` +
+    `· resumed with Start ${resumedOk}` +
+    (!tooSmallOk ? ` tooSmallFail(${JSON.stringify(tooSmallProbe)})` : '') +
+    (!restoredOk ? ` restoredFail(${JSON.stringify(restoredProbe)})` : '') +
     (errors.length ? ` errors ${errors.join(' | ')}` : ''));
   await context.close();
 }

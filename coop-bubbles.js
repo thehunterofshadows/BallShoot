@@ -2339,6 +2339,7 @@ class CoopBubbles extends HTMLElement {
     if (power) this.requestTeamPower(i);
   }
   padStart() {
+    if (this.tvActive && this.rootEl?.classList.contains('tvTooSmall')) return;
     if (this.screenFitEl && this.screenFitEl.style.display !== 'none') { this.closeScreenFit(true); return; }
     if (this.sideEl.classList.contains('open')) { this.closeSide(); return; }
     if (this.state === 'play' || this.state === 'paused') { this.togglePause(); return; }
@@ -2646,7 +2647,11 @@ class CoopBubbles extends HTMLElement {
         return;
       }
       if (menu && k === 'escape') { this.menuBack(); e.preventDefault(); return; }
-      if (k === 'p') { this.togglePause(); return; }
+      if (k === 'p') {
+        if (this.tvActive && this.rootEl?.classList.contains('tvTooSmall')) return;
+        this.togglePause();
+        return;
+      }
       if (this.battle && this.settings.mode === 'battle') {
         const bt = this.battle, tg = bt.targeting;
         if (tg && tg.by === bt.human.i) {
@@ -2708,7 +2713,10 @@ class CoopBubbles extends HTMLElement {
     }
     if (this.state === 'play') { this.state = 'paused'; this.pauseEl.style.display = 'grid';
       this.shadowRoot.querySelector('.pauseSub').textContent = 'press P, Start or the button to resume'; }
-    else if (this.state === 'paused') { this.state = 'play'; this.pauseEl.style.display = 'none'; this._t = performance.now(); }
+    else if (this.state === 'paused') {
+      if (this.tvActive && this.rootEl?.classList.contains('tvTooSmall')) return;
+      this.state = 'play'; this.pauseEl.style.display = 'none'; this._t = performance.now();
+    }
     this.syncButtons();
   }
 
@@ -4509,6 +4517,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       window.removeEventListener('orientationchange', onViewport);
       window.visualViewport?.removeEventListener('resize', onViewport);
     };
+    this.setupDprListener();
+    this.measure();
+    this.buildSettings();
+  }
+  setupDprListener() {
     let dprMq = null;
     const onDprChange = () => {
       this.fit();
@@ -4534,8 +4547,6 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       }
       dprMq = null;
     };
-    this.measure();
-    this.buildSettings();
   }
 
   /* ---------- layout ---------- */
