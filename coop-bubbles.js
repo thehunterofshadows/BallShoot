@@ -3972,11 +3972,11 @@ class CoopBubbles extends HTMLElement {
 .perfHud{display:none;position:absolute;left:8px;top:8px;z-index:99;margin:0;padding:6px 9px;border-radius:8px;background:rgba(10,20,40,.78);color:#bfffcf;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;white-space:pre;pointer-events:none;contain:layout paint}
 :host(:fullscreen),:host(:-webkit-full-screen){width:100vw;height:100vh;height:100dvh;background:#0c1030}
 *{box-sizing:border-box}
-/* The fantasy world: screen-fixed and cover-cropped, darkened toward the middle so the
-   cabinet stays the focus. The trailing gradient is the fallback if the art never loads. */
+/* The fantasy world paints the full root, outside the content safe area. Cover crops it
+   to every viewport shape; the trailing gradient is the fallback if the art never loads. */
 .root{--worldBg:radial-gradient(ellipse 60% 70% at 50% 50%,rgba(6,8,30,.62),rgba(6,8,30,.3) 70%,rgba(6,8,30,.15)),url(${THEME_URLS.background}) center/cover no-repeat,linear-gradient(#1c2160,#0c1030);
  --sideW:290px;--rootGap:20px;position:relative;display:flex;width:100%;height:100%;background:var(--worldBg);align-items:center;justify-content:center;gap:var(--rootGap);overflow:hidden;
- padding:max(14px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+ padding:max(clamp(24px,5vh,80px),env(safe-area-inset-top)) max(clamp(24px,5vw,80px),env(safe-area-inset-right)) max(clamp(24px,5vh,80px),env(safe-area-inset-bottom)) max(clamp(24px,5vw,80px),env(safe-area-inset-left))}
 /* relayout() sets the board's pixel size outright. Letterboxing it in pure CSS needs a
    definite height, and a definite height plus max-width makes the browser break the
    aspect ratio rather than shrink — hence the old viewport-unit calc(). The rules below
@@ -4094,7 +4094,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
    what reclaims phone landscape and the unfolded Fold, where a viewport-width test failed. */
 /* Padding is keyed to the viewport, never to .wideLayout: relayout() measures the padded
    box to make that decision, so letting the class change the padding would feed the
-   decision back into its own input. */
+   decision back into its own input. Compact touch screens keep their larger playfield. */
 @media (max-width:520px),(max-height:520px){.root{padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}}
 .root:not(.wideLayout) .side{display:none}
 .root:not(.wideLayout) .gear{display:grid}
@@ -4136,8 +4136,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 /* ---------- TV / couch display (.tvMode; measure() decides it from the Display setting) ----------
    .gameCol becomes the fixed 1920x1080 logical stage, sized in real px by relayout(); --tvS is
    stage px per logical px. Everything here is authored in logical px and multiplied by --tvS,
-   so 1080p and 4K get the same composition and a non-16:9 screen letterboxes. The root colour
-   is the letterbox; the stage art fills the whole 16:9 surface around the playfield. */
+   so 1080p and 4K get the same composition and a non-16:9 screen letterboxes. The root art
+   still covers the viewport outside that stage; Screen Fit controls its own UI inset. */
 .tvHud,.tvOnly,.tvSmall{display:none}
 .root.tvMode{padding:0;gap:0;background:var(--worldBg)}
 .root.tvMode .gameCol{flex:none;aspect-ratio:auto;max-width:none;max-height:none;overflow:hidden;

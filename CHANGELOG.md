@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Viewport background and UI safe area** (#12). The default browser layout now keeps
+  background art edge-to-edge with cover cropping while placing content about 5% inward,
+  bounded to 24–80px on larger screens. The playfield and TV Screen Fit continue to use
+  their own layout rules. Added a live-resize browser probe for common TV and monitor shapes.
+
 - **TV Mode aspect-ratio and dynamic viewport handling** (#10).
   - *Presentation bleed:* Theme art (`var(--worldBg)`) now paints on `.root` to fill pillarbox and letterbox space on ultra-wide (21:9, 32:9) and tall (16:10, 4:3) displays, while the 16:9 stage background becomes transparent with a soft vignette edge.
   - *Minimum viewport & legibility protection:* Forced TV requires at least a 960×540 viewport (stage scale 0.5) to keep HUD typography legible (≥14 CSS px); below this, a `.tvSmall` dialog offers Fullscreen and "Use Desktop layout" actions, pausing local offline play without resetting match state, while online play stays room-authoritative.

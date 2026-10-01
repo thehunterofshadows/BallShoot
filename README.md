@@ -40,7 +40,11 @@ rounds as authored; `0` turns it off). A player who sits on a loaded launcher is
 idle limit in seconds (default 8, `0` off). Bots and Battle boards are exempt.
 
 **Display** (home card, pause card or settings) chooses **Auto**, **Desktop** or **TV**, and is
-remembered on the device. TV is a couch layout on a fixed 16:9 stage: a big centred field,
+remembered on the device. The default browser layout paints the theme across the full
+viewport with cover cropping, while its content sits inside a bounded safe area (5% of
+each edge, from 24px to 80px on larger screens). Compact touch screens keep their tighter
+spacing. The playfield still sizes independently of the background. TV remains an optional
+couch layout on a fixed 16:9 stage: a big centred field,
 score and round across the top, a large card per player in two-player co-op, and bigger,
 controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Wide (pillarbox)
 and tall (letterbox) viewports bleed the theme art into extra space outside the stage rather
@@ -64,7 +68,8 @@ play pauses until it is back. **Screen Fit…** (home, pause or settings) calibr
 move all edges or each edge in or out until the four corner marks are visible, then Save
 (Reset returns to the 5% default). It is saved on the device and every score, name, prompt
 and menu stays inside it; the background still fills the screen and the field only scales.
-Check the layout across all resolutions with `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
+Check the default safe area and TV layout with `docker compose run --rm --no-deps screens node scripts/safe-area-probe.mjs`
+and `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
 
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields
