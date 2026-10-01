@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **TV Mode aspect-ratio and dynamic viewport handling** (#10).
+  - *Presentation bleed:* Theme art (`var(--worldBg)`) now paints on `.root` to fill pillarbox and letterbox space on ultra-wide (21:9, 32:9) and tall (16:10, 4:3) displays, while the 16:9 stage background becomes transparent with a soft vignette edge.
+  - *Minimum viewport & legibility protection:* Forced TV requires at least a 960×540 viewport (stage scale 0.5) to keep HUD typography legible (≥14 CSS px); below this, a `.tvSmall` dialog offers Fullscreen and "Use Desktop layout" actions, pausing local offline play without resetting match state, while online play stays room-authoritative.
+  - *Auto mode hysteresis:* Auto maintains TV mode within an aspect ratio range of [1.2, 3.6] (`TV.auto.stayAspect`) once active, eliminating flip jitter during window resizing or fullscreen toggling.
+  - *Mid-match geometry lock:* TV↔Desktop layout flips during an active match never alter gameplay geometry (`H`, `LAUNCH_Y`, `DANGER_Y`, grid, score, or level); any pending device world height is safely deferred until the next match or return to home.
+  - *Flicker-free resize & DPR refitting:* Split `relayoutTv()` into cheap stage variable updates and keyed layout rebuilds so size-only resize events never rebuild `.tvCards` DOM. A `matchMedia` resolution listener re-fits the canvas backing store on display density changes.
+  - Expanded test matrix across 1080p, 1440p, 4K, 16:10, 21:9, 4:3, and arbitrary resolutions in `tests/tv-mode.test.js` and `scripts/tv-probe.mjs`.
+
 - **Fantasy arcade theme** (#11). The board is now a cabinet in the floating-islands night
   world: `fantasy-night` is the screen-fixed, cover-cropped root background (darkened behind
   the game; also the TV stage), the field is the recessed `playfield-glass` panel (a tall

@@ -12,17 +12,20 @@ const component = fs.readFileSync(path.resolve(__dirname, '..', 'coop-bubbles.js
 const block = component.match(/\/\* tv-display:begin[\s\S]*?\/\* tv-display:end \*\//);
 assert.ok(block, 'tv-display block not found in coop-bubbles.js');
 const tv = vm.runInNewContext(`${block[0]}
-  ({ DISPLAY_MODES, FIT_EDGES, TV, GAMEPAD, resolveDisplayMode, normalizeScreenFit, tvStage, TV_LAYOUTS, tvLayoutKey, tvLayout, spatialPick })`);
-const { TV, resolveDisplayMode, normalizeScreenFit, tvStage, tvLayout, tvLayoutKey, TV_LAYOUTS, spatialPick } = tv;
+  ({ DISPLAY_MODES, FIT_EDGES, TV, GAMEPAD, resolveDisplayMode, normalizeScreenFit, tvStage, tvTooSmall, TV_LAYOUTS, tvLayoutKey, tvLayout, spatialPick })`);
+const { TV, resolveDisplayMode, normalizeScreenFit, tvStage, tvTooSmall, tvLayout, tvLayoutKey, TV_LAYOUTS, spatialPick } = tv;
 
 /* The whole component, loaded with just enough stubs to reach the class, so controller and
    Screen Fit behaviour can be driven on a hand-built instance without a browser. */
 const loadComponent = (env = {}) => {
   let Cls;
   const ctx = { HTMLElement: class {}, customElements: { get: () => null, define: (n, c) => { Cls = c; } },
-    document: {}, Image: class {}, navigator: env.navigator || {}, performance: { now: () => env.now || 0 }, console,
+    document: env.document || { addEventListener() {}, removeEventListener() {} }, Image: class {},
+    navigator: env.navigator || {}, performance: { now: () => env.now || 0 }, console,
     location: {}, localStorage: env.localStorage || { getItem: () => null, setItem() {} },
-    setTimeout: () => 0, clearTimeout() {}, Event: class { constructor(t) { this.type = t; } } };
+    setTimeout: () => 0, clearTimeout() {}, cancelAnimationFrame: () => {}, Event: class { constructor(t) { this.type = t; } },
+    matchMedia: env.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })),
+    getComputedStyle: env.getComputedStyle || (() => ({ paddingLeft: '0', paddingRight: '0', paddingTop: '0', paddingBottom: '0', getPropertyValue: () => '' })) };
   ctx.window = ctx;
   vm.runInNewContext(component, ctx);
   return Cls;
@@ -51,6 +54,31 @@ test('auto picks TV only for a big widescreen driven by a controller or no point
   assert.equal(resolveDisplayMode(undefined, {}), 'desktop');
 });
 
+test('tvTooSmall holds at the minimum viewport boundaries', () => {
+  assert.deepEqual({ ...TV.minViewport }, { w: 960, h: 540 });
+  assert.equal(TV.auto.minW, 960);
+  assert.equal(TV.auto.minH, 540);
+  assert.equal(tvTooSmall(959, 540), true);
+  assert.equal(tvTooSmall(960, 539), true);
+  assert.equal(tvTooSmall(959, 539), true);
+  assert.equal(tvTooSmall(960, 540), false);
+  assert.equal(tvTooSmall(1920, 1080), false);
+});
+
+test('auto mode hysteresis maintains TV mode across the stay-aspect band [1.2, 3.6]', () => {
+  assert.deepEqual([...TV.auto.stayAspect], [1.2, 3.6]);
+  // An active TV session stays in TV when resized to 21:9, 16:10, 4:3
+  assert.equal(resolveDisplayMode('auto', { w: 3440, h: 1440, gamepad: true, current: 'tv' }), 'tv', '21:9 stays TV');
+  assert.equal(resolveDisplayMode('auto', { w: 1920, h: 1200, gamepad: true, current: 'tv' }), 'tv', '16:10 stays TV');
+  assert.equal(resolveDisplayMode('auto', { w: 1600, h: 1200, gamepad: true, current: 'tv' }), 'tv', '4:3 stays TV');
+  // Fresh Auto at 21:9 or 4:3 resolves to Desktop
+  assert.equal(resolveDisplayMode('auto', { w: 3440, h: 1440, gamepad: true }), 'desktop', 'fresh 21:9 is desktop');
+  assert.equal(resolveDisplayMode('auto', { w: 1600, h: 1200, gamepad: true }), 'desktop', 'fresh 4:3 is desktop');
+  // Dropping below minimum viewport or losing controller leaves TV even with current: 'tv'
+  assert.equal(resolveDisplayMode('auto', { w: 900, h: 500, gamepad: true, current: 'tv' }), 'desktop', 'below min drops to desktop');
+  assert.equal(resolveDisplayMode('auto', { w: 1920, h: 1080, current: 'tv' }), 'desktop', 'loss of gamepad drops to desktop');
+});
+
 test('the display preference persists with the device prefs', () => {
   assert.match(component, /displayMode:'auto'/);
   assert.match(component, /DISPLAY_MODES\.includes\(p\.displayMode\)\) out\.displayMode = p\.displayMode/);
@@ -70,15 +98,40 @@ test('1080p, 1440p and 4K get the same composition, only scaled', () => {
   assert.doesNotMatch(block[0], /innerWidth|devicePixelRatio|clientWidth/);
 });
 
-test('non-16:9 screens letterbox or pillarbox instead of stretching', () => {
-  const wide = tvStage(3440, 1440); // 21:9
-  assert.ok(Math.abs(wide.scale - 1440 / 1080) < 1e-9);
-  assert.ok(wide.x > 0 && wide.y === 0, 'pillarboxed');
-  assert.ok(Math.abs(wide.w / wide.h - 16 / 9) < 1e-9);
-  const tall = tvStage(1600, 1200); // 4:3
-  assert.ok(tall.y > 0 && tall.x === 0, 'letterboxed');
-  assert.ok(Math.abs(tall.w / tall.h - 16 / 9) < 1e-9);
-  assert.ok(Math.abs(tall.x * 2 + tall.w - 1600) < 1e-9 && Math.abs(tall.y * 2 + tall.h - 1200) < 1e-9, 'centred');
+test('non-16:9 screens letterbox or pillarbox instead of stretching across the full matrix', () => {
+  const MATRIX = [
+    { w: 1920, h: 1080, name: '1080p' },
+    { w: 2560, h: 1440, name: '1440p' },
+    { w: 3840, h: 2160, name: '4K' },
+    { w: 1920, h: 1200, name: '16:10' },
+    { w: 2560, h: 1080, name: '21:9' },
+    { w: 3440, h: 1440, name: '21:9 UW' },
+    { w: 1600, h: 1200, name: '4:3' },
+    { w: 1366, h: 768,  name: '1366x768' },
+    { w: 1280, h: 1024, name: '5:4' },
+    { w: 2200, h: 900,  name: '2200x900' },
+  ];
+  const refLayout = tvLayout('coop2', FIELD, 2);
+  for (const { w: vw, h: vh, name } of MATRIX) {
+    const st = tvStage(vw, vh);
+    const expectedScale = Math.min(vw / 1920, vh / 1080);
+    assert.ok(Math.abs(st.scale - expectedScale) < 1e-9, `${name}: scale`);
+    assert.ok(Math.abs(st.w / st.h - 16 / 9) < 1e-9, `${name}: 16:9 stage aspect`);
+    assert.ok(Math.abs(st.x * 2 + st.w - vw) < 1e-9, `${name}: centred horizontally`);
+    assert.ok(Math.abs(st.y * 2 + st.h - vh) < 1e-9, `${name}: centred vertically`);
+    const aspect = vw / vh;
+    if (aspect > 16 / 9 + 1e-6) {
+      assert.ok(st.x > 0 && Math.abs(st.y) < 1e-9, `${name}: pillarboxed`);
+    } else if (aspect < 16 / 9 - 1e-6) {
+      assert.ok(st.y > 0 && Math.abs(st.x) < 1e-9, `${name}: letterboxed`);
+    } else {
+      assert.ok(Math.abs(st.x) < 1e-9 && Math.abs(st.y) < 1e-9, `${name}: exact 16:9`);
+    }
+    // Layout output is strictly invariant to viewport size
+    const lay = tvLayout('coop2', FIELD, 2);
+    assert.deepEqual(lay, refLayout, `${name}: layout invariance`);
+    assert.ok(Math.abs(lay.playfield.w / lay.playfield.h - FIELD) < 1e-9, `${name}: playfield aspect matches world`);
+  }
 });
 
 test('critical UI sits inside the 5% safe area and never on the playfield', () => {
@@ -239,8 +292,9 @@ test('calibration never distorts the playfield; the stage art keeps the whole vi
     assert.ok(Math.abs(pf.w / pf.h - aspect) < 1e-9, 'same shape as the world');
     assert.ok(pf.x >= 0 && pf.y >= 0 && pf.x + pf.w <= 1920 + 1e-9 && pf.y + pf.h <= 1080 + 1e-9, 'on the stage');
   }
-  // The background belongs to .gameCol (the full stage), not to the safe rect.
-  assert.match(component, /\.root\.tvMode \.gameCol\{[^}]*background:var\(--worldBg\)/);
+  // The background belongs to .root (the full viewport), with .gameCol transparent.
+  assert.match(component, /\.root\.tvMode\{[^}]*background:var\(--worldBg\)/);
+  assert.match(component, /\.root\.tvMode \.gameCol\{[^}]*background:transparent/);
   assert.doesNotMatch(component.match(/\.root\.tvMode \.gameCol\{[^}]*\}/)[0], /tvSafe/);
 });
 
@@ -432,4 +486,146 @@ test('controllers keep their slot, and a disconnect releases holds and pauses lo
   pads = [pad(1)]; g.pollGamepads();
   pads = [pad(1, [0])]; g.pollGamepads();
   assert.deepEqual(fired, [0]);
+});
+
+test('geometry lock: TV↔Desktop flip mid-match never moves H, danger line or resets offline play', () => {
+  const C = loadComponent();
+  const root = {
+    clientWidth: 1920, clientHeight: 1080,
+    style: { setProperty() {} },
+    classList: { toggle() {}, remove() {}, contains: () => false },
+  };
+  const col = { style: {} };
+  const canvas = { style: {}, clientWidth: 640 };
+  let resetCalls = 0;
+  const g = Object.assign(Object.create(C.prototype), {
+    rootEl: root, gameColEl: col, canvas,
+    settings: { displayMode: 'auto', mode: 'clear', field: 'classic', level: 0, players: 2 },
+    online: false, state: 'play', score: 1234, dispScore: 1234, H: 1080, LAUNCH_Y: 1000, DANGER_Y: 800,
+    connectedPads: () => [{}], tvActive: true, fit() {},
+    resetGame() { resetCalls++; },
+  });
+  assert.equal(g.H, 1080);
+  const initialLaunchY = g.LAUNCH_Y, initialDangerY = g.DANGER_Y;
+
+  // Mid-match flip: window resizes to 21:9 with no pad -> resolves to desktop
+  root.clientWidth = 3440; root.clientHeight = 1440;
+  g.connectedPads = () => [];
+  g.measure();
+  assert.equal(g.tvActive, false, 'flipped to desktop');
+  assert.equal(g.H, 1080, 'H is locked and unchanged');
+  assert.equal(g.LAUNCH_Y, initialLaunchY, 'LAUNCH_Y unchanged');
+  assert.equal(g.DANGER_Y, initialDangerY, 'DANGER_Y unchanged');
+  assert.equal(g.score, 1234, 'score untouched');
+  assert.equal(resetCalls, 0, 'never calls resetGame');
+
+  // Tall viewport while still in match: H stays locked, new deviceViewH stashed
+  root.clientWidth = 500; root.clientHeight = 1000;
+  g.measure();
+  assert.equal(g.H, 1080, 'H stays locked');
+  assert.equal(g._deviceViewH, 1280, 'stashed tall deviceViewH');
+
+  // Next resetGame without carry adopts stashed _deviceViewH
+  g.resetGame = C.prototype.resetGame;
+  g.players = [{ x: 320 }]; g.activeP = 0; g.levelRows = () => []; g.levelColors = () => []; g.spawnPlayers = () => { g.players = [{ x: 320 }]; }; g.updateLowest = () => {}; g.hideOverlays = () => {};
+  g.resetGame();
+  assert.equal(g.H, 1280, 'adopts stashed view height at next resetGame');
+});
+
+test('size-only relayoutTv does not call placeTvHud', () => {
+  const C = loadComponent();
+  const root = { clientWidth: 1920, clientHeight: 1080, style: { setProperty() {} }, classList: { toggle() {}, remove() {}, contains: () => false } };
+  const col = { style: {} };
+  const canvas = { style: {}, clientWidth: 640 };
+  let placed = 0;
+  const g = Object.assign(Object.create(C.prototype), {
+    rootEl: root, gameColEl: col, canvas,
+    settings: { displayMode: 'tv', mode: 'clear', players: 2 },
+    tvActive: true, H: 1080, fit() {},
+    placeTvHud(lay) { placed++; },
+  });
+  g.relayoutTv();
+  assert.equal(placed, 1, 'initial layout calls placeTvHud');
+
+  // Size change only:
+  root.clientWidth = 2560; root.clientHeight = 1440;
+  g.relayoutTv();
+  assert.equal(placed, 1, 'size change does not rebuild HUD DOM');
+
+  // Screen Fit change triggers rebuild:
+  g._fitDraft = { top: 0.1, right: 0.1, bottom: 0.1, left: 0.1 };
+  g.relayoutTv();
+  assert.equal(placed, 2, 'fit change rebuilds HUD DOM');
+});
+
+test('forced TV below 960x540 pauses offline play without reset, and never pauses online', () => {
+  const C = loadComponent();
+  const root = { clientWidth: 800, clientHeight: 450, style: { setProperty() {} }, classList: { toggle() {}, remove() {}, contains: () => false } };
+  const col = { style: {} };
+  const canvas = { style: {}, clientWidth: 400 };
+  let paused = 0, closedFit = 0;
+  const g = Object.assign(Object.create(C.prototype), {
+    rootEl: root, gameColEl: col, canvas,
+    settings: { displayMode: 'tv', mode: 'clear', players: 2 },
+    tvActive: true, H: 1080, state: 'play', online: false, fit() {},
+    togglePause() { paused++; this.state = 'paused'; },
+    closeScreenFit(save) { closedFit++; },
+  });
+  g.tvApplyStage();
+  assert.equal(paused, 1, 'offline play paused on entry to too-small');
+  assert.equal(closedFit, 1, 'screen fit cancelled on entry to too-small');
+  assert.equal(g._tvTooSmall, true);
+
+  // Growing back hides notice and leaves game paused (no auto-resume)
+  root.clientWidth = 1920; root.clientHeight = 1080;
+  g.tvApplyStage();
+  assert.equal(g._tvTooSmall, false);
+  assert.equal(g.state, 'paused', 'game remains paused after window grows back');
+
+  // Online match does not pause
+  let onlinePaused = 0;
+  const gOnline = Object.assign(Object.create(C.prototype), {
+    rootEl: root, gameColEl: col, canvas,
+    settings: { displayMode: 'tv', mode: 'clear', players: 2 },
+    tvActive: true, H: 1080, state: 'play', online: true, fit() {},
+    togglePause() { onlinePaused++; },
+    closeScreenFit(save) {},
+  });
+  root.clientWidth = 800; root.clientHeight = 450;
+  gOnline.tvApplyStage();
+  assert.equal(gOnline.state, 'play', 'online play is never paused by too-small');
+  assert.equal(onlinePaused, 0);
+});
+
+test('changing devicePixelRatio re-fits canvas backing store and cleans up on disconnect', () => {
+  let changeHandler = null, removed = false;
+  const mq = {
+    addEventListener(evt, fn) { if (evt === 'change') changeHandler = fn; },
+    removeEventListener(evt, fn) { if (evt === 'change') removed = true; },
+  };
+  const C = loadComponent({
+    matchMedia: q => mq,
+  });
+  let fitCalls = 0;
+  const g = Object.assign(Object.create(C.prototype), {
+    fit() { fitCalls++; },
+  });
+  let dprMq = null;
+  const onDprChange = () => { g.fit(); armDpr(); };
+  const armDpr = () => {
+    if (dprMq) dprMq.removeEventListener('change', onDprChange);
+    dprMq = mq;
+    dprMq.addEventListener('change', onDprChange);
+  };
+  armDpr();
+  g._dprUnbind = () => { if (dprMq) dprMq.removeEventListener('change', onDprChange); dprMq = null; };
+
+  // Trigger DPR change event
+  changeHandler();
+  assert.equal(fitCalls, 1, 'fit called on DPR change');
+
+  // Calling disconnectedCallback cleans up
+  g.disconnectedCallback = C.prototype.disconnectedCallback;
+  g.disconnectedCallback();
+  assert.equal(removed, true, 'listener removed on disconnect');
 });

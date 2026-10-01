@@ -42,8 +42,14 @@ idle limit in seconds (default 8, `0` off). Bots and Battle boards are exempt.
 **Display** (home card, pause card or settings) chooses **Auto**, **Desktop** or **TV**, and is
 remembered on the device. TV is a couch layout on a fixed 16:9 stage: a big centred field,
 score and round across the top, a large card per player in two-player co-op, and bigger,
-controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Use **Play
-fullscreen** for the full effect; leaving fullscreen keeps TV mode. Gamepads work in every
+controller-friendly menus, with critical UI inside a 5% overscan-safe margin. Wide (pillarbox)
+and tall (letterbox) viewports bleed the theme art into extra space outside the stage rather
+than showing flat colour bars. Forced TV enforces a 960×540 minimum viewport (stage scale 0.5)
+to guarantee HUD legibility; smaller windows show a prompt with Fullscreen and Use Desktop
+actions and pause offline play without resetting match state. Auto mode includes hysteresis
+(staying TV within aspect 1.2–3.6) to avoid flip jitter, and TV↔Desktop switches during an
+active offline match lock gameplay geometry (`H`, danger line) so resizing never alters play.
+Use **Play fullscreen** for the full effect; leaving fullscreen keeps TV mode. Gamepads work in every
 display mode: stick or d-pad aims, A fires, X passes, Y fires Team Power, Start pauses, Back
 opens settings, and in menus the stick moves focus, A presses and B backs out. Auto chooses TV
 for a large widescreen with a gamepad connected.
@@ -58,7 +64,7 @@ play pauses until it is back. **Screen Fit…** (home, pause or settings) calibr
 move all edges or each edge in or out until the four corner marks are visible, then Save
 (Reset returns to the 5% default). It is saved on the device and every score, name, prompt
 and menu stays inside it; the background still fills the screen and the field only scales.
-Check the layout with `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
+Check the layout across all resolutions with `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`.
 
 In Battle, clearing six or more bubbles charges a junk attack. Pick a living
 opponent within six seconds or the server chooses one automatically. Empty fields

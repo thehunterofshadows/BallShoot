@@ -1,29 +1,29 @@
-# Issue #11 - Fantasy arcade theme: background, playfield, frame, launcher deck
+# Issue #10 - Progress
 
-**Status:** ✅ Complete
+**Status:** Ready for review
 
 ## Implementation Plan
 
-- [x] Review issue #11, AGENTS.md, renderer (`render()`, `drawDanger`, launchers, battle minis) and theme assets
-- [x] Centralize theme asset URLs + build-stamp cache-busted preloading (`THEME_SPRITES`)
-- [x] Root fantasy-night background (screen-fixed, cover crop, darkened centre) with readable side UI
-- [x] Playfield glass clipped to the field bounds (mirrored band repeat, no tall-view stretch) with procedural gradient fallback
-- [x] Screen-fixed cabinet frame: 3-slice left/right rails, top marquee clear of `GRIDTOP0`, bottom frame
-- [x] Launcher deck for aligned 2-player classic layout; frame-bottom fallback for 3/4 players / wide fields
-- [x] Neon danger rail (brighter/pulsing only in danger) and dark-field legibility of labels/popups/callouts
-- [x] Battle mini boards reuse glass/background where it reads cleanly
-- [x] Add theme tests (all seven assets referenced/loaded, fallback, no geometry constants changed)
-- [x] Run `docker compose run --rm --no-deps test` (175/175 pass)
-- [x] Draft pass: inspect desktop + narrow/tall + 3/4-player + wide + battle shots; fix marquee/HUD overlap and launcher-name contrast
-- [x] Run screenshot matrix + `scripts/theme-probe.mjs` and inspect
-- [x] `./rebuild.sh`, HTTP-check theme WebPs (all 7: 200 + image/webp), report build stamp
-- [x] Update CHANGELOG/README, review diff, commit and push
+- [x] Add `TV.minViewport` (960×540), the Auto stay-aspect band [1.2, 3.6], the pure `tvTooSmall()` helper and `resolveDisplayMode(..., {current})` hysteresis inside the `tv-display` block; point `TV.auto.minW/minH` at `minViewport`
+- [x] Split `relayoutTv()` into a cheap per-resize stage update (col size, `--tvS/--tvX/--tvY/--tvMenuK`, too-small state) and a layout rebuild (`tvLayout`, safe/type vars, `placeTvHud`) that runs only when layout key, player count, H or Screen Fit change
+- [x] In TV mode, paint the theme `--worldBg` on `.root` so it fills the extra width/height, make the `.gameCol` stage background transparent with a soft edge, and keep the flat colour as the fallback layer
+- [x] Lock world geometry across TV↔Desktop flips during an offline match (skip `setViewH`, stash `_deviceViewH`, apply on `resetGame` without carry / `returnHome`); online stays room-authoritative
+- [x] Add the `.tvSmall` notice below the minimum viewport in forced TV (fixed-px text, Fullscreen and "Use Desktop layout" buttons, default controller focus, wired into `menuRoot`/prompts); on entry, pause local offline play and cancel Screen Fit; never reset; no auto-resume
+- [x] Add a devicePixelRatio `matchMedia` change listener that calls `fit()` and re-arms, unbound in `disconnectedCallback`; call `measure()` from the fullscreen-change sync
+- [x] Extend `tests/tv-mode.test.js`: stage math across the full aspect matrix, layout invariance, `tvTooSmall` boundaries, Auto hysteresis, geometry lock on a mid-match flip, no HUD rebuild on a size-only relayout, too-small pauses offline without reset and never pauses online, DPR listener cleanup; update the `.gameCol` background assertion
+- [x] Extend `scripts/tv-probe.mjs` to the issue's full matrix plus arbitrary sizes, a live resize sequence (including below-minimum and back) asserting no reset and correct notice/pause, a fullscreen enter/exit check, and background paint outside the stage
+- [x] Update the `tv-display` header comment, README TV section, CHANGELOG and `progress.md`
+- [x] Run `docker compose run --rm --no-deps test` and `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs` (plus the default `screens` matrix for desktop regressions) and confirm all pass
+- [x] Run `./rebuild.sh`, report the deployed `?v=` hash / build stamp, commit all changes and push `dev`
+- [ ] Codex independent QA
+- [ ] Claude design-compliance review
+- [ ] Finalize reviewed issue
 
 ## Notes
 
-- Rendering-only change: gameplay coordinates, collision, `GRIDTOP0`, `LAUNCH_Y`/`DANGER_Y` stay untouched.
-- The deck and lower frame are drawn beneath live bubbles/guides (not above them as the issue's
-  suggested layer order has it), because the deck's backrests reach above `DANGER_Y` and would
-  otherwise hide danger-row bubbles and the aim-guide start. Launchers still draw on top.
-- True browser fullscreen can't be driven headlessly; it only resizes `:host`, which now uses the
-  same dark world colour. The TV layout and all non-fullscreen shapes were checked.
+- ai-runner -multi mode: Claude designs, AGY implements, Codex independently tests.
+- Foreground validation:
+  - `docker compose run --rm --no-deps test`: 182/182 tests passing (unit tests for TV mode stage math, safe-area bounds, Auto hysteresis, minimum viewport boundaries, geometry lock, DPR listener cleanup, and DOM rebuild skipping).
+  - `docker compose run --rm --no-deps screens node scripts/tv-probe.mjs`: All 10 aspect matrix and arbitrary resolutions passed without drift, 4K Screen Fit passed, live resize sequence passed (no match reset, too-small notice + pause verified, restore verified), and fullscreen enter/exit toggle verified.
+  - `docker compose run --rm --no-deps screens`: 18 desktop and mobile device shape screenshots verified without horizontal overflow.
+  - Deployed build stamp: `2026-10-01 01:28 UTC`, game version: `?v=cb230a5f3375` (support: `?v=ae4f0ac84496`).

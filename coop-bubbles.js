@@ -883,15 +883,19 @@ const geom = vh => {
 
    Everything is placed on one fixed 1920×1080 logical stage that is scaled whole into the
    viewport, so 1080p, 1440p and 4K show the same picture and anything that is not 16:9
-   letterboxes or pillarboxes instead of stretching. Critical UI stays inside the safe area
-   (`safeArea` of each edge) to survive TV overscan; the stage background and the playfield
-   may bleed past it. Every tuning value lives here — nothing downstream hard-codes a TV
-   dimension. A mode gets its own composition by adding a spec to TV_LAYOUTS; the stage,
-   safe area, typography, menu scale, fullscreen and controller focus come for free. */
+   letterboxes or pillarboxes instead of stretching. Wide and tall screens bleed theme
+   presentation into extra space rather than flat bars. Critical UI stays inside the safe
+   area (`safeArea` of each edge) to survive TV overscan; the stage background and playfield
+   may bleed past it. Forced TV enforces a minimum 960×540 viewport (scale 0.5) with a notice
+   and pause below it. Auto mode includes hysteresis ([1.2, 3.6] aspect band once in TV) to
+   prevent mid-match flip jitter. Every tuning value lives here — nothing downstream
+   hard-codes a TV dimension. A mode gets its own composition by adding a spec to TV_LAYOUTS;
+   the stage, safe area, typography, menu scale, fullscreen and controller focus come for free. */
 const DISPLAY_MODES = ['auto', 'desktop', 'tv'];
 const FIT_EDGES = ['top', 'right', 'bottom', 'left'];
 const TV = {
   logicalW: 1920, logicalH: 1080,
+  minViewport: { w: 960, h: 540 },
   safeArea: 0.05,        // default share of each edge kept clear of critical UI
   /* Screen Fit: the calibrated safe area, one share per edge. The player moves these in or
      out on the Screen Fit screen for their own TV's overscan; the default is safeArea all
@@ -917,13 +921,21 @@ const TV = {
   headH: 212, rowGap: 24, powerH: 104, padH: 96,
   // Auto picks TV for a couch-shaped screen (large, near 16:9) that is being driven by a
   // controller or by no pointer at all — a desktop monitor with a mouse stays Desktop.
-  auto: { minW: 960, minH: 540, minAspect: 1.55, maxAspect: 1.95 },
+  auto: {
+    get minW() { return TV.minViewport.w; },
+    get minH() { return TV.minViewport.h; },
+    minAspect: 1.55, maxAspect: 1.95,
+    stayAspect: [1.2, 3.6],
+  },
 };
+const tvTooSmall = (vw, vh, cfg = TV) => (vw < cfg.minViewport.w || vh < cfg.minViewport.h);
 const resolveDisplayMode = (pref, env = {}) => {
   if (pref === 'tv' || pref === 'desktop') return pref;
   const a = TV.auto, w = env.w || 0, h = env.h || 0, aspect = h ? w / h : 0;
-  const couch = w >= a.minW && h >= a.minH && aspect >= a.minAspect && aspect <= a.maxAspect;
-  return couch && (env.gamepad || env.noPointer) ? 'tv' : 'desktop';
+  const couch = w >= a.minW && h >= a.minH;
+  const minAsp = env.current === 'tv' ? a.stayAspect[0] : a.minAspect;
+  const maxAsp = env.current === 'tv' ? a.stayAspect[1] : a.maxAspect;
+  return couch && aspect >= minAsp && aspect <= maxAsp && (env.gamepad || env.noPointer) ? 'tv' : 'desktop';
 };
 // Any stored or half-formed fit becomes four in-range edges snapped to the step.
 const normalizeScreenFit = (v, cfg = TV) => {
@@ -1086,6 +1098,7 @@ class CoopBubbles extends HTMLElement {
     this._resizeObserver && this._resizeObserver.disconnect();
     this._availObserver && this._availObserver.disconnect();
     this._viewportUnbind && this._viewportUnbind();
+    this._dprUnbind && this._dprUnbind();
     this._fullscreenUnbind && this._fullscreenUnbind();
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._toastTimer);
@@ -1106,7 +1119,15 @@ class CoopBubbles extends HTMLElement {
   resetGame(carry = null) {
     if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
     this.battle = null; this._outro = null;
-    if (!carry) { this._runStartLevel = this.settings.level; this._pendingLevel = null; }
+    if (!carry) {
+      this._runStartLevel = this.settings.level;
+      this._pendingLevel = null;
+      this._geoLocked = false;
+      if (!this.online) {
+        if (this.tvActive) this.setViewH(H0);
+        else if (this._deviceViewH) this.setViewH(this._deviceViewH);
+      }
+    }
     this.WW = this.settings.field === 'wide' ? W * 4 : W;
     this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
     this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
@@ -2327,6 +2348,7 @@ class CoopBubbles extends HTMLElement {
   /* The surface a controller is navigating: Screen Fit or the settings drawer if open,
      otherwise the top-most visible card. Null during active play. */
   menuRoot() {
+    if (this.tvActive && this.rootEl?.classList.contains('tvTooSmall') && this.tvSmallEl) return this.tvSmallEl;
     if (this.screenFitEl && this.screenFitEl.style.display !== 'none') return this.screenFitEl;
     if (this.sideEl && this.sideEl.classList.contains('open') && this.sideEl.offsetParent !== null) return this.sideEl;
     const cards = [this.homeEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
@@ -2399,6 +2421,7 @@ class CoopBubbles extends HTMLElement {
      out would abandon a room it only moves focus to Leave, so it takes a second press. */
   menuBackLabel(menu = this.menuRoot()) {
     if (!menu) return null;
+    if (menu === this.tvSmallEl) return null;
     if (menu === this.screenFitEl) return 'Cancel';
     if (menu === this.sideEl) return 'Close';
     if (menu === this.pauseEl) return 'Resume';
@@ -2408,6 +2431,7 @@ class CoopBubbles extends HTMLElement {
   }
   menuBack() {
     const menu = this.menuRoot();
+    if (menu === this.tvSmallEl) return;
     if (menu === this.screenFitEl) { this.closeScreenFit(false); return; }
     if (menu === this.sideEl) { this.closeSide(); return; }
     if (menu === this.pauseEl) { if (this.state === 'paused') this.togglePause(); return; }
@@ -3448,6 +3472,11 @@ class CoopBubbles extends HTMLElement {
 
   /* ---------- battle royale mode ---------- */
   resetBattle() {
+    this._geoLocked = false;
+    if (!this.online) {
+      if (this.tvActive) this.setViewH(H0);
+      else if (this._deviceViewH) this.setViewH(this._deviceViewH);
+    }
     this.WW = W; this.cols = COLS; this.camX = 0;
     const n = clamp(this.settings.players, 2, 8);
     this.battle = { boards: [], phase: 'play', targeting: null, zoom: 0, order: [], winner: -1, spectate: false, view: 0 };
@@ -4101,10 +4130,16 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
    stage px per logical px. Everything here is authored in logical px and multiplied by --tvS,
    so 1080p and 4K get the same composition and a non-16:9 screen letterboxes. The root colour
    is the letterbox; the stage art fills the whole 16:9 surface around the playfield. */
-.tvHud,.tvOnly{display:none}
-.root.tvMode{padding:0;gap:0;background:#070a22}
+.tvHud,.tvOnly,.tvSmall{display:none}
+.root.tvMode{padding:0;gap:0;background:var(--worldBg)}
 .root.tvMode .gameCol{flex:none;aspect-ratio:auto;max-width:none;max-height:none;overflow:hidden;
- background:var(--worldBg)}
+ background:transparent;box-shadow:inset 0 0 60px rgba(0,0,0,.45)}
+.root.tvMode.tvTooSmall .tvSmall{display:grid;place-items:center;z-index:20;padding:20px;background:rgba(4,12,28,.92);backdrop-filter:blur(6px)}
+.root.tvMode .tvSmall .card{width:auto;max-width:480px;transform:none;padding:28px 24px;border-radius:20px;font-size:16px;line-height:1.4;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.6)}
+.root.tvMode .tvSmall h2{font-size:22px;margin:0 0 10px;line-height:1.2;color:#17335c}
+.root.tvMode .tvSmall p{font-size:16px;margin:0 0 20px;color:#3d5f86}
+.root.tvMode .tvSmall .tvSmallActions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.root.tvMode .tvSmall .btn{font-size:16px;padding:10px 20px;border-radius:12px}
 .root.tvMode canvas{position:absolute;left:calc(var(--pfX) * var(--tvS));top:calc(var(--pfY) * var(--tvS));width:calc(var(--pfW) * var(--tvS));height:calc(var(--pfH) * var(--tvS));
  border-radius:calc(26px * var(--tvS))}
 .root.tvMode .overlay{border-radius:0;box-sizing:border-box;background:rgba(8,22,46,.62);
@@ -4334,6 +4369,16 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
         <div class="sfActions"><button class="btn ghost sfReset">Reset</button><button class="btn ghost sfCancel">Cancel</button><button class="btn primary sfSave">Save</button></div>
       </div>
     </div></div>
+    <div class="overlay tvSmall" role="dialog" aria-label="Window too small for TV mode">
+      <div class="card tvSmallCard">
+        <h2>Window too small for TV mode</h2>
+        <p>Enlarge to at least 960 × 540 or go fullscreen</p>
+        <div class="tvSmallActions">
+          <button class="btn primary tvSmallFs tvFullscreen" data-tv-default>Fullscreen</button>
+          <button class="btn ghost tvSmallDesktop">Use Desktop layout</button>
+        </div>
+      </div>
+    </div>
     <div class="tvPrompts tvOnly" hidden></div>
     <div class="padToast" role="status" aria-live="polite"></div>
   </div>
@@ -4354,6 +4399,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.levelUpEl = sh.querySelector('.levelUp');
     this.sideEl = sh.querySelector('.side');
     this.screenFitEl = sh.querySelector('.screenFit');
+    this.tvSmallEl = sh.querySelector('.tvSmall');
     this.promptsEl = sh.querySelector('.tvPrompts');
     this.toastEl = sh.querySelector('.padToast');
     this.applyTouchStyle();
@@ -4369,6 +4415,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       this.state = 'play'; this.resetGame(); } };
     sh.querySelector('.luNext').onclick = () => this.readyForNextLevel();
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
+    sh.querySelector('.tvSmallDesktop').onclick = () => this.setDisplayMode('desktop');
     const fullscreenButton = sh.querySelector('.fullscreenButton');
     this.fullscreenButtonEl = fullscreenButton;
     this.gearEl = sh.querySelector('.gear');
@@ -4382,6 +4429,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       this.rootEl.classList.toggle('isFullscreen', active);
       fullscreenButton.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
       fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
+      this.measure();
     };
     this._syncFullscreen = syncFullscreenButton;
     fullscreenButton.onclick = () => this.toggleFullscreen();
@@ -4461,6 +4509,31 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       window.removeEventListener('orientationchange', onViewport);
       window.visualViewport?.removeEventListener('resize', onViewport);
     };
+    let dprMq = null;
+    const onDprChange = () => {
+      this.fit();
+      armDpr();
+    };
+    const armDpr = () => {
+      if (dprMq) {
+        if (dprMq.removeEventListener) dprMq.removeEventListener('change', onDprChange);
+        else if (dprMq.removeListener) dprMq.removeListener(onDprChange);
+      }
+      const dpr = window.devicePixelRatio || 1;
+      dprMq = typeof window.matchMedia === 'function' ? window.matchMedia(`(resolution: ${dpr}dppx)`) : null;
+      if (dprMq) {
+        if (dprMq.addEventListener) dprMq.addEventListener('change', onDprChange);
+        else if (dprMq.addListener) dprMq.addListener(onDprChange);
+      }
+    };
+    armDpr();
+    this._dprUnbind = () => {
+      if (dprMq) {
+        if (dprMq.removeEventListener) dprMq.removeEventListener('change', onDprChange);
+        else if (dprMq.removeListener) dprMq.removeListener(onDprChange);
+      }
+      dprMq = null;
+    };
     this.measure();
     this.buildSettings();
   }
@@ -4471,11 +4544,15 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      one danger line, and a mismatched device simply letterboxes. */
   measure() {
     const root = this.rootEl; if (!root) return;
+    const wasTv = !!this.tvActive;
+    const isTv = this.syncDisplayMode();
+    const flipped = wasTv !== isTv;
+    if (flipped && !this.online && this.state !== 'home') this._geoLocked = true;
     /* TV places everything on the fixed logical stage, so the world height is the one its
        layout was drawn for rather than whatever shape the window happens to be. */
-    if (this.syncDisplayMode()) {
+    if (isTv) {
       this._deviceViewH = H0;
-      if (!this.online) this.setViewH(H0);
+      if (!this.online && !this._geoLocked) this.setViewH(H0);
       this.relayout();
       return;
     }
@@ -4487,7 +4564,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       sideW: parseFloat(cs.getPropertyValue('--sideW')) || 290,
       gap: parseFloat(cs.getPropertyValue('--rootGap')) || 20 };
     this._deviceViewH = geom(W * availH / availW).H;
-    if (!this.online) this.setViewH(this._deviceViewH);
+    if (!this.online && !this._geoLocked) this.setViewH(this._deviceViewH);
     this.relayout();
   }
   relayout() {
@@ -4532,7 +4609,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const mm = q => typeof matchMedia === 'function' && matchMedia(q).matches;
     const tv = resolveDisplayMode(this.settings.displayMode, {
       w: root.clientWidth, h: root.clientHeight,
-      gamepad: this.connectedPads().length > 0, noPointer: mm('(any-pointer: none)') }) === 'tv';
+      gamepad: this.connectedPads().length > 0, noPointer: mm('(any-pointer: none)'),
+      current: this.tvActive ? 'tv' : 'desktop' }) === 'tv';
     if (tv !== !!this.tvActive) {
       this.tvActive = tv; this.tvLay = null;
       root.classList.toggle('tvMode', tv);
@@ -4574,20 +4652,47 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   }
   // The Screen Fit in force: the draft while the calibration screen is open, else the saved one.
   screenFitNow() { return this._fitDraft || this.settings.screenFit || TV.screenFit; }
-  relayoutTv() {
+  tvApplyStage() {
     const root = this.rootEl, col = this.gameColEl, fit = this.screenFitNow();
-    const st = tvStage(root.clientWidth || TV.logicalW, root.clientHeight || TV.logicalH, TV, fit);
+    if (!root || !col) return;
+    const vw = root.clientWidth || TV.logicalW, vh = root.clientHeight || TV.logicalH;
+    const tooSmall = tvTooSmall(vw, vh, TV);
+    if (tooSmall !== !!this._tvTooSmall) {
+      this._tvTooSmall = tooSmall;
+      if (tooSmall) {
+        this.closeScreenFit(false);
+        if (!this.online && this.state === 'play') this.togglePause();
+      }
+    }
+    root.classList.toggle('tvTooSmall', tooSmall);
+    const stageW = tooSmall ? Math.max(vw, TV.minViewport.w) : vw;
+    const stageH = tooSmall ? Math.max(vh, TV.minViewport.h) : vh;
+    const st = tvStage(stageW, stageH, TV, fit);
+    st.x = (vw - st.w) / 2;
+    st.y = (vh - st.h) / 2;
+    root.classList.remove('wideLayout');
+    col.style.width = st.w + 'px';
+    col.style.height = st.h + 'px';
+    const set = (k, v) => root.style.setProperty(k, String(v));
+    set('--tvS', st.scale.toFixed(5));
+    set('--tvX', st.x.toFixed(1) + 'px');
+    set('--tvY', st.y.toFixed(1) + 'px');
+    set('--tvMenuK', (st.scale * TV.menuScale).toFixed(5));
+    this.fit();
+  }
+  tvRebuildLayout() {
+    const root = this.rootEl, fit = this.screenFitNow();
+    if (!root) return;
     const n = this.tvPlayerCount(), key = tvLayoutKey(this.settings.mode, n);
     const lay = this.tvLay = tvLayout(key, W / this.H, n, TV, fit);
     lay.n = n; lay.H = this.H; lay.fit = JSON.stringify(fit);
-    root.classList.remove('wideLayout');
-    col.style.width = st.w + 'px'; col.style.height = st.h + 'px';
     const set = (k, v) => root.style.setProperty(k, String(v));
-    set('--tvS', st.scale.toFixed(5)); set('--tvX', st.x.toFixed(1) + 'px'); set('--tvY', st.y.toFixed(1) + 'px');
-    set('--tvHudS', TV.hudScale); set('--tvMenuScale', TV.menuScale); set('--tvMenuK', (st.scale * TV.menuScale).toFixed(5));
+    set('--tvHudS', TV.hudScale);
+    set('--tvMenuScale', TV.menuScale);
     const sf = lay.safe;
     set('--tvSafeX', sf.x + 'px'); set('--tvSafeY', sf.y + 'px'); set('--tvSafeW', sf.w + 'px'); set('--tvSafeH', sf.h + 'px');
-    set('--tvSafeR', (TV.logicalW - sf.x - sf.w) + 'px'); set('--tvSafeB', (TV.logicalH - sf.y - sf.h) + 'px'); set('--tvChrome', TV.chrome + 'px'); set('--tvPromptH', TV.promptH + 'px');
+    set('--tvSafeR', (TV.logicalW - sf.x - sf.w) + 'px'); set('--tvSafeB', (TV.logicalH - sf.y - sf.h) + 'px');
+    set('--tvChrome', TV.chrome + 'px'); set('--tvPromptH', TV.promptH + 'px');
     // Couch type: HUD sizes are logical px; menu sizes are divided by menuScale because the
     // cards are scaled by it, so what reaches the screen is exactly the table's value.
     for (const [k, v] of Object.entries(TV.hudType)) set('--tvH-' + k, Math.max(TV.minHudFontPx, v) + 'px');
@@ -4597,7 +4702,17 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       set(`--${name}W`, r.w.toFixed(1) + 'px'); set(`--${name}H`, r.h.toFixed(1) + 'px');
     }
     this.placeTvHud(lay);
-    this.fit();
+  }
+  tvNeedsRebuild() {
+    const lay = this.tvLay, n = this.tvPlayerCount();
+    return !lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)
+      || lay.fit !== JSON.stringify(this.screenFitNow());
+  }
+  relayoutTv(forceRebuild = false) {
+    if (forceRebuild || this.tvNeedsRebuild()) {
+      this.tvRebuildLayout();
+    }
+    this.tvApplyStage();
   }
   placeTvHud(lay) {
     const sh = this.shadowRoot, place = (el, r) => {
@@ -4635,10 +4750,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      a round card or the end screen (TV.hideSecondaryHud). */
   syncTvHud() {
     if (!this.tvActive) return;
-    const lay = this.tvLay, n = this.tvPlayerCount();
-    if (!lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)
-      || lay.fit !== JSON.stringify(this.screenFitNow())) { this.relayoutTv(); return; }
-    if (!lay.hud) return;
+    if (this.tvNeedsRebuild()) { this.relayoutTv(true); return; }
+    if (!this.tvLay || !this.tvLay.hud) return;
     const sh = this.shadowRoot, cache = this._tvCache || (this._tvCache = new Map());
     const put = (el, prop, v) => { const k = cache.get(el) || {}; if (k[prop] === v) return; k[prop] = v; cache.set(el, k);
       if (prop === 'text') el.textContent = v; else if (prop === 'class') el.className = v; else if (prop === 'css') el.style.cssText = v; else el.style.setProperty(prop, v); };
@@ -4904,7 +5017,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      every local game that follows, overriding what you saved. The shipped defaults come
      first, so a room value is dropped even for a player who never saved a preference. */
   restoreLocalPrefs(){Object.assign(this.settings,{aimSpeed:2.4,padTint:0.025,fireScale:1},this.loadLocalPrefs());this.applyTouchStyle();this._syncSettings&&this._syncSettings();}
-  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.closeSide();this.syncSideScope();this.measure();this.resetGame();this.state='home';}
+  returnHome(){clearTimeout(this._reconnectTimer);this.online=false;this.onlineRoom=null;this.onlinePlayerId=null;this._geoLocked=false;this.restoreLocalPrefs();this.state='home';this.hideOverlays();this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.tutEl.style.display='none';this.homeEl.style.display='grid';this.shadowRoot.querySelector('.onlineBar').style.display='none';this.closeSide();this.syncSideScope();this.measure();this.resetGame();this.state='home';}
   escapeHTML(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   buildSettings() {
     const S = this.settings, el = this.sideEl;
