@@ -101,14 +101,36 @@ const THEME_ART = {
    space, big masses hung from thin stems so one good shot drops the lot, and pockets only a
    bank shot reaches. Difficulty climbs by colour count first — 3, then 4, 5 and 6 — and
    each round teaches one idea. Rows alternate 11/10 wide (even rows anchor to the ceiling),
-   at most 12. Cells: R Y G B P O colours, # stone (never pops, only falls), * star (a shot
-   landing beside it pops every bubble of the shot's colour), + rainbow (joins any colour's
-   group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
+   at most 12. `layouts.coop2` is the round redrawn for the 16/15 two-player board (see
+   GRID_PROFILES): its own name, pace and rows, built around shared supports, centre
+   anchors and cross-board angles rather than a doubled wall. Cells: R Y G B P O colours,
+   # stone (never pops, only falls), * star (a shot landing beside it pops every bubble of
+   the shot's colour), + rainbow (joins any colour's group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
 const LEVEL_KINDS = ['R', 'Y', 'G', 'B', 'P', 'O'];
 const LEVEL_SPECIALS = { '#': 'stone', '*': 'star', '+': 'rainbow' };
 const levelCell = ch => LEVEL_KINDS.includes(ch) ? { kind: ch, special: null }
   : LEVEL_SPECIALS[ch] ? { kind: ch, special: LEVEL_SPECIALS[ch] } : null;
 const levelColors = rows => new Set(rows.join('').split('').filter(ch => LEVEL_KINDS.includes(ch))).size;
+/* Grid profiles: the width of the staggered field's rows. Even rows (anchored to the
+   ceiling) hold `evenColumns`, odd rows `oddColumns`, and one profile is one continuous
+   grid. `classic` is the 11/10 board every mode has always played. `coop2` is the 16/15
+   board built for local two-player Co-op Clear: twice the useful width, the same bubbles.
+   A round without its own coop2 layout keeps its classic rows centred on it, paced
+   `fallbackDropScale` slower because two launchers share the wider field. */
+const GRID_PROFILES = {
+  classic: { evenColumns: 11, oddColumns: 10, staggered: true, fallbackDropScale: 1 },
+  coop2:   { evenColumns: 16, oddColumns: 15, staggered: true, fallbackDropScale: 1.3 },
+};
+const rowsFit = (rows, profile) => rows.every((row, r) => row.length === (r % 2 ? profile.oddColumns : profile.evenColumns));
+/* What a round plays with on a profile: its authored `layouts[profile]` when it has one,
+   otherwise its classic rows shifted `off` whole columns (which keeps every neighbour). */
+const levelLayout = (L, profile = 'classic') => {
+  const v = L.layouts && L.layouts[profile];
+  if (v) return { name: v.name || L.name, rows: v.rows, drop: v.drop, objects: v.objects, off: 0 };
+  const P = GRID_PROFILES[profile] || GRID_PROFILES.classic, C = GRID_PROFILES.classic;
+  return { name: L.name, rows: L.rows, objects: L.objects, drop: Math.round(L.drop * P.fallbackDropScale),
+    off: Math.floor((P.evenColumns - C.evenColumns) / 2) };
+};
 /* The cells a resolving shot of `kind` clears through a star beside it, or null: the shot,
    the star(s) it touched and every plain bubble of that colour on the board. */
 const starHit = (grid, around, b, kind) => {
@@ -121,66 +143,137 @@ const starHit = (grid, around, b, kind) => {
 };
 const LEVELS = [
   // 1-10 · three colours · shapes, direct matches, the first stem cut
-  { name: 'Hello Bubbles', drop: 10, rows: [
+  { name: 'Hello Bubbles', drop: 10, layouts: { coop2: { name: 'Open Hands', drop: 16, rows: [
+      'RRRR..YYYY..BBBB',
+      'RRR...YYY...BBB',
+      '.BB....RR....YY.',
+    ] } }, rows: [
     'RRRYYYYYBBB',
     'RRRYYYYBBB',
     'RR..YYY..BB',
   ]},
-  { name: 'Smile', drop: 10, rows: [
+  { name: 'Smile', drop: 10, layouts: { coop2: { name: 'Twin Towers', drop: 16, rows: [
+      'YYYY........GGGG',
+      'RRRR.......RRRR',
+      'GGGGRRRRRRRRYYYY',
+      '.GGG.......YYY.',
+      '..YY........GG..',
+    ] } }, rows: [
     'YYYYYYYYYYY',
     'YGGYYYYGGY',
     'YYYYYYYYYYY',
     'R........R',
     '.RRRRRRRRR.',
   ]},
-  { name: 'Stripes', drop: 10, rows: [
+  { name: 'Stripes', drop: 10, layouts: { coop2: { name: 'Center Cut', drop: 15, rows: [
+      'YY....BBBB....RR',
+      'Y......BB.....R',
+      '.......YY.......',
+      '....RRRYRRR....',
+      '..RRRRYYYYRRRR..',
+      '..YYYYBBBYYYY..',
+      '....BBB..BBB....',
+    ] } }, rows: [
     'RRGGBBBGGRR',
     'RGGBBBBGGR',
     'RRGGBBBGGRR',
     '.RGG..GGR.',
   ]},
-  { name: 'Little Heart', drop: 10, rows: [
+  { name: 'Little Heart', drop: 10, layouts: { coop2: { name: 'Crossfire', drop: 15, rows: [
+      'BBBBBB....GGGGGG',
+      '.RRRR......YYYY',
+      '..GG........BB..',
+      '..YY........RR.',
+    ] } }, rows: [
     'BRRRBBBRRRB',
     'RRYRRRRYRR',
     'BRRRRRRRRRB',
     '..RRRRRR..',
     '....RRR....',
   ]},
-  { name: 'Arrow', drop: 10, rows: [
+  { name: 'Arrow', drop: 10, layouts: { coop2: { name: 'The Bridge', drop: 14, rows: [
+      'GG.....BB.....GG',
+      'G......B......G',
+      'RRRRRRRYRRRRRRRR',
+      'YYY..BBBBB..YYY',
+      '.BB....YY....BB.',
+    ] } }, rows: [
     '...GGGGG...',
     '...GGGG...',
     '.YYYGGGYYY.',
     '..YYYYYY..',
     '....BBB....',
   ]},
-  { name: 'Twin Pendants', drop: 10, rows: [
+  { name: 'Twin Pendants', drop: 10, layouts: { coop2: { name: 'Bank Exchange', drop: 14, rows: [
+      'Y..GGGGBBGGGG..Y',
+      'Y..RRRRBRRRR..Y',
+      'B..RRYYBBYYRR..B',
+      '...GGGBBBGGG...',
+      '...YYY....YYY...',
+      '..BBBB....BBBB.',
+    ] } }, rows: [
     'YYBBYYYBBYY',
     '..B....B..',
     '.GGGG.GGGG.',
     'GGGG..GGGG',
     '.GGG...GGG.',
   ]},
-  { name: 'Pyramid', drop: 10, rows: [
+  { name: 'Pyramid', drop: 10, layouts: { coop2: { name: 'Two Keys', drop: 13, rows: [
+      'G..PP......BB..G',
+      'G..P.......B..G',
+      '...RRRRRRRRRR...',
+      '...YYGGGGGGYY..',
+      '....YYGGRGGYY...',
+      '.....YYRRRYY...',
+      '.......BP.......',
+    ] } }, rows: [
     'RRRRRRRRRRR',
     '.YYYYYYYY.',
     '..GGGGGGG..',
     '...RRRR...',
     '....YYY....',
   ]},
-  { name: 'Cherries', drop: 10, rows: [
+  { name: 'Cherries', drop: 10, layouts: { coop2: { name: 'Domino Drop', drop: 13, rows: [
+      'YYY....GG....BBB',
+      'YY.....G.....BB',
+      'YY.....P......BB',
+      'Y...RRRPRRR...B',
+      'Y..RRBBBBBBRR..B',
+      '...BBBYYYYBBB..',
+      '.....GG..GG.....',
+    ] } }, rows: [
     'YYYGGGGGYYY',
     '...G..G...',
     '...G...G...',
     '..RR..RR..',
     '..RRR.RRR..',
   ]},
-  { name: 'Bridge', drop: 10, rows: [
+  { name: 'Bridge', drop: 10, layouts: { coop2: { name: 'Hanging Garden', drop: 12, rows: [
+      '.GGG..YYYY..BBB.',
+      '..R....YY....P.',
+      '..RR....P....PP.',
+      '.BBB...PPP...YY',
+      '.BRB...RRRR.....',
+      '..B....RGGR....',
+      '........RR......',
+      '........G......',
+    ] } }, rows: [
     'BBB.....BBB',
     'BB......BB',
     'BYYYYYYYYYB',
     '.R.R..R.R.',
   ]},
-  { name: 'The Kite', drop: 10, rows: [
+  { name: 'The Kite', drop: 10, layouts: { coop2: { name: 'Crossed Supports', drop: 12, rows: [
+      'OOO..........BBB',
+      '.OO.........BB.',
+      '..RR........YY..',
+      '...RR......YY..',
+      '....RR....YY....',
+      '.....RR..YY....',
+      '......RGGY......',
+      '.....PGGGGP....',
+      '....PPP..PPP....',
+    ] } }, rows: [
     '....YYY....',
     '....YY....',
     '....RRR....',
@@ -188,14 +281,32 @@ const LEVELS = [
     '...RGGGR...',
   ]},
   // 11-22 · four colours · pendants on one-bubble stems, bank-shot pockets
-  { name: 'Four Corners', drop: 9, rows: [
+  { name: 'Four Corners', drop: 9, layouts: { coop2: { name: 'Shared Rescue', drop: 11, rows: [
+      '.....GGGGGG.....',
+      '.....OOOOOO....',
+      '......BBBBB.....',
+      '......YYYY.....',
+      '....RRRPPRRR....',
+      '..YYRRPPRRYY...',
+      '.GGGGYYOOYYGGGG.',
+      'BBBBB.GGG.BBBBB',
+      '.RR..........RR.',
+    ] } }, rows: [
     'RRRR...BBBB',
     'RRRY..YBBB',
     'RRYY...YYBB',
     'GGG....GGG',
     'GGG.....GGG',
   ]},
-  { name: 'Pendulum', drop: 9, rows: [
+  { name: 'Pendulum', drop: 9, layouts: { coop2: { name: 'Grand Canopy', drop: 11, rows: [
+      '..PP...BB...OO..',
+      '..P....B....O..',
+      '.RRYYGGRRGGYYRR.',
+      'RRYYGGBRBGGYYRR',
+      'Y.RR..YYYY..RR.Y',
+      'O.GG..PPPP..GGO',
+      '...BB..OOOO..BB.',
+    ] } }, rows: [
     'YYYYBBBYYYY',
     '....BB....',
     '.....B.....',
@@ -1133,7 +1244,7 @@ class CoopBubbles extends HTMLElement {
   /* `carry` is set only by the Clear-mode level chain (see clearLevel), and mirrors
      OnlineGame.reset: score, stats and the clock survive, the miss meter does not. */
   resetGame(carry = null) {
-    if (this.settings.mode === 'battle' && !this.online) { this.resetBattle(); return; }
+    if (this.settings.mode === 'battle' && !this.online) { this.profileKey = 'classic'; this.resetBattle(); return; }
     this.battle = null; this._outro = null;
     if (!carry) {
       this._runStartLevel = this.settings.level;
@@ -1144,12 +1255,16 @@ class CoopBubbles extends HTMLElement {
         else if (this._deviceViewH) this.setViewH(this._deviceViewH);
       }
     }
-    this.WW = this.settings.field === 'wide' ? W * 4 : W;
-    this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
+    /* The grid profile sets the field's width; the view width (VW) follows it, so the
+       whole 16/15 board is the composition rather than a window panning across it. */
+    this.profileKey = this.gridProfile();
+    if (this.settings.field === 'wide') this.cols = Math.floor((W * 4 - 2 * X0) / (2 * R));
+    else this.cols = GRID_PROFILES[this.profileKey].evenColumns;
+    this.WW = this.settings.field === 'wide' ? W * 4 : 2 * X0 + 2 * R * this.cols;
     this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
     this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
-    const rows = this.levelRows();
-    const offs = this.settings.field === 'wide' ? [1, 12, 23, 34] : [0];
+    const layout = this.levelLayout(), rows = layout.rows;
+    const offs = this.settings.field === 'wide' ? [1, 12, 23, 34] : [layout.off];
     for (const off of offs) rows.forEach((row, r) => { for (let i = 0; i < row.length; i++) {
       const cell = levelCell(row[i]), c = i + off;
       if (cell) this.grid.set(key(r,c), { r, c, ...cell, special: this.settings.level === 34 && r === 1 && i === 4 && this.settings.human.filter(Boolean).length >= 3 && this.settings.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
@@ -1162,7 +1277,7 @@ class CoopBubbles extends HTMLElement {
       for (const [nr,nc] of this.neighbors(b.r,b.c)) { const k = key(nr,nc), nb = this.grid.get(k);
         if (nb && !safe0.has(k)) { safe0.add(k); st0.push(nb); } } }
     [...this.grid.keys()].forEach(k => { if (!safe0.has(k)) this.grid.delete(k); });
-    const level = this.settings.level === 'custom' ? null : LEVELS[Number(this.settings.level) || 0];
+    const level = this.settings.level === 'custom' ? null : { name: layout.name, rows, objects: layout.objects };
     const objectHumans = (this.settings.human || []).filter(Boolean).length;
     this.objects = CoopObjects.create(level || {name:'Custom',rows}, this.settings.mode === 'clear' && objectHumans >= 2, objectHumans)
       .flatMap(o => offs.map((off,i) => {
@@ -1184,7 +1299,7 @@ class CoopBubbles extends HTMLElement {
     this.rowTimer = 0; this.lowestY = 0;
     this.spawnPlayers(carry);
     const pf0 = this.players[this.activeP] || this.players[0];
-    this.camX = clamp(pf0.x - W / 2, 0, Math.max(0, this.WW - W));
+    this.camX = clamp(pf0.x - this.VW / 2, 0, Math.max(0, this.WW - this.VW));
     this.updateLowest();
     if (this.state !== 'tutorial') this.state = 'play';
     this.showObjectGuide();
@@ -1203,19 +1318,37 @@ class CoopBubbles extends HTMLElement {
     }
     this.activeP = this.players.findIndex(p => !p.bot); if (this.activeP < 0) this.activeP = 0;
   }
-  levelRows() {
-    if (this.settings.level === 'custom') {
-      let t = this.customText;
-      if (t === undefined) { try { t = localStorage.getItem('bt_custom_level') || ''; } catch(e) { t = ''; } }
-      const rows = t.split('\n').map(s => s.trim().toUpperCase().replace(/[^RGYBPO#*+.]/g, '.')).filter(s => s.length)
-        .slice(0, 12).map((s, r) => { const n = (r % 2) ? 10 : 11; return (s + '.'.repeat(n)).slice(0, n); });
-      if (rows.some(s => /[RGYBPO]/.test(s))) return rows;
-    }
-    const L = LEVELS[this.settings.level];
-    return (L || LEVELS[0]).rows;
+  levelRows() { return this.levelLayout().rows; }
+  // The saved custom board as classic 11/10 rows, or null when it has no colour to play.
+  customRows() {
+    let t = this.customText;
+    if (t === undefined) { try { t = localStorage.getItem('bt_custom_level') || ''; } catch(e) { t = ''; } }
+    const rows = t.split('\n').map(s => s.trim().toUpperCase().replace(/[^RGYBPO#*+.]/g, '.')).filter(s => s.length)
+      .slice(0, 12).map((s, r) => { const n = (r % 2) ? 10 : 11; return (s + '.'.repeat(n)).slice(0, n); });
+    return rows.some(s => /[RGYBPO]/.test(s)) ? rows : null;
   }
   // Mirrors OnlineGame.levelDrop: authored pace, or none for a custom board.
-  levelDrop() { return this.settings.level === 'custom' ? 0 : (LEVELS[this.settings.level] || LEVELS[0]).drop; }
+  levelDrop() { return this.settings.level === 'custom' ? 0 : this.levelLayout().drop; }
+  /* Local two-player Co-op Clear plays the 16/15 board; every other mode, the wide 4×
+     field and online rooms keep the classic one. */
+  gridProfile() {
+    const S = this.settings;
+    return !this.online && !this.battle && S.mode === 'clear' && S.players === 2 && S.field !== 'wide' ? 'coop2' : 'classic';
+  }
+  /* The active round on the active profile. A custom board is classic rows, centred. */
+  levelLayout() {
+    const profile = this.profile;
+    const custom = this.settings.level === 'custom' && this.customRows();
+    if (custom) return levelLayout({ name: 'Custom', rows: custom, drop: 0 }, profile);
+    return levelLayout(LEVELS[this.settings.level] || LEVELS[0], profile);
+  }
+  roundName(i) { return LEVELS[i] ? levelLayout(LEVELS[i], this.profile).name : null; }
+  // The profile in play: a room or a battle never inherits a local two-player board.
+  get profile() { return !this.online && !this.battle && this.profileKey === 'coop2' ? 'coop2' : 'classic'; }
+  /* The world width the canvas shows. The coop2 board is shown whole, so its view is its
+     field and the camera has nowhere to go; elsewhere the view is the classic 640 (the
+     wide 4× field scrolls beneath it). */
+  get VW() { return this.profile === 'coop2' ? this.WW : W; }
   availKinds() {
     const s = new Set();
     this.grid.forEach(b => { if (!b.special) s.add(b.kind); });
@@ -1611,9 +1744,9 @@ class CoopBubbles extends HTMLElement {
      until every connected player has said so (or the room's timer runs out). */
   showLevelCard({ from, next, bonus, timeBonus, secs, score, rows, ready }) {
     const sh = this.shadowRoot;
-    sh.querySelector('.luTitle').textContent = '⭐ ' + (LEVELS[from]?.name || 'Level ' + (from + 1)) + ' cleared!';
+    sh.querySelector('.luTitle').textContent = '⭐ ' + (this.roundName(from) || 'Level ' + (from + 1)) + ' cleared!';
     sh.querySelector('.luSub').textContent = 'Clear bonus +' + (bonus || 0).toLocaleString()
-      + ' · Score ' + (score || 0).toLocaleString() + ' · Up next: ' + (next + 1) + '. ' + (LEVELS[next]?.name || 'Level ' + (next + 1));
+      + ' · Score ' + (score || 0).toLocaleString() + ' · Up next: ' + (next + 1) + '. ' + (this.roundName(next) || 'Level ' + (next + 1));
     // The speed reward gets its own line: full inside PACE.timeFull, nothing by PACE.timeZero.
     sh.querySelector('.luTime').textContent = '\u23f1 Cleared in ' + Math.round(secs || 0) + 's · Time bonus +'
       + (timeBonus || 0).toLocaleString();
@@ -1817,7 +1950,7 @@ class CoopBubbles extends HTMLElement {
     el.classList.toggle('shake', t - (this.passShakeT ?? -9) < 0.3);
     if (left) { left.classList.toggle('flash', t - (this.passFlashT ?? -9) < 0.45);
       left.classList.toggle('shake', t - (this.passShakeT ?? -9) < 0.3); }
-    const p = this.players[i], side = p && p.x - (this.camX || 0) < W / 2 ? 'left' : 'right';
+    const p = this.players[i], side = p && p.x - (this.camX || 0) < this.VW / 2 ? 'left' : 'right';
     if (el.dataset.side !== side) el.dataset.side = side;
     if (left && left.dataset.side !== side) left.dataset.side = side;
   }
@@ -1878,7 +2011,7 @@ class CoopBubbles extends HTMLElement {
     const label = active ? 'BURST ' + Math.ceil(this.teamPowerTimer || 0) : ready ? 'TEAM POWER!' : 'POWER ' + Math.floor(q * 100) + '%';
     if (el.textContent !== label) el.textContent = label;
     el.classList.toggle('shake', performance.now() / 1000 - (this.powerShakeT ?? -9) < 0.3);
-    const p = this.players[this.passPlayer()], side = p && p.x - (this.camX || 0) < W / 2 ? 'right' : 'left';
+    const p = this.players[this.passPlayer()], side = p && p.x - (this.camX || 0) < this.VW / 2 ? 'right' : 'left';
     if (el.dataset.side !== side) el.dataset.side = side;
     // The corner PASS buttons use the opposite side.
   }
@@ -1888,13 +2021,13 @@ class CoopBubbles extends HTMLElement {
   drawTeamPower(ctx) {
     const max = TEAM_POWER.max, charge = this.teamPowerCharge || 0, active = this.teamPowerActive;
     const def = active ? POWERS[active] : null, ready = !active && charge >= max, fx = this.powerFx || {};
-    const w = 236, h = 24, x = W / 2 - w / 2, y = 78;
+    const w = 236, h = 24, x = this.VW / 2 - w / 2, y = 78;
     const frac = def ? clamp((this.teamPowerTimer || 0) / def.secs, 0, 1) : clamp(charge / max, 0, 1);
     const ck = fx.chargeT !== undefined ? clamp((this.now - fx.chargeT) / 0.6, 0, 1) : 1;
     const beat = Math.sin(this.now * 6);
     ctx.save();
     const s = ready ? 1 + 0.05 * beat : 1 + (1 - ck) * 0.08;
-    ctx.translate(W / 2, y + h / 2); ctx.scale(s, s); ctx.translate(-W / 2, -(y + h / 2));
+    ctx.translate(this.VW / 2, y + h / 2); ctx.scale(s, s); ctx.translate(-this.VW / 2, -(y + h / 2));
     ctx.shadowColor = ready || active ? 'rgba(123,97,217,0.6)' : 'rgba(40,80,140,0.18)';
     ctx.shadowBlur = ready ? 14 + 8 * beat : 10; ctx.shadowOffsetY = 2;
     ctx.fillStyle = 'rgba(255,255,255,0.92)'; this.rrect(ctx, x, y, w, h, h / 2); ctx.fill();
@@ -1912,8 +2045,8 @@ class CoopBubbles extends HTMLElement {
     const label = def ? def.name + '  ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
       : ready ? 'TEAM POWER READY' + (this._coarse ? '' : ' \u00b7 Q') : 'TEAM POWER ' + Math.floor(charge) + '%';
     ctx.textAlign = 'center'; ctx.font = '700 14px Fredoka, sans-serif';
-    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.strokeText(label, W / 2, y + 17);
-    ctx.fillStyle = '#3b2a7a'; ctx.fillText(label, W / 2, y + 17);
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.strokeText(label, this.VW / 2, y + 17);
+    ctx.fillStyle = '#3b2a7a'; ctx.fillText(label, this.VW / 2, y + 17);
     ctx.restore();
     if (ck < 1 && fx.gain) {
       ctx.globalAlpha = 1 - ck; ctx.fillStyle = '#7b61d9'; ctx.font = '700 16px Fredoka, sans-serif'; ctx.textAlign = 'left';
@@ -1953,14 +2086,14 @@ class CoopBubbles extends HTMLElement {
     const fx = this.powerFx || {}, flash = fx.actT !== undefined ? clamp(1 - (this.now - fx.actT) / 0.6, 0, 1) : 0;
     const a = 0.08 + 0.05 * Math.sin(this.now * 5) + flash * 0.14;
     const col = META[Math.sin(this.now * 2.5) > 0 ? 0 : 1].accent;
-    const g = ctx.createRadialGradient(W / 2, this.H / 2, this.H * 0.32, W / 2, this.H / 2, this.H * 0.75);
+    const g = ctx.createRadialGradient(this.VW / 2, this.H / 2, this.H * 0.32, this.VW / 2, this.H / 2, this.H * 0.75);
     g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, col);
-    ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.fillRect(0, 0, W, this.H); ctx.globalAlpha = 1;
+    ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.fillRect(0, 0, this.VW, this.H); ctx.globalAlpha = 1;
   }
   centerOf(keys) {
     let sx = 0, sy = 0, n = 0;
     keys.forEach(k => { const [r,c] = k.split(',').map(Number); sx += this.cellX(r,c); sy += this.cellY(r); n++; });
-    return n ? { x: sx/n, y: sy/n } : { x: W/2, y: 300 };
+    return n ? { x: sx/n, y: sy/n } : { x: this.VW/2, y: 300 };
   }
   /* Puzzle Bobble ceiling descent: the whole pack slides down one row and the
      wall stagger alternates. Bumping r and parityFlip together leaves par(r) —
@@ -2225,10 +2358,14 @@ class CoopBubbles extends HTMLElement {
       if (hurry === 'warn') this.showHurry(p.i);
       else if (hurry === 'fire' && p.reload <= 0) { this.activeP = p.i; this.fire(p.i); }
     }
-    // camera follows the active player's aim (wide field)
-    const pf = this.players[this.activeP] || this.players[0];
-    const camT = clamp(pf.x + Math.sin(pf.angle) * 420 - W / 2, 0, Math.max(0, this.WW - W));
-    this.camX += (camT - this.camX) * Math.min(1, 6 * rdt);
+    /* The camera follows the active player's aim only on the wide 4× field. A board that
+       fits its view — classic, and the whole 16/15 two-player field — never moves: not for
+       aim, the shooter, a shot in flight, a pop or a drop. */
+    if (this.WW > this.VW) {
+      const pf = this.players[this.activeP] || this.players[0];
+      const camT = clamp(pf.x + Math.sin(pf.angle) * 420 - this.VW / 2, 0, this.WW - this.VW);
+      this.camX += (camT - this.camX) * Math.min(1, 6 * rdt);
+    } else this.camX = 0;
     this.stepFlights(dt);
     if (this.resolveAt && this.now >= this.resolveAt) this.resolveBatch();
     const perDrop = this.shotsPerDrop();
@@ -2658,7 +2795,7 @@ class CoopBubbles extends HTMLElement {
 
   /* ---------- input ---------- */
   canvasPoint(e) { const r = this.canvas.getBoundingClientRect();
-    return { x: (e.clientX - r.left) * W / Math.max(1, r.width), y: (e.clientY - r.top) * this.H / Math.max(1, r.height) }; }
+    return { x: (e.clientX - r.left) * this.VW / Math.max(1, r.width), y: (e.clientY - r.top) * this.H / Math.max(1, r.height) }; }
   /* Which pad control a touch belongs to. Exact hits resolve first, then near misses, and
      FIRE outranks everything in both passes: it is the button being reached for on nearly
      every touch, and the aim surfaces underneath it are transparent full-height overlays
@@ -2836,22 +2973,24 @@ class CoopBubbles extends HTMLElement {
   /* ---------- rendering ---------- */
   render() {
     const ctx = this.ctx; if (!ctx) return;
-    const sc = this.canvas.width / W;
+    // A board of another width (two players joining, a room, a battle) re-fits the view once.
+    if (this._laidVW !== this.VW && this.rootEl) this.measure();
+    const sc = this.canvas.width / this.VW;
     /* The canvas is see-through: the fantasy world behind it is the root's CSS background,
        so it stays screen-fixed and the cabinet reads as sitting inside it. */
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(sc, 0, 0, sc, 0, 0);
     if (this.shake > 0) ctx.translate(rnd(-this.shake, this.shake) * 0.4, rnd(-this.shake, this.shake) * 0.4);
     ctx.save(); ctx.translate(-this.camX, 0);
-    const vwL = this.camX - 2 * R, vwR = this.camX + W + 2 * R;
+    const vwL = this.camX - 2 * R, vwR = this.camX + this.VW + 2 * R;
     const fx = X0 - 6, fy = 92, fw = this.WW - 2 * (X0 - 6), fh = this.LAUNCH_Y - 60;
     // recessed glass playfield: screen-fixed art clipped to the (possibly scrolling) field
     ctx.save(); ctx.beginPath();
     this.rrect(ctx, fx, fy, fw, fh, 26); ctx.clip();
-    this.drawGlass(ctx, this.camX + fx, fy, W - 2 * fx, fh);
+    this.drawGlass(ctx, this.camX + fx, fy, this.VW - 2 * fx, fh);
     // parallax backdrop bubbles
     for (let i = 0; i < 12; i++) {
-      let px = (i * 173.3 - this.camX * 0.45) % (W + 160); if (px < 0) px += W + 160;
+      let px = (i * 173.3 - this.camX * 0.45) % (this.VW + 160); if (px < 0) px += this.VW + 160;
       px += this.camX - 80;
       const py = 960 - ((i * 97 + this.now * (14 + (i % 5) * 7)) % 860);
       const pr = 14 + (i % 4) * 12;
@@ -2878,7 +3017,7 @@ class CoopBubbles extends HTMLElement {
     ctx.fillStyle = cg; ctx.fillRect(fx, fy, fw, cy - fy);
     ctx.strokeStyle = 'rgba(170,160,255,0.45)'; ctx.lineWidth = 2;
     const hx0 = Math.floor(Math.max(X0, this.camX) / 26) * 26;
-    for (let x = hx0; x < Math.min(this.WW - X0, this.camX + W); x += 26) {
+    for (let x = hx0; x < Math.min(this.WW - X0, this.camX + this.VW); x += 26) {
       ctx.beginPath(); ctx.moveTo(x, cy - 3); ctx.lineTo(x + 12, cy - 16); ctx.stroke();
     }
     ctx.fillStyle = '#8fdcff'; ctx.fillRect(fx, cy - 4, fw, 4);
@@ -2986,22 +3125,22 @@ class CoopBubbles extends HTMLElement {
     }
     ctx.restore();
     // vignette + rescue drama (screen space)
-    const vg = ctx.createRadialGradient(W/2, this.H/2, this.H*0.35, W/2, this.H/2, this.H*0.75);
+    const vg = ctx.createRadialGradient(this.VW/2, this.H/2, this.H*0.35, this.VW/2, this.H/2, this.H*0.75);
     vg.addColorStop(0, 'rgba(40,70,120,0)'); vg.addColorStop(1, 'rgba(40,70,120,0.10)');
-    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, this.H);
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, this.VW, this.H);
     if (this.teamPowerActive) this.drawPowerGlow(ctx);
     if (this.danger && this.state === 'play') {
-      ctx.fillStyle = 'rgba(140,160,200,0.10)'; ctx.fillRect(0, 0, W, this.H);
+      ctx.fillStyle = 'rgba(140,160,200,0.10)'; ctx.fillRect(0, 0, this.VW, this.H);
       const dp = 0.22 + Math.sin(this.now * 8) * 0.12;
-      const eg = ctx.createRadialGradient(W/2, this.H/2, this.H*0.3, W/2, this.H/2, this.H*0.72);
+      const eg = ctx.createRadialGradient(this.VW/2, this.H/2, this.H*0.3, this.VW/2, this.H/2, this.H*0.72);
       eg.addColorStop(0, 'rgba(255,91,107,0)'); eg.addColorStop(1, 'rgba(255,91,107,' + dp.toFixed(3) + ')');
-      ctx.fillStyle = eg; ctx.fillRect(0, 0, W, this.H);
+      ctx.fillStyle = eg; ctx.fillRect(0, 0, this.VW, this.H);
     }
     // HUD
     this.drawHUD(ctx);
     this.callouts.forEach((c, idx) => {
       const k = (this.now - c.t) / 1.5, pop = Math.min(1, k * 6);
-      ctx.save(); ctx.translate(W/2, 320 + idx * 56); ctx.scale(0.6 + pop * 0.4, 0.6 + pop * 0.4);
+      ctx.save(); ctx.translate(this.VW/2, 320 + idx * 56); ctx.scale(0.6 + pop * 0.4, 0.6 + pop * 0.4);
       ctx.globalAlpha = Math.min(1, (1 - k) * 3);
       ctx.font = '700 44px Fredoka, sans-serif'; ctx.textAlign = 'center';
       ctx.lineWidth = 8; ctx.strokeStyle = '#fff'; ctx.strokeText(c.text, 0, 0);
@@ -3047,7 +3186,7 @@ class CoopBubbles extends HTMLElement {
     const nextCol = (META[next] || META[0]).accent;
     const pk = fx ? clamp((this.now - fx.pulseT) / 0.35, 0, 1) : 1, s = 1 + (1 - pk) * 0.22;
     const hk = fx ? (this.now - fx.handoffT) / 0.6 : 9;
-    ctx.save(); ctx.translate(W/2, 40);
+    ctx.save(); ctx.translate(this.VW/2, 40);
     if (hk >= 0 && hk < 1) {
       ctx.globalAlpha = 1 - hk; ctx.strokeStyle = (META[fx.by] || META[0]).accent; ctx.lineWidth = 6 * (1 - hk);
       this.rrect(ctx, -80 - hk * 40, -28 - hk * 18, 160 + hk * 80, 54 + hk * 36, 27 + hk * 18); ctx.stroke();
@@ -3551,22 +3690,24 @@ class CoopBubbles extends HTMLElement {
     const railEnd = deck ? deck.y + 110 * deck.s : bottom ? by : this.LAUNCH_Y + 20;
     for (const side of ['left', 'right']) {
       const img = themeImg(side);
-      if (img) this.drawRail(ctx, img, RL[side], RL.top, railEnd);
+      // The right rail is authored against the classic edge; it rides the view's edge.
+      const spec = side === 'right' ? { ...RL.right, at: RL.right.at + this.VW - W } : RL.left;
+      if (img) this.drawRail(ctx, img, spec, RL.top, railEnd);
     }
     if (top) { const T = THEME_ART.top, tw = top.naturalWidth * T.scale, sh = Math.min(top.naturalHeight, (T.floor - T.y) / T.scale);
-      ctx.drawImage(top, 0, 0, top.naturalWidth, sh, (W - tw) / 2, T.y, tw, sh * T.scale); }
+      ctx.drawImage(top, 0, 0, top.naturalWidth, sh, (this.VW - tw) / 2, T.y, tw, sh * T.scale); }
     if (deck) ctx.drawImage(deck.img, deck.x, deck.y, deck.img.naturalWidth * deck.s, deck.img.naturalHeight * deck.s);
     else if (bottom) { const bw = bottom.naturalWidth * B.scale;
-      ctx.drawImage(bottom, (W - bw) / 2, by, bw, bottom.naturalHeight * B.scale); }
+      ctx.drawImage(bottom, (this.VW - bw) / 2, by, bw, bottom.naturalHeight * B.scale); }
     else { // procedural tray so the launcher labels always sit on a light plate
       const ty = this.LAUNCH_Y + 4;
-      ctx.fillStyle = 'rgba(232,236,255,0.92)'; this.rrect(ctx, X0 - 6, ty, W - 2 * (X0 - 6), this.H - ty - 6, 22); ctx.fill();
+      ctx.fillStyle = 'rgba(232,236,255,0.92)'; this.rrect(ctx, X0 - 6, ty, this.VW - 2 * (X0 - 6), this.H - ty - 6, 22); ctx.fill();
     }
   }
   /* A neon rail set into the chamber: dim and steady until the pack crosses it, then bright
      and pulsing. The rule itself (DANGER_Y) stays entirely in the simulation. */
   drawDanger(ctx) {
-    const y = this.DANGER_Y, x0 = Math.max(X0, this.camX - 20), x1 = Math.min(this.WW - X0, this.camX + W + 20);
+    const y = this.DANGER_Y, x0 = Math.max(X0, this.camX - 20), x1 = Math.min(this.WW - X0, this.camX + this.VW + 20);
     const on = !!this.danger, pulse = on ? 0.5 + Math.sin(this.now * 8) * 0.5 : 0;
     const line = () => { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); };
     ctx.save(); ctx.lineCap = 'round';
@@ -3579,14 +3720,14 @@ class CoopBubbles extends HTMLElement {
     ctx.restore();
     // outlined, since on a two-player deck the label sits over the socket art
     ctx.font = '600 14px Fredoka, sans-serif'; ctx.textAlign = 'right'; ctx.lineJoin = 'round';
-    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(18,14,56,0.8)'; ctx.strokeText('danger line', this.camX + W - X0 - 8, y - 8);
-    ctx.fillStyle = on ? '#ffb3c0' : '#ff9fbd'; ctx.fillText('danger line', this.camX + W - X0 - 8, y - 8);
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(18,14,56,0.8)'; ctx.strokeText('danger line', this.camX + this.VW - X0 - 8, y - 8);
+    ctx.fillStyle = on ? '#ffb3c0' : '#ff9fbd'; ctx.fillText('danger line', this.camX + this.VW - X0 - 8, y - 8);
     if (this.danger) {
       const pulse = 0.10 + Math.sin(this.now * 8) * 0.07;
       ctx.fillStyle = 'rgba(255,91,107,' + pulse + ')';
       ctx.fillRect(X0 - 6, y - ROWH * 1.6, this.WW - 2*(X0-6), ROWH * 1.6);
       // countdown
-      const t = Math.max(0, this.danger.t), cx0 = this.camX + W / 2;
+      const t = Math.max(0, this.danger.t), cx0 = this.camX + this.VW / 2;
       ctx.textAlign = 'center';
       ctx.font = '700 84px Fredoka, sans-serif';
       ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
@@ -3606,7 +3747,7 @@ class CoopBubbles extends HTMLElement {
     ctx.textAlign = 'left';
     // Keep both boxes clear of the corner buttons, which grow relative to a narrow board.
     const hx = this.chromeInset || X0;
-    const mw = 170, mx = W - hx - 12 - mw, my = 34;
+    const mw = 170, mx = this.VW - hx - 12 - mw, my = 34;
     ctx.save(); ctx.shadowColor = 'rgba(40,80,140,0.18)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
     ctx.fillStyle = 'rgba(255,255,255,0.88)';
     this.rrect(ctx, hx, 10, 190, 64, 16); ctx.fill();
@@ -3624,7 +3765,7 @@ class CoopBubbles extends HTMLElement {
       const k = clamp(this.chain.t / TEAM.chainSecs, 0, 1);
       const pk = this.chainFx ? clamp((this.now - this.chainFx.pulseT) / 0.35, 0, 1) : 1;
       const s = 1 + (1 - pk) * 0.22;
-      ctx.save(); ctx.translate(W/2, 40); ctx.scale(s, s);
+      ctx.save(); ctx.translate(this.VW/2, 40); ctx.scale(s, s);
       ctx.shadowColor = 'rgba(120,90,220,0.35)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 3;
       ctx.fillStyle = '#a78bfa';
       this.rrect(ctx, -74, -24, 148, 46, 23); ctx.fill();
@@ -3640,11 +3781,11 @@ class CoopBubbles extends HTMLElement {
          leave the space to the cabinet marquee when that is drawn. */
       ctx.fillStyle = '#9db8d4'; ctx.font = '600 17px Fredoka, sans-serif';
       const tag = this.settings.mode === 'clear' ? 'clear the field together!' : 'endless survival';
-      if (!themeImg('top') && ctx.measureText(tag).width + 16 <= (mx - 12) - (hx + 190)) ctx.fillText(tag, W/2, 42);
+      if (!themeImg('top') && ctx.measureText(tag).width + 16 <= (mx - 12) - (hx + 190)) ctx.fillText(tag, this.VW/2, 42);
     }
     // miss meter (secondary)
     ctx.textAlign = 'right'; ctx.font = '600 13px Fredoka, sans-serif'; ctx.fillStyle = '#7593b5';
-    ctx.fillText('MISS METER \u2192 ceiling drops', W - hx - 14, my - 6);
+    ctx.fillText('MISS METER \u2192 ceiling drops', this.VW - hx - 14, my - 6);
     ctx.fillStyle = '#e3eefa'; this.rrect(ctx, mx, my, mw, 14, 7); ctx.fill();
     const frac = clamp(this.missMeter / this.settings.missMax, 0, 1);
     if (frac > 0) {
@@ -3661,7 +3802,7 @@ class CoopBubbles extends HTMLElement {
       ctx.font = '700 13px Fredoka, sans-serif';
       ctx.fillStyle = left <= 1 ? '#ff5b6b' : left <= 3 ? '#ffb054' : '#7593b5';
       ctx.fillText(this.teamPowerActive && powerHolds(this.teamPowerActive, 'holdPressure') ? 'ROW PUSH HELD'
-        : 'ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), W - hx - 14, my + 30);
+        : 'ROW PUSH IN ' + left + (left === 1 ? ' SHOT' : ' SHOTS'), this.VW - hx - 14, my + 30);
     }
     if (this.teamHumans().length >= 2) this.drawTeamPower(ctx);
   }
@@ -4401,6 +4542,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .tvLabel{display:block;font-size:var(--tvH-label);font-weight:700;letter-spacing:.08em;color:#cfe2ff;text-transform:uppercase}
 .tvBig{display:block;font-weight:700;font-size:var(--tvH-big);font-variant-numeric:tabular-nums;letter-spacing:.01em;text-shadow:0 3px 0 rgba(0,0,0,.35);white-space:nowrap}
 .tvRound .tvBig{font-size:var(--tvH-roundBig)}
+.tvRound .tvLine{white-space:normal}
 .tvLine{display:block;margin-top:4px;font-weight:600;font-size:var(--tvH-line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tvLine:empty{display:none}
 /* Warnings change shape and wording, not just hue: a ⚠ marker, and the alarm gets a solid plate. */
@@ -4753,6 +4895,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
      one danger line, and a mismatched device simply letterboxes. */
   measure() {
     const root = this.rootEl; if (!root) return;
+    this._laidVW = this.VW;
     const wasTv = !!this.tvActive;
     const isTv = this.syncDisplayMode();
     const flipped = wasTv !== isTv;
@@ -4772,7 +4915,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this._avail = { w: availW, h: availH,
       sideW: parseFloat(cs.getPropertyValue('--sideW')) || 290,
       gap: parseFloat(cs.getPropertyValue('--rootGap')) || 20 };
-    this._deviceViewH = geom(W * availH / availW).H;
+    this._deviceViewH = geom(this.VW * availH / availW).H;
     if (!this.online && !this._geoLocked) this.setViewH(this._deviceViewH);
     this.relayout();
   }
@@ -4780,34 +4923,34 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const root = this.rootEl, col = this.gameColEl, a = this._avail;
     if (root && col && this.tvActive) { this.relayoutTv(); return; }
     if (!root || !col || !a) return;
-    root.style.setProperty('--fieldAspect', (W / this.H).toFixed(5));
+    root.style.setProperty('--fieldAspect', (this.VW / this.H).toFixed(5));
     /* One pass, no oscillation. Decide on the side panel from the board as it would be
        with no panel; because the panel only appears with 300px+ to spare, the board is
        already height-limited by then, so reserving the panel cannot shrink it and flip
        the decision back. Wide and near-square screens — phone landscape, an unfolded
        Fold — spend that space on UI instead of empty gradient. */
-    const wide = a.w - Math.min(a.w, a.h * W / this.H) >= 300;
+    const wide = a.w - Math.min(a.w, a.h * this.VW / this.H) >= 300;
     root.classList.toggle('wideLayout', wide);
     const usableW = wide ? a.w - a.sideW - a.gap : a.w;
-    const boardW = Math.max(1, Math.min(usableW, a.h * W / this.H));
+    const boardW = Math.max(1, Math.min(usableW, a.h * this.VW / this.H));
     col.style.width = boardW + 'px';
-    col.style.height = boardW * this.H / W + 'px';
+    col.style.height = boardW * this.H / this.VW + 'px';
     this.fit();
   }
   fit() {
     const el = this.canvas, dpr = Math.min(2, window.devicePixelRatio || 1);
     const w = el.clientWidth || 320;
-    el.width = Math.round(w * dpr); el.height = Math.round(w * dpr * this.H / W);
+    el.width = Math.round(w * dpr); el.height = Math.round(w * dpr * this.H / this.VW);
     /* One unit of "board scale" so overlay chrome can track the board instead of the
        page — a 44px button is huge on a 344px cover screen and lost on a 900px one. */
-    this.gameColEl?.style.setProperty('--u', (w / W).toFixed(4));
+    this.gameColEl?.style.setProperty('--u', (w / this.VW).toFixed(4));
     /* The corner buttons are DOM overlays with a minimum tap size, so on a narrow board
        they cover more of the world than their nominal 44px. Measure one of them and let
        the canvas HUD inset itself to match rather than being drawn underneath. */
     const btn = [this.fullscreenButtonEl, this.gearEl].find(el => el && el.offsetWidth > 0);
     const gap = btn ? Math.min(btn.offsetLeft, w - btn.offsetLeft - btn.offsetWidth) : 0;
     // On the TV stage the corner buttons sit in the safe corners, well clear of the field.
-    this.chromeInset = btn && !this.tvActive ? Math.max(X0, (btn.offsetWidth + gap * 2) * W / w) : X0;
+    this.chromeInset = btn && !this.tvActive ? Math.max(X0, (btn.offsetWidth + gap * 2) * this.VW / w) : X0;
   }
 
   /* ---------- TV / couch display ---------- */
@@ -4897,8 +5040,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const root = this.rootEl, fit = this.screenFitNow();
     if (!root) return;
     const n = this.tvPlayerCount(), key = tvLayoutKey(this.settings.mode, n);
-    const lay = this.tvLay = tvLayout(key, W / this.H, n, TV, fit);
-    lay.n = n; lay.H = this.H; lay.fit = JSON.stringify(fit);
+    const lay = this.tvLay = tvLayout(key, this.VW / this.H, n, TV, fit);
+    lay.n = n; lay.H = this.H; lay.VW = this.VW; lay.fit = JSON.stringify(fit);
     const set = (k, v) => root.style.setProperty(k, String(v));
     set('--tvHudS', TV.hudScale);
     set('--tvMenuScale', TV.menuScale);
@@ -4918,7 +5061,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   }
   tvNeedsRebuild() {
     const lay = this.tvLay, n = this.tvPlayerCount();
-    return !lay || lay.n !== n || lay.H !== this.H || lay.key !== tvLayoutKey(this.settings.mode, n)
+    return !lay || lay.n !== n || lay.H !== this.H || lay.VW !== this.VW || lay.key !== tvLayoutKey(this.settings.mode, n)
       || lay.fit !== JSON.stringify(this.screenFitNow());
   }
   relayoutTv(forceRebuild = false) {
@@ -4934,6 +5077,10 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     };
     place(sh.querySelector('.tvScore'), lay.hud && lay.score);
     place(sh.querySelector('.tvRound'), lay.hud && lay.round);
+    /* The wide two-player board leaves narrower columns: the round slot wraps and grows
+       downward (into the empty info column) rather than cutting off the row-push warning. */
+    const round = sh.querySelector('.tvRound');
+    if (round && lay.hud && lay.round) Object.assign(round.style, { height: 'auto', minHeight: lay.round.h + 'px' });
     place(sh.querySelector('.tvPower'), lay.hud && lay.power);
     place(sh.querySelector('.tvInfo'), lay.hud && lay.info);
     const box = sh.querySelector('.tvCards');
@@ -4973,7 +5120,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const S = this.settings, idx = this.levelIndex();
     put(sh.querySelector('.tvRoundLabel'), 'text', S.mode === 'clear' ? (idx >= 0 ? 'Round ' + (idx + 1) + ' of ' + LEVELS.length : 'Custom round') : 'Endless');
     put(sh.querySelector('.tvRoundVal'), 'text', S.mode === 'clear' ? (idx >= 0 ? String(idx + 1) : 'Custom') : 'Survive');
-    put(sh.querySelector('.tvRoundName'), 'text', S.mode === 'clear' && idx >= 0 ? LEVELS[idx].name : 'together');
+    put(sh.querySelector('.tvRoundName'), 'text', S.mode === 'clear' && idx >= 0 ? this.roundName(idx) : 'together');
     const left = this.dropCountdown(), held = this.teamPowerActive && powerHolds(this.teamPowerActive, 'holdPressure');
     const push = sh.querySelector('.tvPush');
     put(push, 'text', left === null ? '' : held ? 'Row push held' : 'Row push in ' + left + (left === 1 ? ' shot' : ' shots'));
@@ -5300,6 +5447,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       el.querySelectorAll('.glSeg button').forEach(b => b.classList.toggle('on', +b.dataset.g === S.guide));
       el.querySelectorAll('.sndSeg button').forEach(b => b.classList.toggle('on', (+b.dataset.v === 1) === S.sound));
       el.querySelector('.lvlSel').value = String(S.level);
+      // The two-player board plays its own rounds, so the picker names what will load.
+      el.querySelectorAll('.lvlSel option').forEach(o => { const i = +o.value, name = this.roundName(i);
+        if (name && o.textContent !== (i + 1) + '. ' + name) o.textContent = (i + 1) + '. ' + name; });
       el.querySelector('.rl').value = S.reload; el.querySelector('.rlv').textContent = S.reload.toFixed(2) + 's';
       el.querySelector('.mm').value = S.missMax; el.querySelector('.mmv').textContent = S.missMax;
       el.querySelector('.sp').value = S.pressureShots;
@@ -5356,7 +5506,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { localStorage.setItem('bt_custom_level', ta.value); } catch(e) {}
       S.level = 'custom'; this.resetGame(); syncAll();
     };
-    segWire('.cntSeg', null, b => { S.players = +b.dataset.n; if (S.mode === 'battle') { this.resetGame(); } else { S.missMax = 4 + 2 * S.players; this.spawnPlayers(); } });
+    segWire('.cntSeg', null, b => { S.players = +b.dataset.n; if (S.mode !== 'battle') S.missMax = 4 + 2 * S.players;
+      // Moving to or from two players swaps the board itself, not just the launchers.
+      if (S.mode === 'battle' || this.gridProfile() !== this.profileKey) this.resetGame(); else this.spawnPlayers(); });
     segWire('.botSeg', null, b => { S.botSkill = b.dataset.b; });
     segWire('.tlSeg', null, b => { S.mateLines = +b.dataset.v === 1; });
     segWire('.glSeg', null, b => { S.guide = +b.dataset.g; });

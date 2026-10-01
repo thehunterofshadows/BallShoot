@@ -305,7 +305,7 @@ test('Screen Fit persists with the device prefs and drives every critical TV sur
   assert.match(component, /if \(p\.screenFit && typeof p\.screenFit === 'object'\) out\.screenFit = normalizeScreenFit\(p\.screenFit\)/);
   // The layout, HUD slots and stage all read the fit in force.
   assert.match(component, /tvStage\([^)]*, TV, fit\)/);
-  assert.match(component, /tvLayout\(key, W \/ this\.H, n, TV, fit\)/);
+  assert.match(component, /tvLayout\(key, this\.VW \/ this\.H, n, TV, fit\)/);
   for (const v of ['--tvSafeX', '--tvSafeY', '--tvSafeW', '--tvSafeH', '--tvSafeR', '--tvSafeB']) assert.match(component, new RegExp(`set\\('${v}'`));
   // Corner buttons, drawer, menus and the prompt bar are placed from the calibrated edges.
   assert.match(component, /\.root\.tvMode \.fullscreenButton\{left:calc\(var\(--tvSafeX\)/);

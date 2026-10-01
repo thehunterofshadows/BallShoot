@@ -16,14 +16,36 @@ const KINDS = ['R', 'Y', 'G', 'B'];
    space, big masses hung from thin stems so one good shot drops the lot, and pockets only a
    bank shot reaches. Difficulty climbs by colour count first — 3, then 4, 5 and 6 — and
    each round teaches one idea. Rows alternate 11/10 wide (even rows anchor to the ceiling),
-   at most 12. Cells: R Y G B P O colours, # stone (never pops, only falls), * star (a shot
-   landing beside it pops every bubble of the shot's colour), + rainbow (joins any colour's
-   group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
+   at most 12. `layouts.coop2` is the round redrawn for the 16/15 two-player board (see
+   GRID_PROFILES): its own name, pace and rows, built around shared supports, centre
+   anchors and cross-board angles rather than a doubled wall. Cells: R Y G B P O colours,
+   # stone (never pops, only falls), * star (a shot landing beside it pops every bubble of
+   the shot's colour), + rainbow (joins any colour's group), . empty. `drop` is the shots per ceiling drop at the default Shot pressure. */
 const LEVEL_KINDS = ['R', 'Y', 'G', 'B', 'P', 'O'];
 const LEVEL_SPECIALS = { '#': 'stone', '*': 'star', '+': 'rainbow' };
 const levelCell = ch => LEVEL_KINDS.includes(ch) ? { kind: ch, special: null }
   : LEVEL_SPECIALS[ch] ? { kind: ch, special: LEVEL_SPECIALS[ch] } : null;
 const levelColors = rows => new Set(rows.join('').split('').filter(ch => LEVEL_KINDS.includes(ch))).size;
+/* Grid profiles: the width of the staggered field's rows. Even rows (anchored to the
+   ceiling) hold `evenColumns`, odd rows `oddColumns`, and one profile is one continuous
+   grid. `classic` is the 11/10 board every mode has always played. `coop2` is the 16/15
+   board built for local two-player Co-op Clear: twice the useful width, the same bubbles.
+   A round without its own coop2 layout keeps its classic rows centred on it, paced
+   `fallbackDropScale` slower because two launchers share the wider field. */
+const GRID_PROFILES = {
+  classic: { evenColumns: 11, oddColumns: 10, staggered: true, fallbackDropScale: 1 },
+  coop2:   { evenColumns: 16, oddColumns: 15, staggered: true, fallbackDropScale: 1.3 },
+};
+const rowsFit = (rows, profile) => rows.every((row, r) => row.length === (r % 2 ? profile.oddColumns : profile.evenColumns));
+/* What a round plays with on a profile: its authored `layouts[profile]` when it has one,
+   otherwise its classic rows shifted `off` whole columns (which keeps every neighbour). */
+const levelLayout = (L, profile = 'classic') => {
+  const v = L.layouts && L.layouts[profile];
+  if (v) return { name: v.name || L.name, rows: v.rows, drop: v.drop, objects: v.objects, off: 0 };
+  const P = GRID_PROFILES[profile] || GRID_PROFILES.classic, C = GRID_PROFILES.classic;
+  return { name: L.name, rows: L.rows, objects: L.objects, drop: Math.round(L.drop * P.fallbackDropScale),
+    off: Math.floor((P.evenColumns - C.evenColumns) / 2) };
+};
 /* The cells a resolving shot of `kind` clears through a star beside it, or null: the shot,
    the star(s) it touched and every plain bubble of that colour on the board. */
 const starHit = (grid, around, b, kind) => {
@@ -36,66 +58,137 @@ const starHit = (grid, around, b, kind) => {
 };
 const LEVELS = [
   // 1-10 · three colours · shapes, direct matches, the first stem cut
-  { name: 'Hello Bubbles', drop: 10, rows: [
+  { name: 'Hello Bubbles', drop: 10, layouts: { coop2: { name: 'Open Hands', drop: 16, rows: [
+      'RRRR..YYYY..BBBB',
+      'RRR...YYY...BBB',
+      '.BB....RR....YY.',
+    ] } }, rows: [
     'RRRYYYYYBBB',
     'RRRYYYYBBB',
     'RR..YYY..BB',
   ]},
-  { name: 'Smile', drop: 10, rows: [
+  { name: 'Smile', drop: 10, layouts: { coop2: { name: 'Twin Towers', drop: 16, rows: [
+      'YYYY........GGGG',
+      'RRRR.......RRRR',
+      'GGGGRRRRRRRRYYYY',
+      '.GGG.......YYY.',
+      '..YY........GG..',
+    ] } }, rows: [
     'YYYYYYYYYYY',
     'YGGYYYYGGY',
     'YYYYYYYYYYY',
     'R........R',
     '.RRRRRRRRR.',
   ]},
-  { name: 'Stripes', drop: 10, rows: [
+  { name: 'Stripes', drop: 10, layouts: { coop2: { name: 'Center Cut', drop: 15, rows: [
+      'YY....BBBB....RR',
+      'Y......BB.....R',
+      '.......YY.......',
+      '....RRRYRRR....',
+      '..RRRRYYYYRRRR..',
+      '..YYYYBBBYYYY..',
+      '....BBB..BBB....',
+    ] } }, rows: [
     'RRGGBBBGGRR',
     'RGGBBBBGGR',
     'RRGGBBBGGRR',
     '.RGG..GGR.',
   ]},
-  { name: 'Little Heart', drop: 10, rows: [
+  { name: 'Little Heart', drop: 10, layouts: { coop2: { name: 'Crossfire', drop: 15, rows: [
+      'BBBBBB....GGGGGG',
+      '.RRRR......YYYY',
+      '..GG........BB..',
+      '..YY........RR.',
+    ] } }, rows: [
     'BRRRBBBRRRB',
     'RRYRRRRYRR',
     'BRRRRRRRRRB',
     '..RRRRRR..',
     '....RRR....',
   ]},
-  { name: 'Arrow', drop: 10, rows: [
+  { name: 'Arrow', drop: 10, layouts: { coop2: { name: 'The Bridge', drop: 14, rows: [
+      'GG.....BB.....GG',
+      'G......B......G',
+      'RRRRRRRYRRRRRRRR',
+      'YYY..BBBBB..YYY',
+      '.BB....YY....BB.',
+    ] } }, rows: [
     '...GGGGG...',
     '...GGGG...',
     '.YYYGGGYYY.',
     '..YYYYYY..',
     '....BBB....',
   ]},
-  { name: 'Twin Pendants', drop: 10, rows: [
+  { name: 'Twin Pendants', drop: 10, layouts: { coop2: { name: 'Bank Exchange', drop: 14, rows: [
+      'Y..GGGGBBGGGG..Y',
+      'Y..RRRRBRRRR..Y',
+      'B..RRYYBBYYRR..B',
+      '...GGGBBBGGG...',
+      '...YYY....YYY...',
+      '..BBBB....BBBB.',
+    ] } }, rows: [
     'YYBBYYYBBYY',
     '..B....B..',
     '.GGGG.GGGG.',
     'GGGG..GGGG',
     '.GGG...GGG.',
   ]},
-  { name: 'Pyramid', drop: 10, rows: [
+  { name: 'Pyramid', drop: 10, layouts: { coop2: { name: 'Two Keys', drop: 13, rows: [
+      'G..PP......BB..G',
+      'G..P.......B..G',
+      '...RRRRRRRRRR...',
+      '...YYGGGGGGYY..',
+      '....YYGGRGGYY...',
+      '.....YYRRRYY...',
+      '.......BP.......',
+    ] } }, rows: [
     'RRRRRRRRRRR',
     '.YYYYYYYY.',
     '..GGGGGGG..',
     '...RRRR...',
     '....YYY....',
   ]},
-  { name: 'Cherries', drop: 10, rows: [
+  { name: 'Cherries', drop: 10, layouts: { coop2: { name: 'Domino Drop', drop: 13, rows: [
+      'YYY....GG....BBB',
+      'YY.....G.....BB',
+      'YY.....P......BB',
+      'Y...RRRPRRR...B',
+      'Y..RRBBBBBBRR..B',
+      '...BBBYYYYBBB..',
+      '.....GG..GG.....',
+    ] } }, rows: [
     'YYYGGGGGYYY',
     '...G..G...',
     '...G...G...',
     '..RR..RR..',
     '..RRR.RRR..',
   ]},
-  { name: 'Bridge', drop: 10, rows: [
+  { name: 'Bridge', drop: 10, layouts: { coop2: { name: 'Hanging Garden', drop: 12, rows: [
+      '.GGG..YYYY..BBB.',
+      '..R....YY....P.',
+      '..RR....P....PP.',
+      '.BBB...PPP...YY',
+      '.BRB...RRRR.....',
+      '..B....RGGR....',
+      '........RR......',
+      '........G......',
+    ] } }, rows: [
     'BBB.....BBB',
     'BB......BB',
     'BYYYYYYYYYB',
     '.R.R..R.R.',
   ]},
-  { name: 'The Kite', drop: 10, rows: [
+  { name: 'The Kite', drop: 10, layouts: { coop2: { name: 'Crossed Supports', drop: 12, rows: [
+      'OOO..........BBB',
+      '.OO.........BB.',
+      '..RR........YY..',
+      '...RR......YY..',
+      '....RR....YY....',
+      '.....RR..YY....',
+      '......RGGY......',
+      '.....PGGGGP....',
+      '....PPP..PPP....',
+    ] } }, rows: [
     '....YYY....',
     '....YY....',
     '....RRR....',
@@ -103,14 +196,32 @@ const LEVELS = [
     '...RGGGR...',
   ]},
   // 11-22 · four colours · pendants on one-bubble stems, bank-shot pockets
-  { name: 'Four Corners', drop: 9, rows: [
+  { name: 'Four Corners', drop: 9, layouts: { coop2: { name: 'Shared Rescue', drop: 11, rows: [
+      '.....GGGGGG.....',
+      '.....OOOOOO....',
+      '......BBBBB.....',
+      '......YYYY.....',
+      '....RRRPPRRR....',
+      '..YYRRPPRRYY...',
+      '.GGGGYYOOYYGGGG.',
+      'BBBBB.GGG.BBBBB',
+      '.RR..........RR.',
+    ] } }, rows: [
     'RRRR...BBBB',
     'RRRY..YBBB',
     'RRYY...YYBB',
     'GGG....GGG',
     'GGG.....GGG',
   ]},
-  { name: 'Pendulum', drop: 9, rows: [
+  { name: 'Pendulum', drop: 9, layouts: { coop2: { name: 'Grand Canopy', drop: 11, rows: [
+      '..PP...BB...OO..',
+      '..P....B....O..',
+      '.RRYYGGRRGGYYRR.',
+      'RRYYGGBRBGGYYRR',
+      'Y.RR..YYYY..RR.Y',
+      'O.GG..PPPP..GGO',
+      '...BB..OOOO..BB.',
+    ] } }, rows: [
     'YYYYBBBYYYY',
     '....BB....',
     '.....B.....',
@@ -1244,4 +1355,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, LEVEL_KINDS, levelCell, levelColors, starHit, PACE, dropPace, clearTimeBonus, hurryTick, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, LEVEL_KINDS, GRID_PROFILES, rowsFit, levelLayout, levelCell, levelColors, starHit, PACE, dropPace, clearTimeBonus, hurryTick, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };

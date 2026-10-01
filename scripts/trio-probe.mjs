@@ -34,13 +34,13 @@ try {
       await page.screenshot({ path:join(root, 'screenshots', 'trio-play.png') }); }
     const state = await page.evaluate(() => {
       const g = document.querySelector('coop-bubbles');
-      return { layout:g.tvLay?.key, cards:g.tvCards?.length, positions:g.players.map(p => p.x),
+      return { layout:g.tvLay?.key, cards:g.tvCards?.length, positions:g.players.map(p => p.x), WW:g.WW,
         leftPass:g.passLeftBtn?.classList.contains('on'), rightPass:g.passBtn?.classList.contains('on'),
         power:g.powerBtn?.classList.contains('on'), score:g.shadowRoot.querySelector('.tvScoreVal')?.textContent };
     });
     const expected = n === 2 ? 'coop2' : 'coop3';
     if (errors.length || state.layout !== expected || state.cards !== (n === 2 ? 2 : 0) || !state.rightPass || !state.power || state.leftPass !== (n === 3)
-      || state.positions.some((x, i) => Math.abs(x - 640 * (i + 0.5) / n) > 0.01))
+      || state.positions.some((x, i) => Math.abs(x - state.WW * (i + 0.5) / n) > 0.01))
       throw new Error(`${n} players: ${JSON.stringify({ state, errors })}`);
     console.log(`${n} players: ${expected}, ${n} launchers, pass/power controls and shared TV HUD ok`);
     await context.close();

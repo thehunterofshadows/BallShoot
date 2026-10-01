@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Double-width two-player co-op board** (#13). Local 2-player Co-op Clear now plays one
+  continuous 16/15 staggered field through a reusable grid profile (`GRID_PROFILES`), with
+  launchers at 25%/75% and no centre seam or territories. The full board is always visible
+  at a uniform scale on desktop and TV; the camera stays fixed and only display changes
+  re-fit it. Twelve purpose-built `layouts.coop2` rounds (Open Hands … Grand Canopy) teach
+  wide-board ideas — shared bridges, centre stems, cross-board angles, bank pockets, two
+  keys and domino setups — with slower two-shooter pacing; other rounds centre their classic
+  rows. Solo, trio, four-player, Wide 4×, Battle and online keep the classic board. Added
+  grid, cross-centre match/drop, cross-board shot, fixed-camera and display-fit tests plus a
+  browser probe (`scripts/coop2-probe.mjs`).
+
 - **Co-op level objects** (#4). Chandeliers gains shield nodes, The Canyon gains paired
   sync locks and an unlockable barrier, and Hive Bridge gains two-player armor and a bounded
   pressure node. Shared rules support local co-op and server-authoritative online rooms,

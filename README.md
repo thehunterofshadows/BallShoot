@@ -44,7 +44,19 @@ and stats into the next, pays an accuracy bonus plus a **time bonus** (the full 
 rounds are small pictures in five tiers — three colours at first, then four, five (+purple)
 and six (+orange) — and later ones place **stones** (`#`, never pop, only fall), **stars**
 (`*`, a shot beside one clears its whole colour) and **rainbows** (`+`, join any colour's
-group). The custom level editor accepts the same characters. Beating
+group). The custom level editor accepts the same characters.
+
+Local **two-player** Co-op Clear plays on its own double-width board: one continuous 16/15
+staggered field (the classic board is 11/10) with the launchers at the quarter points and no
+territories — either player can shoot, bank or cut anywhere. The whole field is always on
+screen at one uniform scale; the camera never follows aim, shots or drops, and only a window,
+fullscreen or display change re-fits it. Rounds 1–12 are redrawn for it (Open Hands, Twin
+Towers, Center Cut, Crossfire, The Bridge, Bank Exchange, Two Keys, Domino Drop, Hanging
+Garden, Crossed Supports, Shared Rescue, Grand Canopy) with slower ceiling pacing for two
+shooters; later rounds keep their classic pictures centred on the wide board. Solo, three-
+and four-player, the Wide 4× field, Battle and online rooms keep the classic board.
+
+Beating
 the top-20 board prompts for three initials; the table lives on the game server, so it is
 shared across devices and survives a restart. It is not authenticated — treat it as an
 arcade cabinet, not a record.
