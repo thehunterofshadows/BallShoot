@@ -1,5 +1,6 @@
 'use strict';
 const CoopObjects = require('../coop-objects');
+const { COOP2_LEVELS, CAMPAIGNS } = require('../coop-campaigns');
 
 const W = 640, R = 28, X0 = 12;
 const ROWH = R * Math.sqrt(3), GRIDTOP0 = 108;
@@ -682,6 +683,8 @@ const LEVELS = [
   ]},
 ];
 /* levels:end */
+const campaignLevels = id => id === 'coop2' ? COOP2_LEVELS : LEVELS;
+const campaignLevel = (id, level) => campaignLevels(id)[Number(level) || 0] || campaignLevels(id)[0];
 const key = (r, c) => `${r},${c}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const geom = vh => {
@@ -908,8 +911,10 @@ class OnlineGame {
   reset(carry = null) {
     const S = this.settings;
     Object.assign(this, geom(S.viewH));
-    this.WW = !this.battle && S.field === 'wide' ? W * 4 : W;
-    this.cols = Math.floor((this.WW - 2 * X0) / (2 * R));
+    const campaign=S.campaign||'original';
+    this.profileKey = !this.battle && S.mode==='clear' && campaign==='coop2' && this.roster.length===2 && S.field!=='wide' ? 'coop2' : 'classic';
+    this.cols = S.field==='wide' ? Math.floor((W*4-2*X0)/(2*R)) : GRID_PROFILES[this.profileKey].evenColumns;
+    this.WW = S.field==='wide' ? W*4 : 2*X0 + 2*R*this.cols;
     this.grid = new Map(); this.parityFlip = 0; this.anchorRow = 0;
     this.gridTop = GRIDTOP0; this.gridTopTarget = GRIDTOP0;
     const rows = this.levelRows();
@@ -917,12 +922,12 @@ class OnlineGame {
     for (const off of offs) rows.forEach((row, r) => {
       for (let i = 0; i < row.length; i++) {
         const cell = levelCell(row[i]), c = i + off;
-        if (cell) this.grid.set(key(r, c), { r, c, ...cell, special: S.level === 34 && r === 1 && i === 4 && this.roster.length >= 3 && S.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
+        if (cell) this.grid.set(key(r, c), { r, c, ...cell, special: campaign === 'original' && S.level === 34 && r === 1 && i === 4 && this.roster.length >= 3 && S.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
       }
     });
     this.levelColors = levelColors(rows);
     this.removeFloaters();
-    const level = S.level === 'custom' ? null : LEVELS[Number(S.level) || 0];
+    const level = S.level === 'custom' ? null : campaignLevel(campaign,S.level);
     this.objects = CoopObjects.create(level || {name:'Custom',rows}, S.mode === 'clear' && this.roster.length >= 2, this.roster.length)
       .flatMap(o => offs.map((off, i) => {
         const copy = structuredClone(o); copy.id += `_${i}`; if (copy.pair) copy.pair += `_${i}`;
@@ -962,10 +967,11 @@ class OnlineGame {
         .map((s, r) => (s + '.'.repeat((r % 2) ? 10 : 11)).slice(0, (r % 2) ? 10 : 11));
       if (rows.some(s => /[RGYBPO]/.test(s))) return rows;
     }
-    return (LEVELS[Number(this.settings.level) || 0] || LEVELS[0]).rows;
+    return campaignLevel(this.settings.campaign||'original',this.settings.level).rows;
   }
+  activeLevels() { return campaignLevels(this.settings.campaign||'original'); }
   // Shots per ceiling drop as authored; a custom board has none and runs on the setting.
-  levelDrop() { return this.settings.level === 'custom' ? 0 : (LEVELS[Number(this.settings.level) || 0] || LEVELS[0]).drop; }
+  levelDrop() { return this.settings.level === 'custom' ? 0 : campaignLevel(this.settings.campaign||'original',this.settings.level).drop; }
   par(r) { return (r + this.parityFlip) & 1; }
   colsIn(r) { return this.par(r) ? this.cols - 1 : this.cols; }
   cellX(r, c) { return X0 + R + c * 2 * R + this.par(r) * R; }
@@ -1275,7 +1281,7 @@ class OnlineGame {
   levelIndex() { return this.settings.level === 'custom' ? -1 : (Number(this.settings.level) || 0); }
   nextLevelIndex() {
     const i = this.levelIndex();
-    return i >= 0 && i + 1 < LEVELS.length ? i + 1 : -1;
+    return i >= 0 && i + 1 < this.activeLevels().length ? i + 1 : -1;
   }
   levelBonus() {
     let shots = 0, pops = 0;
@@ -1428,4 +1434,4 @@ class OnlineGame {
   snapshotFor(){return this.snapshot();}
 }
 
-module.exports = { OnlineGame, LEVELS, LEVEL_KINDS, GRID_PROFILES, rowsFit, levelLayout, levelCell, levelColors, starHit, PACE, dropPace, clearTimeBonus, hurryTick, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };
+module.exports = { OnlineGame, LEVELS, COOP2_LEVELS, CAMPAIGNS, campaignLevels, LEVEL_KINDS, GRID_PROFILES, rowsFit, levelLayout, levelCell, levelColors, starHit, PACE, dropPace, clearTimeBonus, hurryTick, clamp, geom, aimTick, AIM_MAX, TEAM, teamPlay, PASS, passPair, TEAM_POWER, POWERS, powerCharge, powerPair, normalizeViewH: vh => geom(vh).H };

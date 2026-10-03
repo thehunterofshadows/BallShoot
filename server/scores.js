@@ -12,7 +12,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { LEVELS } = require('./game');
+const { LEVELS, COOP2_LEVELS, CAMPAIGNS } = require('./game');
 
 const TOP_N = 20;
 const MAX_SCORE = 100_000_000;
@@ -33,14 +33,15 @@ class Scores {
   }
 
   /* ---------- keys + validation ---------- */
-  static bucketKey(mode, level) {
+  static bucketKey(mode, level, campaign = 'original') {
     if (!MODES.includes(mode)) throw fail('bad_bucket', 'Unknown mode.');
     // Endless and battle have no level dimension; custom boards share one bucket.
     if (mode !== 'clear') return `${mode}:-`;
-    if (level === 'custom') return `${mode}:custom`;
-    const n = Number(level);
-    if (!Number.isInteger(n) || n < 0 || n >= LEVELS.length) throw fail('bad_bucket', 'Unknown level.');
-    return `${mode}:${n}`;
+    if (!CAMPAIGNS[campaign]) throw fail('bad_bucket','Unknown campaign.');
+    if (level === 'custom') return campaign==='original' ? `${mode}:custom` : (()=>{throw fail('bad_bucket','Custom levels are not part of that campaign.');})();
+    const levels=campaign==='coop2'?COOP2_LEVELS:LEVELS, n=Number(level);
+    if (!Number.isInteger(n) || n < 0 || n >= levels.length) throw fail('bad_bucket', 'Unknown level.');
+    return campaign==='original' ? `${mode}:${n}` : `${mode}:${campaign}:${n}`;
   }
   static cleanInitials(value) {
     const v = String(value == null ? '' : value).trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3);
@@ -58,10 +59,10 @@ class Scores {
   }
 
   /* ---------- reads ---------- */
-  list(mode, level) { return (this.buckets.get(Scores.bucketKey(mode, level)) || []).map(e => ({ ...e })); }
+  list(mode, level, campaign = 'original') { return (this.buckets.get(Scores.bucketKey(mode, level, campaign)) || []).map(e => ({ ...e })); }
   /* A run qualifies while the board has room, or once it beats the weakest entry. */
-  qualifies(score, mode, level) {
-    const n = Scores.cleanScore(score), rows = this.buckets.get(Scores.bucketKey(mode, level)) || [];
+  qualifies(score, mode, level, campaign = 'original') {
+    const n = Scores.cleanScore(score), rows = this.buckets.get(Scores.bucketKey(mode, level, campaign)) || [];
     if (rows.length < TOP_N) return true;
     return n > rows[rows.length - 1].score;
   }
@@ -74,9 +75,9 @@ class Scores {
     hits.push(now); this.hits.set(key, hits);
     if (this.hits.size > 4000) this.hits.clear();
   }
-  submit({ initials, score, mode, level }, address) {
+  submit({ initials, score, mode, level, campaign = 'original' }, address) {
     if (address !== undefined) this.rateLimit(address);
-    const key = Scores.bucketKey(mode, level);
+    const key = Scores.bucketKey(mode, level, campaign);
     const entry = { initials: Scores.cleanInitials(initials), score: Scores.cleanScore(score), at: Date.now() };
     const rows = this.buckets.get(key) || [];
     rows.push(entry);

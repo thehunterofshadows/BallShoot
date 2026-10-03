@@ -14,8 +14,8 @@ function scoreRoutes(scores) {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname !== '/scores') return false;
     if (req.method === 'GET') {
-      const mode = url.searchParams.get('mode') || 'clear', level = url.searchParams.get('level');
-      try { json(res, 200, { entries: scores.list(mode, level === null ? 0 : level) }); }
+      const mode = url.searchParams.get('mode') || 'clear', level = url.searchParams.get('level'), campaign=url.searchParams.get('campaign')||'original';
+      try { json(res, 200, { entries: scores.list(mode, level === null ? 0 : level, campaign) }); }
       catch (e) { json(res, 400, { code: e.code || 'bad_request', message: e.message }); }
       return true;
     }
@@ -26,7 +26,7 @@ function scoreRoutes(scores) {
         try {
           const payload = JSON.parse(body || '{}');
           const result = scores.submit({ initials: payload.initials, score: payload.score,
-            mode: payload.mode, level: payload.level }, clientAddress(req));
+            mode: payload.mode, level: payload.level, campaign: payload.campaign||'original' }, clientAddress(req));
           json(res, 200, result);
         } catch (e) { json(res, e.code === 'rate_limited' ? 429 : 400, { code: e.code || 'bad_request', message: e.message || 'Invalid submission.' }); }
       });

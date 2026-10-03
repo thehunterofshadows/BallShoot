@@ -5,13 +5,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { LEVELS, GRID_PROFILES, rowsFit, levelLayout, levelColors, OnlineGame } = require('../server/game');
+const { LEVELS, COOP2_LEVELS, GRID_PROFILES, rowsFit, levelLayout, levelColors, OnlineGame } = require('../server/game');
 const { DEFAULT_SETTINGS } = require('../server/lobbies');
 
 const component = fs.readFileSync(path.resolve(__dirname, '..', 'coop-bubbles.js'), 'utf8');
 const loadComponent = () => {
   let Cls;
-  const ctx = { CoopObjects: require('../coop-objects'), HTMLElement: class {}, customElements: { get: () => null, define: (n, c) => { Cls = c; } },
+  const ctx = { CoopObjects: require('../coop-objects'), CoopCampaigns: require('../coop-campaigns'), HTMLElement: class {}, customElements: { get: () => null, define: (n, c) => { Cls = c; } },
     document: { addEventListener() {}, removeEventListener() {} }, Image: class {}, navigator: {}, performance: { now: () => 0 }, console,
     location: {}, localStorage: { getItem: () => null, setItem() {} }, setTimeout: () => 0, clearTimeout() {}, cancelAnimationFrame: () => {},
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), devicePixelRatio: 1,
@@ -132,6 +132,14 @@ test('solo, trio, four-player, wide, Battle and online keep the classic board', 
   // The server is unchanged: rooms are 11 columns.
   const room = new OnlineGame({ ...DEFAULT_SETTINGS, mode: 'clear' }, [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], 9);
   assert.deepEqual([room.cols, room.WW], [11, 640]);
+});
+
+test('Bubble Together 2 local play uses its native 16/15 campaign board', () => {
+  const g = local({ campaign:'coop2', level:20 });
+  assert.equal(g.profile, 'coop2'); assert.equal(g.cols, 16); assert.equal(g.WW, 920);
+  assert.equal(g.levelRows(), COOP2_LEVELS[20].rows);
+  assert.equal(g.levelDrop(), COOP2_LEVELS[20].drop);
+  assert.equal(g.grid.size, COOP2_LEVELS[20].rows.join('').replace(/\./g, '').length);
 });
 
 test('custom rounds centre on the 2P board', () => {

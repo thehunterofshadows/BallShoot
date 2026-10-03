@@ -41,6 +41,9 @@ browser application through Nginx on internal HTTP port 80.
 - `support.js` is generated runtime support. Preserve the generated header and do
   not hand-edit it unless the runtime itself is intentionally being replaced.
 - `thumbnail.webp` is the original project preview image.
+- Campaign 1 ("Original 52") lives in the mirrored `LEVELS` block in `coop-bubbles.js` and `server/game.js`; preserve those 52 level definitions when working on Campaign 2.
+- Campaign 2 ("Bubble Together 2") lives in `coop-campaigns.js` as a separate 52-level library. Every round is authored for the native 16/15 two-player board and the campaign is exactly two-player Co-op Clear.
+- Keep campaign progress and leaderboard buckets separate. Do not merge Campaign 2 layouts back into `LEVELS` or make the original campaign depend on sequel-only mechanics.
 - `Dockerfile`, `nginx.conf`, and `docker-compose.yml` are the runtime boundary.
 - Dev and Prod use distinct Compose projects, images, and stable edge-network
   container names: `ballshoot-dev-web` and `ballshoot-prod-web`.

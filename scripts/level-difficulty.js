@@ -16,12 +16,19 @@ const analyzeLevels = levels => levels.map((L, i) => {
 });
 
 if (require.main === module) {
-  const { LEVELS } = require('../server/game');
-  const report = analyzeLevels(LEVELS);
-  console.table(report.map(r => ({ level:r.level, name:r.name, cells:r.cells, density:r.densityPct + '%', jump:r.cellJumpPct + '%', helpers:r.helpers, stones:r.stones, mechanics:r.mechanics, drop:r.drop })));
-  // Guard the authored finale, where a sudden spike is most costly; earlier picture-level variety is intentionally uneven.
-  const flags = report.filter((r, i) => i && r.level >= 46 && (r.cellJumpPct > 16 || (r.drop < report[i - 1].drop && r.cellJumpPct > 12)));
-  if (flags.length) { console.error('Difficulty spike:', flags.map(r => `${r.level} ${r.name}`).join(', ')); process.exitCode = 1; }
+  const { LEVELS, COOP2_LEVELS } = require('../server/game');
+  const print = (title, levels) => {
+    const report = analyzeLevels(levels); console.log('\n' + title);
+    console.table(report.map(r => ({ level:r.level, name:r.name, cells:r.cells, density:r.densityPct + '%', jump:r.cellJumpPct + '%', helpers:r.helpers, stones:r.stones, mechanics:r.mechanics, drop:r.drop })));
+    return report;
+  };
+  const original = print('Original 52', LEVELS), sequel = print('Bubble Together 2', COOP2_LEVELS);
+  // Original picture levels intentionally vary, but the finale may not cliff. The sequel is
+  // designed as a smooth two-player campaign, so guard the whole run.
+  const originalFlags = original.filter((r, i) => i && r.level >= 46 && (r.cellJumpPct > 16 || (r.drop < original[i - 1].drop && r.cellJumpPct > 12)));
+  const sequelFlags = sequel.filter((r, i) => i && (r.cellJumpPct > 6 || r.cells < sequel[i - 1].cells || r.drop > sequel[i - 1].drop));
+  const flags=[...originalFlags.map(r=>`Original ${r.level} ${r.name}`),...sequelFlags.map(r=>`BT2 ${r.level} ${r.name}`)];
+  if (flags.length) { console.error('Difficulty spike:', flags.join(', ')); process.exitCode = 1; }
 }
 
 module.exports = { analyzeLevels };

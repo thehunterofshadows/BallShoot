@@ -6,6 +6,8 @@
 if (customElements.get('coop-bubbles')) return;
 // Loaded by the document before this component; local play and the server share rules.
 const CoopObjects = globalThis.CoopObjects;
+const CoopCampaigns = globalThis.CoopCampaigns;
+const { COOP2_LEVELS, CAMPAIGNS } = CoopCampaigns;
 
 /* Stamped by the image build (see Dockerfile). It is substituted before the cache-busting
    hash is taken, so a rebuild always yields a new ?v= and the corner tag on screen always
@@ -767,6 +769,9 @@ const LEVELS = [
   ]},
 ];
 /* levels:end */
+const campaignLevels = id => id === 'coop2' ? COOP2_LEVELS : LEVELS;
+const campaignLevel = (id, level) => campaignLevels(id)[Number(level) || 0] || campaignLevels(id)[0];
+const campaignName = id => (CAMPAIGNS[id] || CAMPAIGNS.original).name;
 /* P1's touch controls depend on the aim mode, so its hint is filled in from AIM_HINT rather
    than fixed here; the keyboard launchers never change. */
 const AIM_HINT = {
@@ -949,8 +954,8 @@ const hurryTick = (p, dt, limit) => {
 };
 /* pace-rules:end */
 // "1. Hello Bubbles" … plus Custom: the one list both level pickers are built from.
-const levelOptionsHTML = () => LEVELS.map((L, i) => `<option value="${i}">${i + 1}. ${L.name}</option>`).join('')
-  + '<option value="custom">Custom</option>';
+const levelOptionsHTML = (campaign = 'original', custom = true) => campaignLevels(campaign).map((L, i) => `<option value="${i}">${i + 1}. ${L.name}</option>`).join('')
+  + (custom && campaign !== 'coop2' ? '<option value="custom">Custom</option>' : '');
 const PASS_FX = 0.45; // seconds a passed bubble spends in the air (presentation only)
 const key = (r,c) => r + ',' + c;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
@@ -1238,7 +1243,7 @@ class CoopBubbles extends HTMLElement {
     this.setViewH(H0); // measure() refines this once .root has a box
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
     this.settings = { players:2, human:[true,true,false,false], botSkill:'normal',
-      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:0.25, level:0,
+      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', campaign:'original', guide:0.25, level:0,
       aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves', displayMode:'auto', screenFit:normalizeScreenFit(TV.screenFit) };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
@@ -1321,6 +1326,7 @@ class CoopBubbles extends HTMLElement {
     this.battle = null; this._outro = null;
     if (!carry) {
       this._runStartLevel = this.settings.level;
+      this._runStartCampaign = this.settings.campaign || 'original';
       this._pendingLevel = null;
       this._geoLocked = false;
       if (!this.online) {
@@ -1340,7 +1346,7 @@ class CoopBubbles extends HTMLElement {
     const offs = this.settings.field === 'wide' ? [1, 12, 23, 34] : [layout.off];
     for (const off of offs) rows.forEach((row, r) => { for (let i = 0; i < row.length; i++) {
       const cell = levelCell(row[i]), c = i + off;
-      if (cell) this.grid.set(key(r,c), { r, c, ...cell, special: this.settings.level === 34 && r === 1 && i === 4 && this.settings.human.filter(Boolean).length >= 3 && this.settings.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
+      if (cell) this.grid.set(key(r,c), { r, c, ...cell, special: (this.settings.campaign || 'original') === 'original' && this.settings.level === 34 && r === 1 && i === 4 && this.settings.human.filter(Boolean).length >= 3 && this.settings.mode === 'clear' ? 'triLock' : cell.special, contributors: [], placedBy: -1 });
     }});
     this.levelColors = levelColors(rows);
     // quietly purge any unsupported bubbles (bad custom levels)
@@ -1402,22 +1408,31 @@ class CoopBubbles extends HTMLElement {
   }
   // Mirrors OnlineGame.levelDrop: authored pace, or none for a custom board.
   levelDrop() { return this.settings.level === 'custom' ? 0 : this.levelLayout().drop; }
-  /* Local two-player Co-op Clear plays the 16/15 board; every other mode, the wide 4×
-     field and online rooms keep the classic one. */
+  /* Campaign 2 is intrinsically a two-player 16/15 campaign. The original campaign keeps
+     its existing local-2P behavior, including its authored coop2 variants where present. */
   gridProfile() {
-    const S = this.settings;
-    return !this.online && !this.battle && S.mode === 'clear' && S.players === 2 && S.field !== 'wide' ? 'coop2' : 'classic';
+    const S = this.settings, campaign = S.campaign || 'original';
+    return !this.battle && S.mode === 'clear' && S.players === 2 && S.field !== 'wide'
+      && (!this.online || campaign === 'coop2') ? 'coop2' : 'classic';
   }
-  /* The active round on the active profile. A custom board is classic rows, centred. */
+  activeLevels() { return campaignLevels(this.settings.campaign || 'original'); }
+  /* The active round on the active campaign/profile. Campaign 2 rows are already 16/15;
+     the original campaign still flows through levelLayout so nothing about it is rewritten. */
   levelLayout() {
-    const profile = this.profile;
-    const custom = this.settings.level === 'custom' && this.customRows();
+    const campaign = this.settings.campaign || 'original', profile = this.profile;
+    const custom = campaign === 'original' && this.settings.level === 'custom' && this.customRows();
     if (custom) return levelLayout({ name: 'Custom', rows: custom, drop: 0 }, profile);
-    return levelLayout(LEVELS[this.settings.level] || LEVELS[0], profile);
+    const L = campaignLevel(campaign, this.settings.level);
+    if (campaign === 'coop2') return { name:L.name, rows:L.rows, drop:L.drop, objects:L.objects, off:0 };
+    return levelLayout(L, profile);
   }
-  roundName(i) { return LEVELS[i] ? levelLayout(LEVELS[i], this.profile).name : null; }
+  roundName(i) {
+    const campaign=this.settings.campaign||'original', L=campaignLevels(campaign)[i];
+    if(!L) return null;
+    return campaign==='coop2' ? L.name : levelLayout(L,this.profile).name;
+  }
   // The profile in play: a room or a battle never inherits a local two-player board.
-  get profile() { return !this.online && !this.battle && this.profileKey === 'coop2' ? 'coop2' : 'classic'; }
+  get profile() { return !this.battle && this.profileKey === 'coop2' && (!this.online || (this.settings.campaign||'original')==='coop2') ? 'coop2' : 'classic'; }
   /* The world width the canvas shows. The coop2 board is shown whole, so its view is its
      field and the camera has nowhere to go; elsewhere the view is the classic 640 (the
      wide 4× field scrolls beneath it). */
@@ -1771,7 +1786,7 @@ class CoopBubbles extends HTMLElement {
   levelIndex() { return this.settings.level === 'custom' ? -1 : (Number(this.settings.level) || 0); }
   nextLevelIndex() {
     const i = this.levelIndex();
-    return i >= 0 && i + 1 < LEVELS.length ? i + 1 : -1;
+    return i >= 0 && i + 1 < this.activeLevels().length ? i + 1 : -1;
   }
   levelBonus() {
     let shots = 0, pops = 0;
@@ -1849,8 +1864,10 @@ class CoopBubbles extends HTMLElement {
   /* Furthest authored level reached. Progress, not score — score lives on the server. */
   recordProgress(cleared) {
     try {
-      const best = Math.max(Number(localStorage.getItem('bt_progress') || 0), cleared + 1);
-      localStorage.setItem('bt_progress', String(Math.min(best, LEVELS.length - 1)));
+      const campaign=this.settings.campaign||'original', key='bt_progress_'+campaign;
+      const legacy=campaign==='original'?Number(localStorage.getItem('bt_progress')||0):0;
+      const best=Math.max(Number(localStorage.getItem(key)||0),legacy,cleared+1);
+      localStorage.setItem(key,String(Math.min(best,this.activeLevels().length-1)));
     } catch (e) {}
   }
   supportCheck() {
@@ -2536,8 +2553,16 @@ class CoopBubbles extends HTMLElement {
   }
 
   /* ---------- local controller join / side pick ---------- */
-  beginLocalPlay() {
-    this.tvFullscreenNudge(); this.online = false; this.homeEl.style.display = 'none';
+  beginLocalPlay(campaign = 'original') {
+    this.tvFullscreenNudge(); this.online = false;
+    const changed=(this.settings.campaign||'original')!==campaign;
+    this.settings.campaign=campaign;
+    if(changed) this.settings.level=0;
+    if(campaign==='coop2') {
+      this.settings.mode='clear'; this.settings.field='classic'; this.settings.players=2;
+      this.settings.human=[true,true,false,false];
+    }
+    this.resetGame(); this._syncSettings?.(); this.homeEl.style.display = 'none';
     const duo = this.settings.mode === 'clear' && this.settings.players === 2
       && this.settings.human[0] && this.settings.human[1];
     if (duo && typeof navigator !== 'undefined' && navigator.getGamepads) this.openPadPick();
@@ -4576,14 +4601,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .hsRow .pts{margin-left:auto;font-variant-numeric:tabular-nums}
 .hsRow.you{background:#ffe9f3;color:#17335c}
 .hsNote{font-size:12.5px;color:#7593b5;margin-top:6px}
-.homeActions{display:grid;gap:9px;margin-top:18px}.joinFields{display:grid;grid-template-columns:1fr 110px;gap:8px;margin-top:12px}
+.homeActions{display:grid;gap:9px;margin-top:18px}.localCampaignButtons{display:grid;grid-template-columns:1fr 1fr;gap:8px}.localCampaignButtons .btn{margin:0}.joinFields{display:grid;grid-template-columns:1fr 110px;gap:8px;margin-top:12px}
 .textInput{width:100%;border:2px solid #d7e6f5;border-radius:11px;padding:10px;font:inherit;color:#17335c;background:#f8fbff}
 .lobbyCard{width:min(540px,92%)}.roomCode{font:700 52px ui-monospace,monospace;letter-spacing:.18em;text-align:center;color:#2b6fd4;margin:6px 0}
 .onlinePlayers{display:grid;gap:6px;margin:12px 0}.onlinePlayer{display:flex;align-items:center;gap:9px;padding:8px 10px;background:#f4f9ff;border-radius:10px}
 .statusDot{width:10px;height:10px;border-radius:50%;background:#3ecf72}.statusDot.off{background:#a9b8c8}.hostTag{margin-left:auto;color:#7593b5;font-size:12px}
 .lobbySettings{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}.lobbySettings label{display:grid;gap:3px;font-size:12px;color:#7593b5}.lobbySettings select,.lobbySettings input,.lobbySettings textarea{border:2px solid #d7e6f5;border-radius:8px;padding:6px;font:inherit;color:#2b4a70;background:#f8fbff;min-width:0}
 .lobbySettings .full{grid-column:1/-1}
-@container (max-width:330px){.lobbySettings{grid-template-columns:1fr}.joinFields{grid-template-columns:1fr}.roomCode{font-size:38px}}.onlineBar{position:absolute;left:calc(var(--chromeBtn) + var(--chromeGap) * 2);right:calc(var(--chromeBtn) + var(--chromeGap) * 2);top:var(--chromeGap);z-index:6;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
+@container (max-width:330px){.lobbySettings{grid-template-columns:1fr}.localCampaignButtons,.joinFields{grid-template-columns:1fr}.roomCode{font-size:38px}}.onlineBar{position:absolute;left:calc(var(--chromeBtn) + var(--chromeGap) * 2);right:calc(var(--chromeBtn) + var(--chromeGap) * 2);top:var(--chromeGap);z-index:6;display:none;gap:6px;pointer-events:none}.onlineBar button,.onlineBar span{pointer-events:auto;border:0;border-radius:10px;padding:7px 10px;background:rgba(255,255,255,.94);color:#2b4a70;font:600 12px Fredoka,sans-serif;box-shadow:0 3px 12px rgba(40,80,140,.18)}
 .onlineBar .netState{margin-left:auto}.onlineBar .bad{color:#d13a4c}.formError{min-height:18px;color:#d13a4c;font-size:13px;margin-top:6px}.reconnect .card{text-align:center}
 /* Whether the side panel fits is a question about the space left beside the board, not
    about viewport width, so relayout() sets .wideLayout and this rule follows it. That is
@@ -4787,7 +4812,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
       <div class="homeActions"><button class="btn primary createOnline">Create online room</button>
       <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code" data-pad-chars="0123456789"></div>
-      <button class="btn ghost localPlay" data-tv-default>Local play</button></div><div class="formError"></div>
+      <div class="localCampaignButtons"><button class="btn ghost localPlay" data-tv-default>Original 52</button><button class="btn primary localCoopPlay">Bubble Together 2 · 52 co-op levels</button></div></div><div class="formError"></div>
       <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
       <button class="btn primary tvOnly tvFullscreen">\u26f6 Play fullscreen</button>
       <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
@@ -4802,6 +4827,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
       <div class="onlinePlayers"></div>
       <h3>Host settings</h3><div class="lobbySettings">
+        <label>Campaign<select data-setting="campaign"><option value="original">Original 52</option><option value="coop2">Bubble Together 2</option></select></label>
         <label>Mode<select data-setting="mode"><option value="clear">Co-op Clear</option><option value="endless">Endless</option><option value="battle">Battle Royale (2\u20138)</option></select></label>
         <label>Field<select data-setting="field"><option value="classic">Classic</option><option value="wide">Wide 4×</option></select></label>
         <label>Level<select data-setting="level">${levelOptionsHTML()}</select></label>
@@ -4916,7 +4942,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.promptsEl = sh.querySelector('.tvPrompts');
     this.toastEl = sh.querySelector('.padToast');
     this.applyTouchStyle();
-    sh.querySelector('.localPlay').onclick = () => this.beginLocalPlay();
+    sh.querySelector('.localPlay').onclick = () => this.beginLocalPlay('original');
+    sh.querySelector('.localCoopPlay').onclick = () => this.beginLocalPlay('coop2');
     sh.querySelector('.padPickSkip').onclick = () => this.finishPadPick(true);
     sh.querySelector('.padPickBack').onclick = () => this.cancelPadPick();
     sh.querySelector('.createOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('create'); };
@@ -4926,7 +4953,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.resume').onclick = () => this.togglePause();
     sh.querySelector('.again').onclick = () => { if(this.online){if(this.isOnlineHost())this.sendOnline('return_to_lobby');}else{
       // A finished level chain leaves settings.level on the last level; restart the run.
-      if (this._runStartLevel !== undefined) { this.settings.level = this._runStartLevel; this._syncSettings?.(); }
+      if (this._runStartLevel !== undefined) { this.settings.level = this._runStartLevel; this.settings.campaign=this._runStartCampaign||this.settings.campaign||'original'; this._syncSettings?.(); }
       this.state = 'play'; this.resetGame(); } };
     sh.querySelector('.luNext').onclick = () => this.readyForNextLevel();
     sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
@@ -5353,7 +5380,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   scoreBucket() {
     const mode = this.settings.mode;
     // Clear mode chains levels, so a run is filed under the level it started on.
-    return { mode, level: mode === 'clear' ? (this._runStartLevel ?? this.settings.level) : 0 };
+    return { mode, level: mode === 'clear' ? (this._runStartLevel ?? this.settings.level) : 0,
+      campaign: mode === 'clear' ? (this._runStartCampaign || this.settings.campaign || 'original') : 'original' };
   }
   async showHighScores(score) {
     const sh = this.shadowRoot, wrap = sh.querySelector('.hiscore');
@@ -5363,7 +5391,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     const bucket = this.scoreBucket();
     let entries;
     try {
-      const res = await fetch(`/scores?mode=${encodeURIComponent(bucket.mode)}&level=${encodeURIComponent(bucket.level)}`, { cache:'no-store' });
+      const res = await fetch(`/scores?mode=${encodeURIComponent(bucket.mode)}&level=${encodeURIComponent(bucket.level)}&campaign=${encodeURIComponent(bucket.campaign)}`, { cache:'no-store' });
       if (!res.ok) throw new Error('bad status');
       entries = (await res.json()).entries || [];
     } catch (e) {
@@ -5384,7 +5412,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { localStorage.setItem('bt_initials', initials); } catch (e) {}
       try {
         const res = await fetch('/scores', { method:'POST', headers:{'content-type':'application/json'},
-          body: JSON.stringify({ initials, score, mode: bucket.mode, level: bucket.level }) });
+          body: JSON.stringify({ initials, score, mode: bucket.mode, level: bucket.level, campaign: bucket.campaign }) });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || 'rejected');
         entryEl.style.display = 'none';
@@ -5429,14 +5457,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if(msg.type==='joined'){
       this._reconnectAttempts=0;this.reconnectEl.style.display='none';this.onlinePlayerId=msg.playerId;this.onlineRoom=msg.room;this._onlineCode=msg.room.code;this._onlineToken=msg.token;
       try{localStorage.setItem('bt_online_session',JSON.stringify({code:this._onlineCode,token:this._onlineToken}));}catch(_){}
-      this.syncSideScope();this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
+      this.syncSideScope();this.homeEl.style.display='none';if(msg.snapshot){this.lobbyEl.style.display='none';this._runStartLevel=msg.snapshot?.settings?.level??0;this._runStartCampaign=msg.snapshot?.settings?.campaign||'original';this.applyOnlineSnapshot(msg.snapshot);}else this.showOnlineLobby();return;
     }
     if(msg.type==='lobby_state'){this.onlineRoom=msg.room;if(msg.room.phase==='lobby')this.showOnlineLobby();return;}
     if(msg.type==='host_changed'){if(this.onlineRoom)this.onlineRoom.hostId=msg.hostId;this.syncOnlineControls();return;}
     if(msg.type==='match_started'){this.onlineRoom=msg.room;this.lobbyEl.style.display='none';this.endEl.style.display='none';
       // Snapshots overwrite settings.level as the server walks the chain, so pin the
       // level this run started on for the leaderboard bucket.
-      this._runStartLevel=msg.snapshot?.settings?.level??0;this.applyOnlineSnapshot(msg.snapshot);this.shadowRoot.querySelector('.onlineBar').style.display='flex';return;}
+      this._runStartLevel=msg.snapshot?.settings?.level??0;this._runStartCampaign=msg.snapshot?.settings?.campaign||'original';this.applyOnlineSnapshot(msg.snapshot);this.shadowRoot.querySelector('.onlineBar').style.display='flex';return;}
     if(msg.type==='snapshot'){if(msg.phase==='ended'&&this.onlineRoom)this.onlineRoom.phase='ended';this.applyOnlineSnapshot(msg.snapshot);return;}
     if(msg.type==='phase_changed'){this.state=msg.phase;this.pauseEl.style.display=msg.phase==='paused'?'grid':'none';this.syncOnlineControls();return;}
     if(msg.type==='left'){this.returnHome();}
@@ -5444,14 +5472,20 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   showOnlineLobby(){
     const sh=this.shadowRoot,room=this.onlineRoom;if(!room)return;this.state='lobby';this.homeEl.style.display='none';this.tutEl.style.display='none';this.endEl.style.display='none';this.pauseEl.style.display='none';this.reconnectEl.style.display='none';this.lobbyEl.style.display='grid';sh.querySelector('.onlineBar').style.display='none';
     sh.querySelector('.roomCode').textContent=room.code;sh.querySelector('.onlinePlayers').innerHTML=room.players.map((p,i)=>`<div class="onlinePlayer"><span class="pDot" style="background:${META[i].accent}"></span><span>${this.escapeHTML(p.name)}</span><span class="statusDot ${p.connected?'':'off'}"></span>${p.id===room.hostId?'<span class="hostTag">HOST</span>':''}</div>`).join('');
-    const host=this.isOnlineHost(),settings=room.settings,battle=settings.mode==='battle';sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');if(['field','mateLines'].includes(k))el.closest('label').style.display=battle?'none':'';});
+    const host=this.isOnlineHost(),settings=room.settings,battle=settings.mode==='battle',campaign=settings.campaign||'original';
+    const lobbyLevel=sh.querySelector('.lobbySettings [data-setting="level"]');
+    if(lobbyLevel.dataset.campaign!==campaign){lobbyLevel.innerHTML=levelOptionsHTML(campaign);lobbyLevel.dataset.campaign=campaign;}
+    sh.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{const k=el.dataset.setting,v=settings[k];el.disabled=!host;el.value=typeof v==='boolean'?String(v):String(v??'');if(['field','mateLines'].includes(k))el.closest('label').style.display=battle?'none':'';});
+    if(campaign==='coop2'){sh.querySelector('.lobbySettings [data-setting="mode"]').disabled=true;sh.querySelector('.lobbySettings [data-setting="field"]').disabled=true;}
     /* The host's screen shape is a room setting, so publish it on arrival — otherwise a
        host who never touches a slider would silently hand everyone the 1080 default. */
     if(host&&room.phase==='lobby'&&this._deviceViewH&&settings.viewH!==this._deviceViewH)this.pushLobbySettings();
     sh.querySelector('.customSetting').style.display=settings.level==='custom'?'grid':'none';const start=sh.querySelector('.lobbyStart');start.style.display=host?'block':'none';start.disabled=room.players.filter(p=>p.connected).length<2;sh.querySelector('.lobbyError').textContent=host?'':'Waiting for the host to start.';
   }
   pushLobbySettings(){
-    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','hurry','guide','aimSpeed','padTint','fireScale'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
+    if(!this.isOnlineHost()||!this.onlineRoom)return;const next={...this.onlineRoom.settings};this.shadowRoot.querySelectorAll('.lobbySettings [data-setting]').forEach(el=>{let v=el.value;if(['reload','missMax','rescueDur','assist','pressureShots','hurry','guide','aimSpeed','padTint','fireScale'].includes(el.dataset.setting))v=Number(v);if(['mateLines','sound'].includes(el.dataset.setting))v=v==='true';if(el.dataset.setting==='level'&&v!=='custom')v=Number(v);next[el.dataset.setting]=v;});
+    if(next.campaign==='coop2'){next.mode='clear';next.field='classic';if(next.level==='custom'||!Number.isInteger(next.level))next.level=0;}
+    if(next.mode==='battle')next.campaign='original';next.viewH=this._deviceViewH||H0;this.sendOnline('update_settings',{revision:this.onlineRoom.revision,settings:next});
   }
   /* Rebuild a launcher from a snapshot without stamping on the angle we are already showing:
      the wire value becomes serverAngle and predictOwnAim / followServerAim ease onto it. Seat
@@ -5463,12 +5497,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   }
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
-    const oldState=this.state;this.settings={...this.settings,...s.settings};this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.objects=s.objects||[];this.objectFallback=!!s.objectFallback;this.flights=s.flights||[];
+    const oldState=this.state;this.settings={...this.settings,...s.settings};this.profileKey=this.settings.campaign==='coop2'&&s.cols===GRID_PROFILES.coop2.evenColumns?'coop2':'classic';this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.objects=s.objects||[];this.objectFallback=!!s.objectFallback;this.flights=s.flights||[];
     this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.onlineMissLimit=s.missLimit;this.pressure=s.pressure||0;this.onlinePerDrop=s.perDrop||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     this.showObjectGuide();
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
-    const p=this.players[this.activeP];if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
+    const p=this.players[this.activeP];if(this.profile==='coop2')this.camX=0;else if(p){const target=clamp(p.x+Math.sin(p.angle)*420-W/2,0,Math.max(0,this.WW-W));this.camX=this.camX===undefined?target:this.camX+(target-this.camX)*.35;}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     // Between levels the room sits on a scoreboard until everyone says go; the snapshot
     // carries the summary and the ready list, so a rejoin lands on the same card.
@@ -5556,6 +5590,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <h2>Bubble Together</h2>
 <div class="sideSub" style="color:#7593b5;font-size:13px">game settings</div>
 <div class="roomOwned">
+<h3>Campaign</h3><div class="seg campaignSeg"><button data-c="original">Original 52</button><button data-c="coop2">Bubble Together 2</button></div>
+<div class="campaignNote" style="color:#9db8d4;font-size:12px;margin-top:4px">Bubble Together 2 is a separate 52-level campaign built specifically for two human players.</div>
 <h3>Mode</h3><div class="seg modeSeg">
   <button data-m="clear">Co-op Clear</button><button data-m="endless">Endless</button><button data-m="battle">Battle</button></div>
 <div class="battleNote" style="display:none;color:#9db8d4;font-size:12px;margin-top:4px">battle royale: private boards \u00b7 big clears let you dump junk on a rival \u00b7 you vs. bots locally, humans online</div>
@@ -5608,17 +5644,23 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       b.onclick = () => { set(b); syncAll(); };
     });
     const syncAll = () => {
-      el.querySelectorAll('.modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.m === S.mode));
-      el.querySelectorAll('.fldSeg button').forEach(b => b.classList.toggle('on', b.dataset.f === S.field));
+      const campaign=S.campaign||'original', coopOnly=campaign==='coop2';
+      el.querySelectorAll('.campaignSeg button').forEach(b => b.classList.toggle('on', b.dataset.c === campaign));
+      el.querySelectorAll('.modeSeg button').forEach(b => { b.classList.toggle('on', b.dataset.m === S.mode); b.disabled=coopOnly&&b.dataset.m!=='clear'; });
+      el.querySelectorAll('.fldSeg button').forEach(b => { b.classList.toggle('on', b.dataset.f === S.field); b.disabled=coopOnly&&b.dataset.f!=='classic'; });
       el.querySelectorAll('.cntSeg button').forEach(b => b.classList.toggle('on', +b.dataset.n === S.players));
       el.querySelectorAll('.botSeg button').forEach(b => b.classList.toggle('on', b.dataset.b === S.botSkill));
       el.querySelectorAll('.tlSeg button').forEach(b => b.classList.toggle('on', (+b.dataset.v === 1) === S.mateLines));
       el.querySelectorAll('.glSeg button').forEach(b => b.classList.toggle('on', +b.dataset.g === S.guide));
       el.querySelectorAll('.sndSeg button').forEach(b => b.classList.toggle('on', (+b.dataset.v === 1) === S.sound));
-      el.querySelector('.lvlSel').value = String(S.level);
-      // The two-player board plays its own rounds, so the picker names what will load.
-      el.querySelectorAll('.lvlSel option').forEach(o => { const i = +o.value, name = this.roundName(i);
+      const lvlSel=el.querySelector('.lvlSel');
+      if(lvlSel.dataset.campaign!==campaign){lvlSel.innerHTML=levelOptionsHTML(campaign);lvlSel.dataset.campaign=campaign;}
+      lvlSel.value = String(S.level);
+      // The original local 2P board may rename authored variants; Campaign 2 names are native.
+      lvlSel.querySelectorAll('option').forEach(o => { const i = +o.value, name = this.roundName(i);
         if (name && o.textContent !== (i + 1) + '. ' + name) o.textContent = (i + 1) + '. ' + name; });
+      const customDetails=el.querySelector('.lvlSel').nextElementSibling; if(customDetails) customDetails.style.display=coopOnly?'none':'';
+      el.querySelectorAll('.cntSeg button').forEach(b=>b.disabled=coopOnly&&+b.dataset.n!==2);
       el.querySelector('.rl').value = S.reload; el.querySelector('.rlv').textContent = S.reload.toFixed(2) + 's';
       el.querySelector('.mm').value = S.missMax; el.querySelector('.mmv').textContent = S.missMax;
       el.querySelector('.sp').value = S.pressureShots;
@@ -5649,7 +5691,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
           <div class="seg"><button data-h="1">Human</button><button data-h="0">Bot</button></div>`;
         row.querySelectorAll('button').forEach(b => {
           b.classList.toggle('on', (+b.dataset.h === 1) === S.human[i]);
-          b.onclick = () => { S.human[i] = +b.dataset.h === 1;
+          b.onclick = () => { if(S.campaign==='coop2')return; S.human[i] = +b.dataset.h === 1;
             const p = this.players[i]; if (p) { p.bot = !S.human[i]; p.plan = null; }
             this.activeP = this.players.findIndex(q => !q.bot); if (this.activeP < 0) this.activeP = 0;
             syncAll(); };
@@ -5659,11 +5701,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       this.syncButtons();
     };
     this._syncSettings = syncAll; // so the level chain can re-mark the level picker
-    segWire('.modeSeg', null, b => { S.mode = b.dataset.m;
+    segWire('.campaignSeg', null, b => { S.campaign=b.dataset.c; S.level=0;
+      if(S.campaign==='coop2'){S.mode='clear';S.field='classic';S.players=2;S.human=[true,true,false,false];}
+      this.resetGame(); });
+    segWire('.modeSeg', null, b => { if(S.campaign==='coop2'&&b.dataset.m!=='clear')S.campaign='original'; S.mode = b.dataset.m;
       if (S.mode === 'battle') { if (S.players < 4) S.players = 8; else if (S.players === 4) S.players = 8; }
       else if (S.players > 4) S.players = 4;
       this.resetGame(); });
-    segWire('.fldSeg', null, b => { S.field = b.dataset.f; this.resetGame(); });
+    segWire('.fldSeg', null, b => { if(S.campaign==='coop2'&&b.dataset.f!=='classic')S.campaign='original'; S.field = b.dataset.f; this.resetGame(); });
     el.querySelector('.lvlSel').onchange = e => {
       S.level = e.target.value === 'custom' ? 'custom' : +e.target.value;
       this.resetGame(); syncAll();
@@ -5675,7 +5720,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       try { localStorage.setItem('bt_custom_level', ta.value); } catch(e) {}
       S.level = 'custom'; this.resetGame(); syncAll();
     };
-    segWire('.cntSeg', null, b => { S.players = +b.dataset.n; if (S.mode !== 'battle') S.missMax = 4 + 2 * S.players;
+    segWire('.cntSeg', null, b => { if(S.campaign==='coop2'&&+b.dataset.n!==2)return; S.players = +b.dataset.n; if (S.mode !== 'battle') S.missMax = 4 + 2 * S.players;
       // Moving to or from two players swaps the board itself, not just the launchers.
       if (S.mode === 'battle' || this.gridProfile() !== this.profileKey) this.resetGame(); else this.spawnPlayers(); });
     segWire('.botSeg', null, b => { S.botSkill = b.dataset.b; });

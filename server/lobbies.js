@@ -1,12 +1,12 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { OnlineGame, LEVELS, normalizeViewH } = require('./game');
+const { OnlineGame, LEVELS, COOP2_LEVELS, CAMPAIGNS, normalizeViewH } = require('./game');
 const { BattleGame } = require('./battle');
 
 const DEFAULT_SETTINGS = Object.freeze({
   reload:1.35, missMax:12, rescueDur:4, assist:.35, pressureShots:8, mateLines:true, sound:true,
-  mode:'clear', field:'classic', guide:1, level:0, customText:'', viewH:1080,
+  mode:'clear', field:'classic', campaign:'original', guide:1, level:0, customText:'', viewH:1080,
   hurry:8, // seconds a human may sit on a loaded launcher before it fires for them; 0 = off
   /* Control feel travels with the room: the host sets one set of aim and FIRE controls and
      every player gets it, the same way they set the rules. Clients hand their own saved
@@ -22,7 +22,10 @@ function validateSettings(input) {
   const s = { ...DEFAULT_SETTINGS, ...(input || {}) };
   if (!['clear','endless','battle'].includes(s.mode)) throw fail('bad_settings','Invalid game mode.');
   if (!['classic','wide'].includes(s.field)) throw fail('bad_settings','Invalid field width.');
-  if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level < LEVELS.length)) throw fail('bad_settings','Invalid level.');
+  if (!CAMPAIGNS[s.campaign]) throw fail('bad_settings','Invalid campaign.');
+  if (s.campaign==='coop2' && (s.mode!=='clear' || s.field!=='classic' || s.level==='custom')) throw fail('bad_settings','Bubble Together 2 is a two-player Co-op Clear campaign.');
+  const levels=s.campaign==='coop2'?COOP2_LEVELS:LEVELS;
+  if (!(s.level === 'custom' || Number.isInteger(s.level) && s.level >= 0 && s.level < levels.length)) throw fail('bad_settings','Invalid level.');
   const number = (name,min,max) => { s[name]=Number(s[name]); if(!Number.isFinite(s[name])||s[name]<min||s[name]>max)throw fail('bad_settings',`Invalid ${name}.`); };
   number('reload',.8,2.2); number('missMax',4,20); number('rescueDur',3,5); number('assist',0,1);
   number('pressureShots',0,20); number('hurry',0,30); number('aimSpeed',.6,6); number('padTint',0,.3); number('fireScale',.6,2.2);
@@ -58,7 +61,7 @@ function create(name, ws, address='unknown') {
 function join(code, name, ws, address='unknown') {
   rateLimit(address,'join',30,60_000); code=String(code||''); if(!/^\d{3}$/.test(code))throw fail('bad_code','Enter a three-digit room code.');
   const room=rooms.get(code); if(!room)throw fail('bad_code','Room not found.'); if(room.phase!=='lobby')throw fail('match_started','That match has already started.');
-  const capacity=room.settings.mode==='battle'?8:4;if(room.players.length>=capacity)throw fail('room_full','That room is full.'); name=cleanName(name); if(!name)throw fail('bad_name','Enter a display name.');
+  const capacity=room.settings.mode==='battle'?8:room.settings.campaign==='coop2'?2:4;if(room.players.length>=capacity)throw fail('room_full','That room is full.'); name=cleanName(name); if(!name)throw fail('bad_name','Enter a display name.');
   if(room.players.some(p=>p.name.toLowerCase()===name.toLowerCase()))throw fail('name_taken','That name is already in use.');
   const p=player(name,ws); room.players.push(p); room.emptyAt=null; broadcastState(room); return {room,p};
 }
@@ -72,7 +75,8 @@ function updateSettings(room,p,settings,revision) {
   if(room.hostId!==p.id)throw fail('not_host','Only the host can change settings.'); if(room.phase!=='lobby')throw fail('settings_locked','Settings are locked during a match.');
   if(Number(revision)!==room.revision)throw fail('stale_revision','Lobby settings changed; try again.');
   const next=validateSettings(settings);if(next.mode!=='battle'&&room.players.length>4)throw fail('too_many_players','Co-op modes support at most four players.');
-  if(next.mode==='battle')next.field='classic';room.settings=next;room.revision++;broadcastState(room);
+  if(next.campaign==='coop2'&&room.players.length>2)throw fail('too_many_players','Bubble Together 2 supports exactly two players.');
+  if(next.mode==='battle'){next.field='classic';next.campaign='original';}room.settings=next;room.revision++;broadcastState(room);
 }
 function makeGame(room){const seed=crypto.randomBytes(4).readUInt32LE();return room.settings.mode==='battle'?new BattleGame(room.settings,room.players,seed):new OnlineGame(room.settings,room.players,seed);}
 function sendPlayer(p,type,payload={}){if(p.connected&&p.ws?.readyState===1)p.ws.send(JSON.stringify({type,...payload}));}
@@ -80,6 +84,7 @@ function broadcastMatchStarted(room){for(const p of room.players)sendPlayer(p,'m
 function start(room,p) {
   if(room.hostId!==p.id)throw fail('not_host','Only the host can start.'); if(room.phase!=='lobby')throw fail('bad_phase','Match is already running.');
   const connected=room.players.filter(q=>q.connected); if(connected.length<2)throw fail('not_enough_players','At least two connected players are required.');
+  if(room.settings.campaign==='coop2'&&connected.length!==2)throw fail('bad_players','Bubble Together 2 requires exactly two connected players.');
   room.players=connected; room.phase='playing'; room.game=makeGame(room);room.snapshotSeq=0;
   broadcastMatchStarted(room);
 }
