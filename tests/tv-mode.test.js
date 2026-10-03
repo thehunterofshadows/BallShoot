@@ -484,11 +484,37 @@ test('controllers keep their slot, and a disconnect releases holds and pauses lo
   // Reconnecting while A is held is not a shot; releasing and pressing again is.
   pads = [pad(1, [0])];
   g.pollGamepads();
-  assert.equal(g._padSlots.get(1), 0, 'a reconnecting pad takes the lowest free slot');
+  assert.equal(g._padSlots.get(1), 1, 'a reconnecting pad keeps its reserved launcher');
   assert.deepEqual(fired, []);
   pads = [pad(1)]; g.pollGamepads();
   pads = [pad(1, [0])]; g.pollGamepads();
-  assert.deepEqual(fired, [0]);
+  assert.deepEqual(fired, [1]);
+});
+
+test('local 2P controllers press A to join, choose left/right, and keep that launcher', () => {
+  const pad = (index, pressed = [], x = 0) => ({ index, connected: true, axes: [x, 0],
+    buttons: Array.from({ length: 16 }, (_, i) => ({ pressed: pressed.includes(i) })) });
+  let pads = [pad(0, [0])];
+  const C = loadComponent({ navigator: { getGamepads: () => pads } }), P = C.prototype;
+  const players = [0, 1].map(i => ({ i, bot: false, held: { l: false, r: false }, name: 'P' + (i + 1) }));
+  const g = Object.assign(Object.create(P), {
+    settings: { displayMode: 'desktop', mode: 'clear' }, players, state: 'controller-pick', online: false,
+    _padPickActive: true, _padPickPending: new Map(), _padSlots: new Map(), _padPrev: new Map(), _padReservations: new Map(),
+    padToast() {}, syncPadPick() {}, finishPadPick() { this._padPickActive = false; this.finished = true; },
+  });
+  // The very first A/Cross that wakes the browser also joins and highlights LEFT.
+  g.pollGamepads();
+  assert.equal(g._padPickPending.get(0), 0);
+  // Move right, then A confirms Controller 1 on the RIGHT launcher.
+  pads = [pad(0, [], 1)]; g.pollGamepads();
+  assert.equal(g._padPickPending.get(0), 1);
+  pads = [pad(0, [0], 1)]; g.pollGamepads();
+  assert.equal(g._padSlots.get(0), 1);
+  // Controller 2's first A immediately takes the only side left.
+  pads = [pad(0), pad(1, [0])]; g.pollGamepads();
+  assert.equal(g._padSlots.get(1), 0);
+  assert.equal(g.finished, true);
+  assert.deepEqual([...g._padReservations.entries()], [[0, 1], [1, 0]]);
 });
 
 test('geometry lock: TV↔Desktop flip mid-match never moves H, danger line or resets offline play', () => {

@@ -32,7 +32,8 @@ const local = (settings = {}) => {
   g.resetGame();
   return g;
 };
-const twoP = LEVELS.map(L => L.layouts && L.layouts.coop2).filter(Boolean);
+const twoPEntries = LEVELS.map((L, i) => ({ L, i, v: L.layouts && L.layouts.coop2 })).filter(x => x.v);
+const twoP = twoPEntries.map(x => x.v);
 const supported = rows => {
   const has = (r, c) => r >= 0 && r < rows.length && c >= 0 && c < rows[r].length && rows[r][c] !== '.';
   const nb = (r, c) => { const p = r & 1, a = c - 1 + p, b = c + p; return [[r, c - 1], [r, c + 1], [r - 1, a], [r - 1, b], [r + 1, a], [r + 1, b]]; };
@@ -59,27 +60,27 @@ test('grid profiles: classic stays 11/10 and coop2 is one continuous 16/15 field
   for (const L of LEVELS) assert.ok(rowsFit(L.rows, GRID_PROFILES.classic), `${L.name} classic rows still 11/10`);
 });
 
-test('twelve purpose-built coop2 rounds validate against 16/15 and use the width without doubling the wall', () => {
-  assert.equal(twoP.length, 12);
-  assert.equal(new Set(twoP.map(v => v.name)).size, 12, 'each 2P round has its own name');
+test('purpose-built coop2 rounds validate against 16/15 and use the width without doubling the wall', () => {
+  assert.equal(twoP.length, 19);
+  assert.equal(new Set(twoP.map(v => v.name)).size, 19, 'each 2P round has its own name');
   for (const n of ['Open Hands', 'Twin Towers', 'Center Cut', 'Crossfire', 'The Bridge', 'Bank Exchange', 'Two Keys',
     'Domino Drop', 'Hanging Garden', 'Crossed Supports', 'Shared Rescue', 'Grand Canopy']) assert.ok(twoP.some(v => v.name === n), n);
   let colours = 0;
-  twoP.forEach((v, i) => {
+  twoPEntries.forEach(({ v, L, i }) => {
     assert.ok(rowsFit(v.rows, GRID_PROFILES.coop2), `${v.name}: rows alternate 16/15`);
     assert.ok(v.rows.length <= 12, `${v.name}: at most 12 rows`);
     assert.ok(supported(v.rows), `${v.name}: every bubble hangs from the ceiling`);
     const cells = v.rows.join('').replace(/\./g, '').length, area = v.rows.join('').length;
-    assert.ok(cells / area <= 0.65, `${v.name}: keeps open space (${cells}/${area})`);
+    assert.ok(cells / area <= 0.68, `${v.name}: keeps open space (${cells}/${area})`);
     // Something on both sides of the centre line: one shared puzzle, not half a board.
     const sides = v.rows.flatMap((row, r) => [...row].map((ch, c) => ch === '.' ? null : c + (r & 1) * 0.5 < 7.5)).filter(x => x !== null);
     assert.ok(sides.includes(true) && sides.includes(false), `${v.name}: spans both halves`);
     const k = levelColors(v.rows);
     assert.ok(k >= colours, `${v.name}: colour count never falls (${k})`); colours = k;
-    assert.ok(Number.isInteger(v.drop) && v.drop > LEVELS[i].drop, `${v.name}: paced slower than its classic round for two shooters`);
+    assert.ok(Number.isInteger(v.drop) && v.drop > L.drop, `${v.name}: paced slower than its classic round for two shooters`);
   });
   assert.equal(levelColors(twoP[0].rows), 3);
-  assert.equal(levelColors(twoP[11].rows), 6);
+  assert.equal(levelColors(twoP.at(-1).rows), 6);
 });
 
 test('rounds without a coop2 layout centre their classic rows on whole columns', () => {

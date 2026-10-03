@@ -597,65 +597,121 @@ const LEVELS = [
     'PP.GG.GG.PP',
     '.P......P.',
   ]},
-  { name: 'Supernova', drop: 7, rows: [
-    'RRROOYOORRR',
-    'RYYOOOOYYR',
-    'GYY+***+YYG',
-    'GBB+**+BBG',
-    'PGBB+++BBGP',
-    '.PGBBBBGP.',
+  { name: 'Supernova', drop: 7, layouts: { coop2: { name: 'Supernova', drop: 10, rows: [
+    'RRROO..YY..OORRR',
+    'RYYOO..BB..OOYY',
+    'GYY+*..GG..*+YYG',
+    'GBB+..PP...+BBG',
+    'PGBB+..OO..+BBGP',
+    '.PG...RRR...BGP',
+    '..PGG..YY..GGP..',
+  ] } }, rows: [
+    'RRROO.OORRR',
+    'RYY.OO.YYR',
+    'GYY+**.+YYG',
+    'G.B+**+B.G',
+    'PGBB+..+BGP',
+    '.PG.BB.GP.',
     '..PGG.GGP..',
-    '..PP..PP..',
-    '...P...P...',
+    '...P...P..',
   ]},
-  // 47-52 · six colours · dense finales, the original four set-pieces reworked
-  { name: 'The Vault', drop: 6, rows: [ // scattered singles weave — build your own matches; grind open the high arch
-    'GGBYROBYYGB',
-    'BRRPBYRGBY',
-    'RGGYRGBYOGB',
-    'BYRBBYRPBY',
-    'RGBOOGBYRGB',
-    'BYRGBYRGPY',
+  // 47-48 · finale ramp · six colours, but still the tier-4 ceiling pace and useful openings
+  { name: 'The Vault', drop: 7, layouts: { coop2: { name: 'The Vault', drop: 9, rows: [
+    'GGBYRO..OO..ORYG',
+    'BRRBY..GG..YBRR',
+    'RGG*R..YY..R*GGB',
+    'BYR...PP...YRPB',
+    'RGBO+..BB..+OGBR',
+    'BYR...GG...RGPY',
+    'RG#Y........Y#GB',
+    'BYR.........GBY',
+  ] } }, rows: [ // open weave — deliberate matches without the old solid-wall grind
+    'GGBYROOYYGB',
+    'BRR.BY..BY',
+    'RGG*R..YOGB',
+    'BYR..Y..BY',
+    'RGB.O+GB.RG',
+    'BYR...R.PY',
     'RG#Y...Y#GB',
-    'BYRG...GBY',
+    'BY.....GBY',
     'RGB.....RGB',
-    'BY.......Y',
   ]},
-  { name: 'Chandeliers', drop: 6, objects: [
+  { name: 'Chandeliers', drop: 7, layouts: { coop2: { name: 'Chandeliers', drop: 9, objects: [
+    { id:'leftShield', type:'shield', cells:[[8,0]] },
+    { id:'rightShield', type:'shield', cells:[[8,15]] },
+  ], rows: [
+    'YYRBOY....YOBRYY',
+    'RGGPR.....RPGGR',
+    'GYYBG*....*GBYYG',
+    'RBOBR.....RBOBR',
+    'GYRBBY....YBBRYG',
+    'RBGPB.....BPGYR',
+    'GYR+........+RYG',
+    'OO...........OO',
+    'OO...........OOO',
+  ] } }, objects: [
     { id:'leftShield', type:'shield', cells:[[8,0]] },
     { id:'rightShield', type:'shield', cells:[[8,9]] },
-  ], rows: [ // dense field, three solid pendants: pop direct or cut the cells above
+  ], rows: [ // shields are the puzzle; open lanes keep density from being the punishment
     'YYRBOYRBBYR',
-    'RGGPRBGYRB',
+    'RGG.RBGYRB',
     'GYYBG*RBGYR',
-    'RBORRBGPRB',
+    'RBO..BGPRB',
     'GYRBBYRBGYR',
-    'RBGYPBGYOB',
-    'GYRBGYRBGYR',
-    'OO.PP...OO',
-    'OO.PP....OO',
+    'RB..PBGYOB',
+    'GYR+...+GYR',
+    'O........O',
+    'OO.......OO',
   ]},
-  { name: 'The Canyon', drop: 6, objects: [
+  // 49-52 · final tier · faster ceiling arrives only after the player has learned the finale shapes
+  { name: 'The Canyon', drop: 6, layouts: { coop2: { name: 'The Canyon', drop: 8, objects: [
+    { id:'westLock', type:'syncLock', cells:[[8,0]], pair:'eastLock', barrier:[[6,6],[6,9]] },
+    { id:'eastLock', type:'syncLock', cells:[[8,15]], pair:'westLock', barrier:[[6,6],[6,9]] },
+  ], rows: [
+    'RRYGBO....OBGYRR',
+    'YBBPY.....YPBBY',
+    'BRRGBR....RBGRRB',
+    'YGBYP.....PYBGY',
+    'BRYGGR....RGGYRB',
+    'Y#BR.YYYY..RB#Y',
+    'BROG..RRRR..GORB',
+    'YGB#.......#BGY',
+    'PO............OP',
+  ] } }, objects: [
     { id:'westLock', type:'syncLock', cells:[[10,0]], pair:'eastLock', barrier:[[7,3],[7,7]] },
     { id:'eastLock', type:'syncLock', cells:[[10,9]], pair:'westLock', barrier:[[7,3],[7,7]] },
-  ], rows: [ // 11-row wall towers; coordinated cuts drop big chunks
-    'RRYGBOYGGRY',
-    'YBBPYGBRYG',
-    'BRRGBRYOBRY',
-    'YGBYPGBRYG',
-    'BRYGGRYGBRY',
+  ], rows: [ // coordinated cuts, but with breathing room around the towers
+    'RRYGBOY.GRY',
+    'YBB.YGBRYG',
+    'BRR.BR.O.RY',
+    'YG..PGBRYG',
+    'BRYG..YG.RY',
     'Y#BR...R#G',
-    'BROG...GPRY',
+    'BROG....PRY',
     'YGB#...#YG',
-    'BRYG...GBRY',
+    'BRY....GBRY',
     'YGB.....YG',
     'PO.......OP',
   ]},
-  { name: 'Hive Bridge', drop: 6, objects: [
+  { name: 'Hive Bridge', drop: 6, layouts: { coop2: { name: 'Hive Bridge', drop: 8, objects: [
+    { id:'westArmor', type:'teamArmor', cells:[[8,0]] },
+    { id:'eastArmor', type:'teamArmor', cells:[[8,15]] },
+    { id:'pressure', type:'corruption', cells:[[6,4]], every:5, maxSpread:3 },
+  ], rows: [
+    'YBPRY......YRPBY',
+    'GOYBG.....GBYOG',
+    'YBGRY......YRBGY',
+    'GPYB........BYG',
+    'YBGRR......RRBGY',
+    'GRO#.......#ORG',
+    'YBGRY......YRBGY',
+    'GRYB........BYR',
+    'BBGPY......YPGGB',
+  ] } }, objects: [
     { id:'westArmor', type:'teamArmor', cells:[[9,0]] },
     { id:'eastArmor', type:'teamArmor', cells:[[9,9]] },
-    { id:'pressure', type:'corruption', cells:[[8,6]], every:4, maxSpread:4 },
-  ], rows: [ // right hive hangs from a lone 2-bubble bridge up the center channel
+    { id:'pressure', type:'corruption', cells:[[8,6]], every:5, maxSpread:3 },
+  ], rows: [ // corruption supplies the pressure, so it spreads more slowly and tops out sooner
     'YBPRY......',
     'GOYBGG....',
     'YBGRY.BROBG',
@@ -664,23 +720,40 @@ const LEVELS = [
     'GRO#..YBOR',
     'YBGRY.RRYBG',
     'GRYB..#GGR',
-    'BBGPY.GRRBO',
+    'BBG+..GRRBO',
     'GYYB..YBGR',
   ]},
-  { name: 'Grand Cathedral', drop: 6, rows: [
+  { name: 'Grand Cathedral', drop: 6, layouts: { coop2: { name: 'Grand Cathedral', drop: 8, rows: [
+    'PPPPP......PPPPP',
+    'P#OOO.....OOO#P',
+    'P#O+YY....YY+O#P',
+    '#OYYR.....RYYO#',
+    '#OY*R......R*YO#',
+    '#GYR.......RYG#',
+    '#GG..........GG#',
+    '#BG.........GB#',
+  ] } }, rows: [
     'PPPPPPPPPPP',
-    'P#OOOOOO#P',
+    'P#OOO.OO#P',
     'P#O+YYY+O#P',
-    '#OYYRRYYO#',
+    '#OYY..YYO#',
     '#OY*RRR*YO#',
     '#GYRBBRYG#',
     '#GG.BBB.GG#',
     '#BG....GB#',
-    '#BG.....GB#',
-    '.BB....BB.',
-    '..B.....B..',
+    '.BG.....GB.',
+    '..B....BB.',
   ]},
-  { name: 'Bubble Together', drop: 6, rows: [
+  { name: 'Bubble Together', drop: 6, layouts: { coop2: { name: 'Bubble Together', drop: 8, rows: [
+    'PRRROP....OPBBBP',
+    'RRRRY.....YBBBB',
+    'RR*RR......BB*BB',
+    'RRRRG......BBBB',
+    '.RRR+......+BBB.',
+    '..RRG.....GBB..',
+    '...RY......YB...',
+    '....R.....B....',
+  ] } }, rows: [
     'PRRRPOPBBBP',
     'RRRRYYBBBB',
     'RR*RRYBB*BB',
@@ -1164,8 +1237,8 @@ class CoopBubbles extends HTMLElement {
     if (this._init) return; this._init = true;
     this.setViewH(H0); // measure() refines this once .root has a box
     this.online = false; this.onlinePlayerId = null; this.onlineRoom = null; this.onlineSeq = 0;
-    this.settings = { players:4, human:[true,false,false,false], botSkill:'normal',
-      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:1, level:0,
+    this.settings = { players:2, human:[true,true,false,false], botSkill:'normal',
+      reload:1.35, missMax:12, rescueDur:4, assist:0.35, pressureShots:8, hurry:8, mateLines:true, sound:true, mode:'clear', field:'classic', guide:0.25, level:0,
       aimSpeed:2.4, padTint:0.025, fireScale:1, aimMode:'halves', displayMode:'auto', screenFit:normalizeScreenFit(TV.screenFit) };
     Object.assign(this.settings, this.loadLocalPrefs());
     this.buildDOM();
@@ -2462,6 +2535,71 @@ class CoopBubbles extends HTMLElement {
     try { if (document.fonts && document.fonts.load) for (const w of [400, 500, 600, 700]) document.fonts.load(w + ' 20px Fredoka').catch(() => {}); } catch (_) {}
   }
 
+  /* ---------- local controller join / side pick ---------- */
+  beginLocalPlay() {
+    this.tvFullscreenNudge(); this.online = false; this.homeEl.style.display = 'none';
+    const duo = this.settings.mode === 'clear' && this.settings.players === 2
+      && this.settings.human[0] && this.settings.human[1];
+    if (duo && typeof navigator !== 'undefined' && navigator.getGamepads) this.openPadPick();
+    else { this.showTutorial(); this._tutBack = 'home'; }
+  }
+  openPadPick() {
+    this._padPickActive = true; this._padPickPending = new Map();
+    this._padSlots = new Map(); this._padPrev = new Map(); this._padReservations = new Map();
+    this.state = 'controller-pick'; this.padPickEl.style.display = 'grid'; this.syncPadPick();
+  }
+  finishPadPick(skip = false) {
+    if (!this._padPickActive && !skip) return;
+    this._padPickActive = false; this._padPickPending = new Map();
+    if (skip) { this._padSlots = new Map(); this._padReservations = new Map(); }
+    if (this.padPickEl) this.padPickEl.style.display = 'none';
+    this.showTutorial(); this._tutBack = 'home';
+  }
+  cancelPadPick() {
+    this._padPickActive = false; this._padPickPending = new Map(); this._padSlots = new Map();
+    this._padReservations = new Map(); if (this.padPickEl) this.padPickEl.style.display = 'none';
+    this.state = 'home'; this.homeEl.style.display = 'grid';
+  }
+  syncPadPick() {
+    const el = this.padPickEl; if (!el) return;
+    const slots = this._padSlots || new Map(), pending = this._padPickPending || new Map();
+    const assigned = side => [...slots].find(([, s]) => s === side);
+    const hovering = side => [...pending].find(([, s]) => s === side);
+    el.querySelectorAll('.padPickSide').forEach(sideEl => {
+      const side = +sideEl.dataset.player, hit = assigned(side), hot = hovering(side);
+      sideEl.classList.toggle('picked', !!hit); sideEl.classList.toggle('hot', !!hot && !hit);
+      const text = sideEl.querySelector('span');
+      text.textContent = hit ? `Controller ${hit[0] + 1}` : hot ? `Controller ${hot[0] + 1} choosing` : 'Open';
+    });
+    const status = el.querySelector('.padPickStatus'), p = [...pending][0];
+    if (p) status.textContent = `Controller ${p[0] + 1}: choose LEFT or RIGHT · A / Cross confirms · B cancels`;
+    else if (new Set(slots.values()).size >= 2) status.textContent = 'Both players ready!';
+    else if (slots.size) status.textContent = 'First player ready · press A / Cross on the second controller';
+    else status.textContent = 'Press A / Cross on a controller to join';
+  }
+  padPickInput(g, h, hit) {
+    const idx = g.index, slots = this._padSlots, pending = this._padPickPending, reservations = this._padReservations;
+    if (slots.has(idx)) {
+      if (hit('b')) { const side = slots.get(idx); slots.delete(idx); reservations.delete(idx); this.padToast(`Controller ${idx + 1} left ${side ? 'RIGHT' : 'LEFT'}`); this.syncPadPick(); }
+      return;
+    }
+    if (hit('b')) { pending.delete(idx); this.syncPadPick(); return; }
+    const free = () => [0, 1].filter(side => ![...slots.values()].includes(side)
+      && ![...pending].some(([other, s]) => other !== idx && s === side));
+    if (!pending.has(idx)) {
+      if (!(hit('a') || hit('start'))) return;
+      const choices = free(); if (!choices.length) return;
+      if (choices.length === 1) { slots.set(idx, choices[0]); reservations.set(idx, choices[0]); this.padToast(`Controller ${idx + 1} · ${choices[0] ? 'RIGHT' : 'LEFT'}`); }
+      else pending.set(idx, h > 0 ? 1 : 0);
+      this.syncPadPick(); return;
+    }
+    if (h) { const want = h > 0 ? 1 : 0; if (free().includes(want)) pending.set(idx, want); }
+    if (hit('a') || hit('start')) {
+      const side = pending.get(idx); if (free().includes(side)) { pending.delete(idx); slots.set(idx, side); reservations.set(idx, side); this.padToast(`Controller ${idx + 1} · ${side ? 'RIGHT' : 'LEFT'}`); }
+    }
+    this.syncPadPick();
+  }
+
   /* ---------- gamepads ----------
      Pad n drives the nth human launcher, the same stream a key pair would; online it is this
      device's launcher. Held directions are written only when the stick changes, so a pad
@@ -2476,23 +2614,37 @@ class CoopBubbles extends HTMLElement {
      back on its own launcher. A new pad's already-held buttons are not presses. */
   pollGamepads() {
     const pads = this.connectedPads(), slots = this._padSlots || (this._padSlots = new Map());
-    const prev = this._padPrev || (this._padPrev = new Map()), live = new Set(pads.map(g => g.index));
+    const prev = this._padPrev || (this._padPrev = new Map()), reservations = this._padReservations || (this._padReservations = new Map());
+    const pending = this._padPickPending || (this._padPickPending = new Map()), live = new Set(pads.map(g => g.index));
     const humans = this._padHumans = (this.players || []).filter(p => !p.bot).map(p => p.i);
     let changed = false;
-    for (const [idx, slot] of [...slots]) if (!live.has(idx)) { slots.delete(idx); prev.delete(idx); changed = true; this.padLost(slot); }
-    for (const g of pads) if (!slots.has(g.index)) {
-      const used = new Set(slots.values()); let slot = 0; while (used.has(slot)) slot++;
-      slots.set(g.index, slot); changed = true;
-      prev.set(g.index, { b: g.buttons.map(x => !!(x && x.pressed)), h: 0, nav: '', navT: 0 });
-      this.padFound(slot);
+    for (const idx of [...prev.keys()]) if (!live.has(idx)) {
+      const slot = slots.get(idx);
+      if (slot !== undefined) { slots.delete(idx); if (this._padPickActive) reservations.delete(idx); this.padLost(slot, idx); }
+      pending.delete(idx); prev.delete(idx); changed = true;
+    }
+    for (const g of pads) if (!prev.has(g.index)) {
+      // In the side picker the wake-up A/Cross press is the join press. During play we still
+      // swallow buttons already held at connect time so reconnecting cannot fire a shot.
+      prev.set(g.index, { b: this._padPickActive ? g.buttons.map(() => false) : g.buttons.map(x => !!(x && x.pressed)), h: 0, nav: '', navT: 0 });
+      changed = true;
+      if (this._padPickActive) this.padToast(`Controller ${g.index + 1} connected · press A / Cross to join`);
+      else {
+        const used = new Set(slots.values());
+        const blocked = new Set([...reservations].filter(([other]) => other !== g.index && !live.has(other)).map(([, slot]) => slot));
+        let slot = reservations.get(g.index);
+        if (slot === undefined || used.has(slot)) { slot = 0; while (used.has(slot) || blocked.has(slot)) slot++; reservations.set(g.index, slot); }
+        slots.set(g.index, slot); this.padFound(slot, g.index);
+      }
     }
     if (changed) {
       this._padCount = pads.length;
       if (this.settings.displayMode === 'auto') this.measure(); // a controller can make this the TV
+      if (this._padPickActive) this.syncPadPick();
     }
     this._padPlayers = [...slots.values()].map(n => humans[n]).filter(i => i !== undefined);
     if (!pads.length) return;
-    const menu = this.menuRoot();
+    const menu = this._padPickActive ? null : this.menuRoot();
     pads.forEach(g => {
       const n = slots.get(g.index), was = prev.get(g.index) || { b: [], h: 0, nav: '', navT: 0 };
       const b = g.buttons.map(x => !!(x && x.pressed));
@@ -2503,7 +2655,8 @@ class CoopBubbles extends HTMLElement {
       const now = performance.now() / 1000;
       if (this._perf && (h !== was.h || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
       let nav = was.nav, navT = was.navT;
-      if (hit('start')) this.padStart();
+      if (this._padPickActive) this.padPickInput(g, h, hit);
+      else if (hit('start')) this.padStart();
       else if (hit('back')) this.toggleSide();
       else if (menu) {
         const dir = v ? 'v' + v : h ? 'h' + h : '';
@@ -2520,17 +2673,18 @@ class CoopBubbles extends HTMLElement {
         }
         if (hit('a')) this.menuActivate(menu);
         if (hit('b')) this.menuBack();
-      } else this.padPlay(n, h, h !== was.h, hit);
+      } else if (n !== undefined) this.padPlay(n, h, h !== was.h, hit);
       prev.set(g.index, { b, h, nav, navT });
     });
+    if (this._padPickActive && new Set(slots.values()).size >= 2) this.finishPadPick(false);
   }
   // The human a pad slot drives; undefined once there are more pads than humans.
   padHuman(n) { return (this._padHumans || [])[n]; }
   /* A dropped controller must not leave its launcher turning forever or a match running with
      nobody at the stick: its holds are released and local play pauses until it is back. */
-  padLost(slot) {
+  padLost(slot, padIndex = slot) {
     const i = this.padHuman(slot);
-    this.padToast(`Controller ${slot + 1} disconnected`);
+    this.padToast(`Controller ${padIndex + 1} disconnected`);
     if (i === undefined) return;
     const bt = this.battle && this.settings.mode === 'battle' ? this.battle : null;
     const p = bt ? (slot ? null : bt.human && bt.human.player) : (this.players || [])[i];
@@ -2539,12 +2693,12 @@ class CoopBubbles extends HTMLElement {
     if (!this.online && this.state === 'play') {
       this.togglePause();
       const sub = this.shadowRoot.querySelector('.pauseSub');
-      if (sub) sub.textContent = `Controller ${slot + 1} disconnected — reconnect it, then press A or Start to resume`;
+      if (sub) sub.textContent = `Controller ${padIndex + 1} disconnected — reconnect it, then press A or Start to resume`;
     }
   }
-  padFound(slot) {
+  padFound(slot, padIndex = slot) {
     const i = this.padHuman(slot), p = i === undefined ? null : (this.players || [])[i];
-    this.padToast(`Controller ${slot + 1} connected` + (p ? ' · ' + (p.name || (p.meta || META[i]).name) : ''));
+    this.padToast(`Controller ${padIndex + 1} connected` + (p ? ' · ' + (p.name || (p.meta || META[i]).name) : ''));
   }
   padToast(text) {
     const el = this.toastEl; if (!el) return;
@@ -4379,6 +4533,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .pName{width:26px;font-weight:600}
 .ctrlList{margin:4px 0 0;padding:0;list-style:none;color:#5b7997;font-size:12.5px;line-height:1.5}
 .ctrlList b{color:#2b4a70}
+.padPickSides{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0 12px}
+.padPickSide{border:3px solid #d7e6f5;border-radius:18px;padding:18px 10px;text-align:center;background:#f4f9ff;transition:.12s ease}
+.padPickSide b{display:block;font-size:22px;color:#2b4a70}.padPickSide span{display:block;margin-top:6px;color:#7593b5;font-weight:600}
+.padPickSide.hot{border-color:#ffc233;box-shadow:0 0 0 4px rgba(255,194,51,.2);transform:translateY(-2px)}
+.padPickSide.picked{border-color:#2b6fd4;background:#eaf2ff}.padPickSide.picked span{color:#2b6fd4}
+.padPickStatus{text-align:center;min-height:42px;color:#3d5f86;font-weight:600;margin:6px 0 2px}
 .overlay{position:absolute;inset:0;display:grid;place-items:center;border-radius:22px;background:rgba(23,51,92,.45);backdrop-filter:blur(3px);z-index:5}
 /* Cards are bounded by the board, which can be as narrow as ~300px on a cover screen, so
    they scale with --u and reflow off their own width via container queries rather than
@@ -4632,6 +4792,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <button class="btn primary tvOnly tvFullscreen">\u26f6 Play fullscreen</button>
       <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
     </div></div>
+    <div class="overlay padPick" style="display:none"><div class="card">
+      <h1>Choose your side</h1><p class="sub">Press A / Cross on a controller to join, choose Left or Right, then press A / Cross again.</p>
+      <div class="padPickSides"><div class="padPickSide" data-player="0"><b>LEFT</b><span>Open</span></div><div class="padPickSide" data-player="1"><b>RIGHT</b><span>Open</span></div></div>
+      <div class="padPickStatus">Waiting for controllers…</div>
+      <button class="btn ghost padPickSkip">Continue with keyboard / touch</button><button class="btn ghost padPickBack">Back</button>
+    </div></div>
     <div class="overlay lobby" style="display:none"><div class="card lobbyCard">
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
       <div class="onlinePlayers"></div>
@@ -4737,6 +4903,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.gameColEl = sh.querySelector('.gameCol');
     this.tutEl = sh.querySelector('.tutorial');
     this.homeEl = sh.querySelector('.home');
+    this.padPickEl = sh.querySelector('.padPick');
     this.lobbyEl = sh.querySelector('.lobby');
     this.reconnectEl = sh.querySelector('.reconnect');
     this.pauseEl = sh.querySelector('.pause');
@@ -4749,7 +4916,9 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.promptsEl = sh.querySelector('.tvPrompts');
     this.toastEl = sh.querySelector('.padToast');
     this.applyTouchStyle();
-    sh.querySelector('.localPlay').onclick = () => { this.tvFullscreenNudge(); this.online=false; this.homeEl.style.display='none'; this.showTutorial(); this._tutBack = 'home'; };
+    sh.querySelector('.localPlay').onclick = () => this.beginLocalPlay();
+    sh.querySelector('.padPickSkip').onclick = () => this.finishPadPick(true);
+    sh.querySelector('.padPickBack').onclick = () => this.cancelPadPick();
     sh.querySelector('.createOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('create'); };
     sh.querySelector('.joinOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('join'); };
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));

@@ -137,8 +137,8 @@ test('corruption spreads deterministically at bounded shot intervals and stops w
   const a=game(49), b=game(49), node=obj(a,'pressure');
   for (let i=0;i<25;i++) { Rules.shot(a); Rules.shot(b); }
   assert.deepEqual(node.spread,obj(b,'pressure').spread);
-  assert.equal(node.spread.length,4);
-  assert.equal(event(a,'object_spread').length,4);
+  assert.equal(node.spread.length,3);
+  assert.equal(event(a,'object_spread').length,3);
   assert.ok(node.spread.every(c=>c[0]>=6 && c[0]<=10));
   hit(a,node,0); const count=node.spread.length;
   for (let i=0;i<10;i++) Rules.shot(a);

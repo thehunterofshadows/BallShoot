@@ -20,11 +20,16 @@ const TIERS = [
   { from: 0, to: 9, colors: 3, drop: 10, rows: [3, 5] },
   { from: 10, to: 21, colors: 4, drop: 9, rows: [4, 7] },
   { from: 22, to: 33, colors: 5, drop: 8, rows: [5, 8] },
-  { from: 34, to: 45, colors: 6, drop: 7, rows: [6, 9] },
-  { from: 46, to: 51, colors: 6, drop: 6, rows: [8, 11] },
+  { from: 34, to: 47, colors: 6, drop: 7, rows: [6, 9] },
+  { from: 48, to: 51, colors: 6, drop: 6, rows: [8, 11] },
 ];
 const tierOf = i => TIERS.find(t => i >= t.from && i <= t.to);
 const cells = L => L.rows.reduce((n, row) => n + row.replace(/\./g, '').length, 0);
+const analyzeLevels = levels => levels.map((L, i) => {
+  const n = cells(L), prev = i ? cells(levels[i - 1]) : n, capacity = L.rows.reduce((sum, row) => sum + row.length, 0);
+  return { level:i + 1, name:L.name, cells:n, densityPct:Math.round(n / capacity * 1000) / 10,
+    cellJumpPct:i ? Math.round((n / prev - 1) * 1000) / 10 : 0, drop:L.drop };
+});
 
 // A hand-built Co-op Clear board, as in coop-team.test.js. A far bubble keeps it from clearing.
 const board = (settings = {}) => {
@@ -100,6 +105,19 @@ test('each round uses exactly its tier\'s colour count, and specials arrive with
   });
   assert.ok(LEVELS.slice(22, 34).every(L => L.rows.join('').includes('#')), 'tier 3 teaches stones');
   assert.ok(LEVELS.slice(34, 46).every(L => /[*+]/.test(L.rows.join(''))), 'tier 4 teaches stars and rainbows');
+});
+
+test('late-game difficulty ramps instead of jumping at level 47', () => {
+  const report = analyzeLevels(LEVELS);
+  const late = report.slice(44); // levels 45-52
+  for (let i = 1; i < late.length; i++) {
+    const prev = late[i - 1], cur = late[i];
+    assert.ok(cur.cellJumpPct <= 16, `${cur.level} ${cur.name}: occupied-cell jump ${cur.cellJumpPct}%`);
+    if (cur.drop < prev.drop) assert.ok(cur.cellJumpPct <= 12, `${cur.level} ${cur.name}: faster ceiling cannot arrive with a large density jump`);
+  }
+  assert.equal(report[46].drop, 7, 'level 47 keeps the gentler ceiling pace');
+  assert.equal(report[47].drop, 7, 'level 48 keeps the gentler ceiling pace');
+  assert.equal(report[48].drop, 6, 'level 49 introduces final-tier ceiling pressure');
 });
 
 test('a stone never pops, even in a bomb blast, and falls with what it hangs from', () => {
