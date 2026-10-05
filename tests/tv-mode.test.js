@@ -797,3 +797,38 @@ test('between-round observation only suggests and never modifies calibration',()
   p.warned=false;g.state='play';for(let t=3000;t<6000;t+=20)g.sampleSticks([pad],t);
   assert.equal(messages.length,1);assert.equal(p.dead,0.04);
 });
+
+
+test('trio TV keeps every bomb inventory below name and READY/RELOAD/CHAIN rows', () => {
+  const C = loadComponent();
+  for (const sprite of [true, false]) {
+    const game = Object.create(C.prototype);
+    Object.assign(game, { tvActive:true, tvLay:{ key:'coop3' }, LAUNCH_Y:938,
+      settings:{ mode:'clear', reload:1 }, now:0, chain:{ t:1, players:new Set([2]) } });
+    game.players = [0,1,2].map(i => ({ i, x:640 * (2*i+1)/6, angle:0,
+      meta:{ name:'P' + (i+1), accent:'#fff', icon:'ring' }, bombs:i,
+      bombLoaded:i === 2, reload:i === 1 ? 0.5 : 0 }));
+    game.drawLauncherSprite = (ctx, p) => {
+      if (sprite) game.drawLauncherName(ctx, p, p.x, game.LAUNCH_Y + 44);
+      return sprite;
+    };
+    const labels = [];
+    const ctx = new Proxy({ fillText(text, x, y) {
+      labels.push({ text, x, y, height:Number(this.font.match(/(\d+)px/)[1]) });
+    }, createLinearGradient:() => ({ addColorStop() {} }),
+    createRadialGradient:() => ({ addColorStop() {} }) }, {
+      get:(target, key) => key in target ? target[key] : () => {},
+    });
+    game.players.forEach(p => game.drawLauncher(ctx, p));
+    for (const [i, status] of ['READY', 'RELOAD', 'CHAIN'].entries()) {
+      const rows = labels.filter(label => label.x === game.players[i].x).sort((a,b) => a.y-b.y);
+      assert.deepEqual(rows.map(row => row.text), ['P' + (i+1), status,
+        '💣 ×' + i + (i === 2 ? ' +1 LOADED' : ' · B')]);
+      for (let j=1; j<rows.length; j++) {
+        assert.ok(rows[j].y - rows[j].height - rows[j-1].y >= 7,
+          'text rows leave space for font descenders and outlines');
+      }
+      assert.ok(rows[2].y + 4 < 1080, 'inventory remains inside the canvas');
+    }
+  }
+});

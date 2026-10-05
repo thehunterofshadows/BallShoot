@@ -3895,7 +3895,9 @@ class CoopBubbles extends HTMLElement {
   drawLauncher(ctx, p) {
     if (this.settings.mode === 'clear' && this.players.length >= 2 && !this.battle) {
       ctx.save(); ctx.textAlign = 'center'; ctx.font = 'bold 14px Fredoka, sans-serif'; ctx.fillStyle = p.meta.accent;
-      ctx.fillText('💣 ×' + (p.bombs || 0) + (p.bombLoaded ? ' +1 LOADED' : ' · B'), p.x, this.LAUNCH_Y + 64);
+      // Trio TV has no player cards: reserve a row below the name and status.
+      const bombY = this.tvActive && this.tvLay?.key === 'coop3' ? 96 : 64;
+      ctx.fillText('💣 ×' + (p.bombs || 0) + (p.bombLoaded ? ' +1 LOADED' : ' · B'), p.x, this.LAUNCH_Y + bombY);
       ctx.restore();
     }
     if (this.drawLauncherSprite(ctx, p)) return;
