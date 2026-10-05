@@ -798,6 +798,7 @@ const SFX = { // sound-event hooks: name -> [freq, dur, type, slide]
   attackReady:[760,.25,'triangle',320], junk:[210,.2,'square',-50], target:[560,.12,'sine',180],
   teamAssist:[590,.2,'sine',410], teamRescue:[480,.55,'triangle',520], teamDrop:[140,.45,'triangle',260], handoff:[990,.1,'sine',330],
   pass:[340,.3,'sine',560], passNo:[150,.04,'square',0],
+  fusionWait:[880,.2,'sine',180], fusionImpact:[90,1.1,'sawtooth',-65], fusionCharge:[180,.7,'sawtooth',850],
   powerReady:[660,.35,'triangle',440], teamPower:[520,.8,'triangle',780], powerEnd:[420,.3,'sine',-180],
   dropTick:[980,.05,'square',-200], hurry:[700,.18,'square',-240],
 };
@@ -909,9 +910,10 @@ const TEAM_POWER = {
   max: 100,
   charge: { assist: 15, chain: 10, rescue: 25, drop: 10, hugeDrop: 20 }, // per resolved event
   chargeWhileActive: false,
-  equipped: 'synergy',
+  equipped: 'fusion',
 };
 const POWERS = {
+  fusion: { name:'FUSION BURST', secs:6, holdPressure:true, holdRescue:true, start:fusionStart },
   synergy: {
     name: 'SYNERGY BURST', secs: 8,
     holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
@@ -937,6 +939,130 @@ const powerPair = (T, humans, players, by, state, charge, active) => {
   return humans.map(i => players[i]).filter(p => p && p.connected !== false);
 };
 const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
+const fusionLoose = g => {
+  const safe = new Set(), stack = [];
+  for (const [k,cell] of g.grid) if (cell.r === g.anchorRow) { safe.add(k); stack.push(cell); }
+  while (stack.length) {
+    const cell = stack.pop();
+    for (const [r,c] of g.neighbors(cell.r,cell.c)) {
+      const k = key(r,c), n = g.grid.get(k);
+      if (n && !safe.has(k)) { safe.add(k); stack.push(n); }
+    }
+  }
+  return [...g.grid.entries()].filter(([k]) => !safe.has(k)).map(([,cell]) => cell)
+    .sort((a,b) => a.r-b.r || a.c-b.c);
+
+};
+const fusionSettle = (g, cell) => {
+  const from = {r:cell.r,c:cell.c}, x = g.cellX(cell.r,cell.c);
+  let target = null, best = Infinity;
+  // Search upward only, choosing the closest lane then the highest surface. A finite
+  // legal board always has a ceiling/surface vacancy above a removed cell; earlier
+  // survivors settle first in row/column order. No dense or overlapping free positions.
+  for (let r=g.anchorRow;r<=from.r;r++) for(let c=0;c<g.colsIn(r);c++) {
+    if(!g.validCell(r,c))continue;
+    const distance=Math.abs(g.cellX(r,c)-x)+(r-g.anchorRow)*R*.2;
+    if(distance<best){best=distance;target={r,c};}
+  }
+  // Defensive fallback for malformed geometry: retain the original vacant cell.
+  Object.assign(cell,target || from);g.grid.set(key(cell.r,cell.c),cell);
+  return {from,to:{r:cell.r,c:cell.c},kind:cell.kind,special:cell.special,at:cell.at,placedBy:cell.placedBy};
+};
+const fusionMoveObjects = (g, moved) => {
+  const positions = new Map(moved.map(m => [key(m.from.r,m.from.c),[m.to.r,m.to.c]]));
+  for (const o of g.objects || []) for (const field of ['cells','barrier','spread'])
+    if(o[field])o[field]=o[field].map(([r,c]) => positions.get(key(r,c)) || [r,c]);
+};
+// Fusion owns only temporary shots. The saved normal bubble never enters a queue swap.
+const fusionNotify = (g, kind, data = {}) => g.emit ? g.emit(kind, data) : g.showFusionEvent(kind, data);
+function fusionStart(g, pair) {
+  g.fusion = { phase:'armed', started:g.now, fireBy:g.now + 4, landBy:g.now + 6,
+    players:pair.map(p => p.i), fired:[], endpoints:[] };
+  for (const p of pair) { p.fusionStored = p.cur; p.cur = { kind:'F', special:'fusion' }; }
+};
+const fusionRestore = (g, p) => {
+  if (!p.fusionStored) return false;
+  p.cur = p.fusionStored; p.fusionStored = null;
+  if (g.fusion && !g.fusion.fired.includes(p.i)) g.fusion.fired.push(p.i);
+  return true;
+};
+const fusionCancel = (g, refund = true) => {
+  if (!g.fusion || g.fusion.phase !== 'armed') return;
+  for (const p of g.players) if (p.fusionStored) { p.cur = p.fusionStored; p.fusionStored = null; }
+  g.flights = g.flights.filter(f => f.special !== 'fusion');
+  for (const [k,b] of g.grid) if (b.special === 'fusion') g.grid.delete(k);
+  // Normal shots may have attached to an endpoint. Reattach those survivors without
+  // granting points or changing their kinds when the temporary support disappears.
+  const loose = fusionLoose(g), moved = [];
+  for (const cell of loose) g.grid.delete(key(cell.r,cell.c));
+  for (const cell of loose) moved.push(fusionSettle(g,cell));
+  fusionMoveObjects(g,moved);
+  g.fusion = null; g.teamPowerActive = null; g.teamPowerTimer = 0;
+  if (refund) g.teamPowerCharge = TEAM_POWER.max;
+  g.updateLowest(); fusionNotify(g, 'fusion_cancel', { refund });
+  if (refund && !g.grid.size && g.settings.mode === 'clear' && g.state === 'play') g.clearLevel();
+};
+const fusionTick = g => {
+  const f = g.fusion; if (!f || f.phase !== 'armed') return;
+  const invalid = f.endpoints.some(e => g.grid.get(key(e.r,e.c))?.special !== 'fusion');
+  if (invalid || f.players.some(i => g.players[i]?.connected === false) ||
+      (g.now >= f.fireBy && f.fired.length < 2) || g.now >= f.landBy) fusionCancel(g);
+};
+const fusionLand = (g, shot) => {
+  const f = g.fusion;
+  if (!f || f.phase !== 'armed') return;
+  fusionTick(g); if (!g.fusion) return;
+  const cell = g.snapCell(shot.x,shot.y);
+  if (!cell) { fusionCancel(g); return; }
+  const b = { ...cell, kind:'F', special:'fusion', placedBy:shot.p, at:g.now };
+  g.grid.set(key(b.r,b.c),b); f.endpoints.push({ ...cell, player:shot.p }); g.updateLowest();
+  fusionNotify(g, 'fusion_endpoint', { ...cell, player:shot.p, count:f.endpoints.length });
+  if (f.endpoints.length === 2) fusionResolve(g);
+};
+const fusionResolve = g => {
+  const f = g.fusion, [a,b] = f.endpoints.map(e => ({ x:g.cellX(e.r,e.c), y:g.cellY(e.r) }));
+  const dx = b.x-a.x, dy = b.y-a.y, len2 = dx*dx+dy*dy;
+  const popped = [], moved = [], dropped = [];
+  for (const [k,cell] of g.grid) {
+    if (cell.special === 'fusion') { g.grid.delete(k); continue; }
+    const x = g.cellX(cell.r,cell.c), y = g.cellY(cell.r);
+    const t = len2 ? clamp(((x-a.x)*dx+(y-a.y)*dy)/len2,0,1) : 0;
+    // Only ordinary bubbles are cut; stones, stars, rainbow and object cells retain
+    // their rules/state. Corridor half-width is .35 radii, plus the bubble radius.
+    if (!cell.special && !CoopObjects.protectedCell(g,k) && Math.hypot(x-a.x-t*dx,y-a.y-t*dy) <= R*1.35) {
+      CoopObjects.onPop(g,k,f.players[1]); popped.push({ ...cell }); g.grid.delete(k);
+    }
+  }
+  const loose = fusionLoose(g);
+  for (const cell of loose) g.grid.delete(key(cell.r,cell.c));
+  for (const cell of loose) {
+    const from = { r:cell.r, c:cell.c }, x = g.cellX(cell.r,cell.c), y = g.cellY(cell.r);
+    // Extend the segment's height horizontally; for a vertical cut use its lower end.
+    const lineY = Math.abs(dx) < 1e-9 ? Math.max(a.y,b.y) : a.y + clamp((x-a.x)/dx,0,1)*dy;
+    if (y < lineY && !cell.special && !CoopObjects.protectedCell(g,key(cell.r,cell.c))) { dropped.push({ ...cell }); continue; }
+    moved.push(fusionSettle(g,cell));
+  }
+  fusionMoveObjects(g,moved);
+  f.phase = 'burst'; f.burstAt = g.now; f.a = a; f.b = b; f.moved = moved; f.popped = popped;
+  g.teamPowerTimer = 2.6;
+  // Linear beam points avoid the quadratic ordinary-pop windfall. Reattached cells
+  // earn no removal points; only actual above-cut drops receive their usual value.
+  let components=0;const pending=new Map(dropped.map(c=>[key(c.r,c.c),c]));
+  while(pending.size){components++;const stack=[pending.values().next().value];
+    while(stack.length){const c=stack.pop();if(!pending.delete(key(c.r,c.c)))continue;
+      for(const [r,col] of g.neighbors(c.r,c.c)){const n=pending.get(key(r,col));if(n)stack.push(n);}}}
+  const points = popped.length*10 + (dropped.length ? g.dropPoints(dropped.length,components) : 0);
+  g.score += points;
+  if (popped.length) {
+    for (const i of f.players) { g.registerClear(i); g.players[i].stats.pops++; }
+    g.players[f.players[1]].stats.bubbles += popped.length;
+    g.missMeter = Math.max(0,g.missMeter-1);
+  }
+  CoopObjects.removed(g); g.updateLowest();
+  if (g.danger && !g.anyDangerCells()) { g.danger = null; g.score += 500; }
+  fusionNotify(g, 'fusion_burst', { a,b,moved,popped,dropped,points,at:g.now });
+  if (!g.grid.size && g.state === 'play') g.clearLevel();
+};
 /* power-rules:end */
 /* pace-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so the ceiling, the clear clock and the idle timer run the same locally and
@@ -1409,7 +1535,7 @@ class CoopBubbles extends HTMLElement {
     if (!carry) this.objectHintsShown = new Set();
     this.flights = []; this.falling = []; this.fx = []; this.pops = []; this.callouts = []; this.sfxLog = [];
     this.sparks = []; this.ripples = []; this.teamFx = []; this.chainFx = null; this.passFx = null; this.passCd = 0;
-    this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0; this.teamPowerActive = null; this.teamPowerTimer = 0; this.powerFx = null;
+    this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0; this.teamPowerActive = null; this.teamPowerTimer = 0; this.fusion = null; this.powerFx = null;
     this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
     this.score = carry ? carry.score : 0;
@@ -1495,7 +1621,8 @@ class CoopBubbles extends HTMLElement {
     const av = this.availKinds();
     return { kind: av[(Math.random() * av.length) | 0], special: null };
   }
-  refreshQueues() { // replace queued colors that vanished from the field
+  refreshQueues() {
+    if (this.fusion?.phase === 'armed') return; // replace queued colors that vanished from the field
     const av = new Set(this.availKinds());
     this.players.forEach(p => ['cur','next','bombStored'].forEach(slot => {
       const b = p[slot];
@@ -1575,9 +1702,10 @@ class CoopBubbles extends HTMLElement {
     const sx = p.x, sy = this.LAUNCH_Y - 44, sp = 1150;
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    if (!bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
+    const fusionShot = fusionRestore(this, p);
+    if (!fusionShot && !bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
     p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now; p.idle = 0;
-    CoopObjects.shot(this);
+    if (!fusionShot) CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) { this.pressure++; this.dropWarnSfx(); }
     for (let s = 0; s < 5; s++) this.sparks.push({ x: sx + Math.sin(a) * 34, y: sy - Math.cos(a) * 34,
       vx: Math.sin(a) * rnd(60, 180) + rnd(-40, 40), vy: -Math.cos(a) * rnd(60, 180) + rnd(-40, 40),
@@ -1616,14 +1744,14 @@ class CoopBubbles extends HTMLElement {
   stepFlights(dt) {
     const lim = 2 * R * 0.88;
     for (let fi = this.flights.length - 1; fi >= 0; fi--) {
-      const f = this.flights[fi];
+      const f = this.flights[fi]; if (!f) continue;
       // The trail is presentation: sampled on its own clock, so its length on screen does not
       // depend on how many simulation steps a frame took.
       f.trailT = (f.trailT ?? TRAIL_DT) + dt;
       if (f.trailT >= TRAIL_DT) { f.trailT = Math.min(f.trailT - TRAIL_DT, TRAIL_DT);
         f.trail.push({ x: f.x, y: f.y }); if (f.trail.length > 16) f.trail.shift(); }
       f.bounceCd -= dt;
-      let dist = Math.hypot(f.vx, f.vy) * dt, landed = false;
+      let dist = Math.hypot(f.vx, f.vy) * dt * (f.special === 'fusion' && this.danger ? 1 / .55 : 1), landed = false;
       while (dist > 0 && !landed) {
         const step = Math.min(dist, R * 0.45); dist -= step;
         const m = step / Math.hypot(f.vx, f.vy);
@@ -1637,6 +1765,7 @@ class CoopBubbles extends HTMLElement {
     }
   }
   land(f) {
+    if (f.special === 'fusion') { fusionLand(this, f); return; }
     const object = CoopObjects.hit(this, f.x, f.y);
     if (object) { CoopObjects.interact(this, object, f.p); return; }
     let cell = this.snapCell(f.x, f.y);
@@ -1726,7 +1855,7 @@ class CoopBubbles extends HTMLElement {
     const landed = this.batch; this.batch = []; this.resolveAt = 0;
     const results = []; // {shooter, popped:Set|null}
     for (const b of landed) {
-      if (!this.grid.get(key(b.r, b.c))) { results.push({ shooter: b.placedBy, at: b.fired, popped: null, gone: true }); continue; }
+      if (this.grid.get(key(b.r, b.c)) !== b) { results.push({ shooter: b.placedBy, at: b.fired, popped: null, gone: true }); continue; }
       if (b.special === 'bomb') {
         const bx = this.cellX(b.r, b.c), by = this.cellY(b.r), blast = new Set([key(b.r,b.c)]);
         this.grid.forEach((g,k) => { if (g.special !== 'stone' && g.special !== 'triLock' && Math.hypot(this.cellX(g.r,g.c) - bx, this.cellY(g.r) - by) <= R * 4.3) blast.add(k); });
@@ -1839,6 +1968,7 @@ class CoopBubbles extends HTMLElement {
     return Math.round(accuracy * 1500) + Math.round(headroom * 500);
   }
   clearLevel() {
+    fusionCancel(this, false);
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
     const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
     const bombBonus = this.players.reduce((sum, p) => sum + unusedBombs(p) * 250, 0);
@@ -2024,12 +2154,14 @@ class CoopBubbles extends HTMLElement {
   }
   padPass(direction = 1) { const i = this.passPlayer(); if (i >= 0) this.requestPass(i, direction); }
   requestBombToggle(i) {
+    if (this.fusion?.phase === 'armed') return;
     if (this.settings.mode !== 'clear' || this.players.length < 2 || this.state !== 'play') return;
     if (this.online) { this.sendOnline('bomb_toggle'); return; }
     const p = this.players[i];
     if (!bombToggle(p) && p && p.reload <= 0 && !unusedBombs(p)) { this.callout('OUT OF BOMBS', p.meta.accent); this.sfx('passNo'); }
   }
   requestPass(i, direction = 1) {
+    if (this.fusion?.phase === 'armed') return;
     const h = this.teamHumans();
     if (h.length < 2 || !h.includes(i)) return; // no pass in this game at all: stay silent
     const pair = passPair(h, this.players, i, this.state, this.passCd || 0, direction);
@@ -2105,10 +2237,14 @@ class CoopBubbles extends HTMLElement {
     if (h.length < 2 || !h.includes(i)) return; // no Team Power in this game at all
     const pair = powerPair(TEAM_POWER, h, this.players, i, this.state, this.teamPowerCharge || 0, this.teamPowerActive);
     if (!pair) { this.powerShakeT = performance.now() / 1000; this.sfx('passNo'); return; }
+    const power = this.players.length > 2 ? 'synergy' : TEAM_POWER.equipped, def = POWERS[power];
+    if (power === 'fusion' && (pair.length !== 2 || pair.some(p => p.bombLoaded || p.fusionStored))) {
+      this.callout(pair.length !== 2 ? 'FUSION NEEDS BOTH PLAYERS' : 'UNLOAD BOMBS TO USE FUSION', '#8fdcff');
+      this.sfx('passNo'); return;
+    }
     if (this.online) { this.sendOnline('team_power'); return; }
-    const power = TEAM_POWER.equipped, def = POWERS[power];
     this.teamPowerCharge = 0; this.teamPowerActive = power; this.teamPowerTimer = def.secs;
-    def.start(pair);
+    if (power === 'fusion') def.start(this, pair); else def.start(pair);
     this.showTeamPowerActivated({ by: i, power, name: def.name, secs: def.secs, players: pair.map(p => p.i) });
   }
   // Local only; mirrors OnlineGame.chargeTeamPower.
@@ -2121,20 +2257,22 @@ class CoopBubbles extends HTMLElement {
     if (this.teamPowerCharge >= TEAM_POWER.max) this.showTeamPowerReady();
   }
   endTeamPower() {
+    if (this.fusion?.phase === 'armed') { fusionCancel(this); return; }
     if (!this.teamPowerActive) return;
-    this.teamPowerActive = null; this.teamPowerTimer = 0;
+    this.teamPowerActive = null; this.teamPowerTimer = 0; this.fusion = null;
     this.showTeamPowerEnded();
   }
   showTeamPowerCharge(d) { const fx = this.powerFx ||= {}; fx.chargeT = this.now; fx.gain = d.amount; }
   showTeamPowerReady() {
     (this.powerFx ||= {}).readyT = this.now;
-    this.callout('TEAM POWER READY!', '#7b61d9'); this.sfx('powerReady');
+    this.callout(this.fusionLabel() + ' READY!', '#7b61d9'); this.sfx('powerReady');
   }
   showTeamPowerActivated(d) {
     const fx = this.powerFx ||= {};
     fx.actT = this.now; fx.by = d.by; fx.players = d.players || this.teamHumans();
     this.callout((d.name || 'SYNERGY BURST') + '!', (META[d.by] || META[0]).accent);
-    this.sfx('teamPower');
+    this.sfx(d.power === 'fusion' ? 'fusionCharge' : 'teamPower');
+    this.shake = Math.max(this.shake || 0, 4);
   }
   showTeamPowerEnded() { (this.powerFx ||= {}).endT = this.now; this.sfx('powerEnd'); }
   /* The TEAM POWER button exists whenever this device could use it. Charging it fills
@@ -2148,7 +2286,7 @@ class CoopBubbles extends HTMLElement {
     const q = active ? 0 : Math.round(clamp(charge / TEAM_POWER.max, 0, 1) * 100) / 100;
     if (q !== this._powerK) { this._powerK = q; el.style.setProperty('--powerK', q); }
     el.classList.toggle('ready', ready); el.classList.toggle('active', !!active);
-    const label = active ? 'BURST ' + Math.ceil(this.teamPowerTimer || 0) : ready ? 'TEAM POWER!' : 'POWER ' + Math.floor(q * 100) + '%';
+    const label = active === 'fusion' || ready && this.players.length === 2 ? this.fusionLabel() : active ? 'BURST ' + Math.ceil(this.teamPowerTimer || 0) : ready ? 'TEAM POWER!' : 'POWER ' + Math.floor(q * 100) + '%';
     if (el.textContent !== label) el.textContent = label;
     el.classList.toggle('shake', performance.now() / 1000 - (this.powerShakeT ?? -9) < 0.3);
     const p = this.players[this.passPlayer()], side = p && p.x - (this.camX || 0) < this.VW / 2 ? 'right' : 'left';
@@ -2161,7 +2299,7 @@ class CoopBubbles extends HTMLElement {
   drawTeamPower(ctx) {
     const max = TEAM_POWER.max, charge = this.teamPowerCharge || 0, active = this.teamPowerActive;
     const def = active ? POWERS[active] : null, ready = !active && charge >= max, fx = this.powerFx || {};
-    const w = 236, h = 24, x = this.VW / 2 - w / 2, y = 78;
+    const w = this.teamHumans().length === 2 ? 330 : 236, h = 24, x = this.VW / 2 - w / 2, y = 78;
     const frac = def ? clamp((this.teamPowerTimer || 0) / def.secs, 0, 1) : clamp(charge / max, 0, 1);
     const ck = fx.chargeT !== undefined ? clamp((this.now - fx.chargeT) / 0.6, 0, 1) : 1;
     const beat = Math.sin(this.now * 6);
@@ -2182,7 +2320,7 @@ class CoopBubbles extends HTMLElement {
     ctx.strokeStyle = ready || active ? '#7b61d9' : 'rgba(123,97,217,0.45)'; ctx.lineWidth = 2;
     this.rrect(ctx, x, y, w, h, h / 2); ctx.stroke();
     this._coarse ??= typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-    const label = def ? def.name + '  ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
+    const label = active === 'fusion' || ready && this.players.length === 2 ? this.fusionLabel() : def ? def.name + '  ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
       : ready ? 'TEAM POWER READY' + (this._coarse ? '' : ' \u00b7 Q') : 'TEAM POWER ' + Math.floor(charge) + '%';
     ctx.textAlign = 'center'; ctx.font = '700 14px Fredoka, sans-serif';
     ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.strokeText(label, this.VW / 2, y + 17);
@@ -2195,7 +2333,79 @@ class CoopBubbles extends HTMLElement {
   }
   /* World-space burst presentation. Every active launcher wears a rainbow ring;
      links join the launchers at activation. A trio gets a closed triangle. */
+  showFusionEvent(kind, d) {
+    if (kind === 'fusion_cancel') { this.callout(d.refund ? 'FUSION CANCELED · POWER REFUNDED' : 'FUSION CANCELED', '#8fdcff'); this.sfx('powerEnd'); }
+    if (kind === 'fusion_endpoint' && d.count === 1) { this.callout('1 / 2 · PARTNER, FIRE!', '#8fdcff'); this.sfx('fusionWait'); }
+    if (kind === 'fusion_burst') {
+      this._fusionFxAt = performance.now() / 1000;
+      this.shake = Math.max(this.shake || 0, 10); this.sfx('fusionImpact');
+      this.callouts = this.callouts.filter(c => !/FUSION|1 \/ 2|TEAM CHAIN|HANDOFF/.test(c.text));
+      this.callout('REVERSE GRAVITY!', '#8fdcff');
+      for (const b of d.popped || []) this.pops.push({ x:this.cellX(b.r,b.c), y:this.cellY(b.r), kind:b.kind, special:b.special, t:this.now, parts:[] });
+      for (const b of d.dropped || []) this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,vx:0,vy:100,spin:0,a:0});
+    }
+  }
+  fusionLabel() {
+    const f = this.fusion;
+    if (f?.phase === 'armed' && f.fired.length === 2) return 'FUSION ' + f.endpoints.length + '/2 · IN FLIGHT';
+    if (f?.phase === 'armed') return 'FUSION ' + f.endpoints.length + '/2 · FIRE ' + Math.max(0, f.fireBy-this.now).toFixed(1) + 's';
+    if (this.teamPowerActive === 'fusion') return 'FUSION · REVERSE GRAVITY';
+    return this.players.length === 2 ? 'FUSION BURST · BOTH FIRE' : 'TEAM POWER';
+  }
+  fusionVisualAge() {
+    return this.state !== 'play' && this.state !== 'paused' && this._fusionFxAt !== undefined
+      ? performance.now()/1000-this._fusionFxAt : this.now-(this.fusion?.burstAt || 0);
+  }
+  drawFusionFx(ctx) {
+    const f = this.fusion; if (!f) return;
+    const t = this.now, age = f.phase === 'burst' ? this.fusionVisualAge() : t-f.started;
+    if (f.phase === 'burst' && age > 2.6) return;
+    const bolt = (a,b,width=3,alpha=1,seed=0) => {
+      const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,n=Math.max(5,Math.ceil(len/22));
+      ctx.globalAlpha=alpha;ctx.beginPath();ctx.moveTo(a.x,a.y);
+      for(let i=1;i<n;i++) { const u=i/n,j=Math.sin(i*13.7+Math.floor(t*24)*4.1+seed)*9;
+        ctx.lineTo(a.x+dx*u-dy/len*j,a.y+dy*u+dx/len*j); }
+      ctx.lineTo(b.x,b.y);ctx.strokeStyle='#49bfff';ctx.lineWidth=width+7;ctx.shadowColor='#49bfff';ctx.shadowBlur=20;ctx.stroke();
+      ctx.strokeStyle='#efffff';ctx.lineWidth=width;ctx.shadowBlur=7;ctx.stroke();
+    };
+    ctx.save();ctx.lineCap='round';
+    if(f.phase==='armed') {
+      for(const i of f.players) {
+        const p=this.players[i]; if(!p)continue;
+        const y=this.LAUNCH_Y-44, armed=p.cur?.special==='fusion', radius=armed?43:32;
+        ctx.globalAlpha=armed?1:.45;ctx.strokeStyle=META[i].accent;ctx.lineWidth=5;
+        ctx.shadowColor='#79dbff';ctx.shadowBlur=28;ctx.beginPath();ctx.arc(p.x,y,radius+Math.sin(t*12)*4,0,7);ctx.stroke();
+        if(armed) for(let j=0;j<4;j++) { const a=t*2+j*Math.PI/2;
+          bolt({x:p.x+Math.cos(a)*30,y:y+Math.sin(a)*30},{x:p.x+Math.cos(a+.9)*52,y:y+Math.sin(a+.9)*52},2,.9,j);
+        }
+        ctx.globalAlpha=1;ctx.shadowBlur=4;ctx.fillStyle='#dfffff';ctx.font='bold 16px Fredoka,sans-serif';ctx.textAlign='center';
+        ctx.fillText(armed?'FUSION · FIRE!':'ORB SENT',p.x,y-70);
+      }
+      for(const e of f.endpoints) {
+        const x=this.cellX(e.r,e.c),y=this.cellY(e.r),other=this.players[f.players.find(i=>i!==e.player)];
+        if(other)bolt({x,y},{x:other.x,y:this.LAUNCH_Y-100},1,.16,7);
+        for(let j=0;j<5;j++){const a=t*3+j*1.26;bolt({x:x+Math.cos(a)*24,y:y+Math.sin(a)*24},{x:x+Math.cos(a+.4)*51,y:y+Math.sin(a+.4)*51},2,.8,j);}
+      }
+    } else {
+      const fade=Math.min(1,(2.6-age)/.5),width=age<.18?7:4+Math.sin(age*19)*1.5;
+      bolt(f.a,f.b,width,fade);
+      for(let j=1;j<7;j++) { const u=j/7, p={x:f.a.x+(f.b.x-f.a.x)*u,y:f.a.y+(f.b.y-f.a.y)*u};
+        bolt(p,{x:p.x+Math.sin(t*9+j)*40,y:p.y+Math.cos(t*11+j)*70},1,fade*.65,j);
+        ctx.fillStyle='#e9ffff';ctx.globalAlpha=fade;ctx.fillRect(p.x+Math.sin(t*14+j)*28,p.y+Math.cos(t*12+j)*40,4,4);
+      }
+      for(const m of f.moved || []) {
+        const u=clamp((age-.35)/1.7,0,1),ease=u*u*(3-2*u);
+        if(u<1)bolt({x:this.cellX(m.from.r,m.from.c),y:this.cellY(m.from.r)},
+          {x:this.cellX(m.from.r,m.from.c)+(this.cellX(m.to.r,m.to.c)-this.cellX(m.from.r,m.from.c))*ease,
+           y:this.cellY(m.from.r)+(this.cellY(m.to.r)-this.cellY(m.from.r))*ease},1,(1-u)*.4);
+      }
+    }
+    // Brief additive bloom; critical HUD is drawn afterwards.
+    if(age<.2){ctx.globalAlpha=(1-age/.2)*.22;ctx.fillStyle='#dfffff';ctx.fillRect(0,0,this.WW,this.H);}
+    ctx.restore();
+  }
   drawPowerFx(ctx) {
+    if (this.fusion && (this.teamPowerActive === 'fusion' || this.fusionVisualAge() < 2.6)) { this.drawFusionFx(ctx); return; }
     const fx = this.powerFx, team = this.teamHumans().map(i => this.players[i]); if (team.length < 2) return;
     const y = this.LAUNCH_Y - 44;
     if (this.teamPowerActive) {
@@ -2290,6 +2500,7 @@ class CoopBubbles extends HTMLElement {
     return hit;
   }
   endGame(won) {
+    fusionCancel(this, false);
     this.state = won ? 'won' : 'lost';
     this.sfx(won ? 'win' : 'lose');
     this.beginOutro(() => this.showEnd(won));
@@ -2481,6 +2692,7 @@ class CoopBubbles extends HTMLElement {
     this.now += rdt;
     CoopObjects.tick(this,rdt);
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - rdt); // real time, like the chain window
+    fusionTick(this);
     if (this.teamPowerActive && (this.teamPowerTimer -= rdt) <= 0) this.endTeamPower();
     this.gridTop += clamp(this.gridTopTarget - this.gridTop, -80*rdt, 80*rdt);
     // player input streams
@@ -2558,6 +2770,10 @@ class CoopBubbles extends HTMLElement {
   beginOutro(show) { this._outro = { show, until: this.now + OUTRO_MAX }; }
   tickOutro() {
     const o = this._outro; if (!o) return;
+    if (this.fusion?.phase === 'burst') {
+      if (this.fusionVisualAge() < 2.6) return;
+      this._outro=null; o.show(); return;
+    }
     if (this.now < o.until && (this.falling.length || this.pops.length)) return;
     this._outro = null; o.show();
   }
@@ -3368,6 +3584,11 @@ class CoopBubbles extends HTMLElement {
     const jit = this.packJitter();
     this.grid.forEach(b => {
       let x = this.cellX(b.r,b.c), y = this.cellY(b.r);
+      const fusionMove = this.fusion?.phase === 'burst' && this.now-this.fusion.burstAt < 2.05
+        ? this.fusion.moved.find(m => m.to.r === b.r && m.to.c === b.c && m.kind === b.kind && m.special === b.special && m.at === b.at && m.placedBy === b.placedBy) : null;
+      if (fusionMove) { const u=clamp((this.now-this.fusion.burstAt-.35)/1.7,0,1),e=u*u*(3-2*u);
+        x=this.cellX(fusionMove.from.r,fusionMove.from.c)+(x-this.cellX(fusionMove.from.r,fusionMove.from.c))*e;
+        y=this.cellY(fusionMove.from.r)+(y-this.cellY(fusionMove.from.r))*e; }
       if (jit) { x += jit.x; y += jit.y; }
       if (x < vwL || x > vwR) return;
       if (b.snapFrom) {
@@ -3644,6 +3865,11 @@ class CoopBubbles extends HTMLElement {
     ctx.restore();
   }
   drawBubble(ctx, x, y, rad, kind, special, face, dangerPulse) {
+    if (special === 'fusion') {
+      ctx.save(); ctx.shadowColor='#4acfff';ctx.shadowBlur=22;ctx.fillStyle='#edffff';ctx.strokeStyle='#258bff';ctx.lineWidth=4;
+      ctx.beginPath();ctx.arc(x,y,rad,0,7);ctx.fill();ctx.stroke();ctx.shadowBlur=0;ctx.strokeStyle='#258bff';
+      ctx.beginPath();ctx.moveTo(x+rad*.3,y-rad*.7);ctx.lineTo(x-rad*.25,y);ctx.lineTo(x+rad*.25,y);ctx.lineTo(x-rad*.3,y+rad*.7);ctx.stroke();ctx.restore();return;
+    }
     const spriteKey = (special === 'rainbow' || special === 'bomb') ? special : kind;
     const sprite = BUBBLE_SPRITES[spriteKey];
     if (special === 'stone' || special === 'triLock') this.drawStone(ctx, x, y, rad);
@@ -5494,7 +5720,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       const max = TEAM_POWER.max, charge = this.teamPowerCharge || 0, active = this.teamPowerActive, def = active ? POWERS[active] : null;
       const ready = !active && charge >= max, frac = def ? clamp((this.teamPowerTimer || 0) / def.secs, 0, 1) : clamp(charge / max, 0, 1);
       put(power, 'class', 'tvSlot tvPower' + (ready || active ? ' ready' : ''));
-      put(sh.querySelector('.tvPowerLabel'), 'text', def ? def.name + ' ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
+      put(sh.querySelector('.tvPowerLabel'), 'text', active === 'fusion' || ready && this.players.length === 2 ? this.fusionLabel() : def ? def.name + ' ' + Math.max(0, this.teamPowerTimer || 0).toFixed(1) + 's'
         : ready ? 'Team power ready \u00b7 Q / Y' : 'Team power ' + Math.floor(charge) + '%');
       put(sh.querySelector('.tvMeter i'), 'width', (frac * 100).toFixed(1) + '%');
     }
@@ -5664,7 +5890,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
   applyOnlineSnapshot(s){
     if(s.kind==='battle'){this.applyOnlineBattleSnapshot(s);return;}
     const oldState=this.state;this.settings={...this.settings,...s.settings};this.profileKey=this.settings.campaign==='coop2'&&s.cols===GRID_PROFILES.coop2.evenColumns?'coop2':'classic';this.applyRoomControls();if(this.setViewH(this.settings.viewH??H0))this.relayout();this.WW=s.WW;this.cols=s.cols;this.parityFlip=s.parityFlip;this.anchorRow=s.anchorRow||0;this.gridTop=s.gridTop;this.gridTopTarget=s.gridTopTarget;this.lowestY=s.lowestY;this.grid=new Map(s.grid.map(b=>[key(b.r,b.c),b]));this.objects=s.objects||[];this.objectFallback=!!s.objectFallback;this.flights=s.flights||[];
-    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.onlineMissLimit=s.missLimit;this.pressure=s.pressure||0;this.onlinePerDrop=s.perDrop||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
+    this.players=(s.players||[]).map((p,i)=>this.playerFromSnapshot(p,i,this.players?.[i]));this.activeP=Math.max(0,this.players.findIndex(p=>p.id===this.onlinePlayerId));this.score=s.score;this.dispScore=s.dispScore;this.missMeter=s.missMeter;this.onlineMissLimit=s.missLimit;this.pressure=s.pressure||0;this.onlinePerDrop=s.perDrop||0;this.danger=s.danger;this.chain={...s.chain,players:new Set(s.chain.players||[])};this.passCd=s.passCd||0;this.teamPowerCharge=s.teamPowerCharge||0;this.fusion=s.fusion||null;this.teamPowerActive=s.teamPowerActive||null;this.teamPowerTimer=s.teamPowerTimer||0;this.now=s.now;this.state=s.state;
     this.falling=this.falling||[];this.fx=[];this.pops=this.pops||[];this.callouts=this.callouts||[];this.sfxLog=this.sfxLog||[];this.sparks=this.sparks||[];this.ripples=this.ripples||[];this.popups=this.popups||[];this.teamFx=this.teamFx||[];this.shake=this.shake||0;
     this.showObjectGuide();
     for(const event of s.events||[])if(event.id>(this._lastOnlineEvent||0)){this._lastOnlineEvent=event.id;this.applyOnlineEvent(event);}
@@ -5719,7 +5945,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='bomb_empty'){if(d.player===this.activeP){this.callout('OUT OF BOMBS',META[d.player].accent);this.sfx('passNo');}}else if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)+(d.bombBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind.startsWith('fusion_')){this.showFusionEvent(e.kind,d);}else if(e.kind==='bomb_empty'){if(d.player===this.activeP){this.callout('OUT OF BOMBS',META[d.player].accent);this.sfx('passNo');}}else if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)+(d.bombBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineAnalog(value){
     this._onlineHeld=this._onlineHeld||{l:false,r:false};
     if((this._onlineHeld.analog||0)===value)return;

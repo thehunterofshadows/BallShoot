@@ -12,6 +12,8 @@ const { createServer } = require('../server/server');
 
 const root = path.resolve(__dirname, '..');
 const duo = [{ id:'a', name:'Ada' }, { id:'b', name:'Ben' }];
+// Retain regression coverage for the legacy equip (still used by trio games).
+TEAM_POWER.equipped = 'synergy';
 const C = TEAM_POWER.charge, BURST = POWERS.synergy;
 
 // A hand-built two-player Co-op Clear board, as in coop-team.test.js.

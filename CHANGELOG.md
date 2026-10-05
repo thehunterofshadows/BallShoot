@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Fusion Burst** (#17). Two-human co-op Team Power loads one temporary electrical orb
+  per launcher, preserving both normal queues. Fire within four seconds; shots already
+  flying have until six seconds to land. Missed coordination, a disconnect, invalidated
+  endpoint, or failed placement restores remaining shots and refunds the full meter.
+  Both endpoints cut ordinary bubbles along a modest lightning corridor, then unsupported
+  bubbles below the cut reattach upward in deterministic row/column order. Protected
+  objects and special metadata survive relocation. A vertical cut uses its lower endpoint
+  as the dividing height; other cuts extend the endpoint heights horizontally. Vacancies
+  favour the nearest lane against the supported board/ceiling, with the original vacant
+  cell as a defensive fallback for malformed geometry. Reattached bubbles earn no drop
+  points; beam clears earn 10 points each. The server owns these results and snapshots.
+  Blue/white cannon arcs, waiting tethers, electrical audio, a 2.6-second branching beam,
+  and reverse-gravity trails follow gameplay without blocking controls. Pass and bomb
+  toggles wait while Fusion is armed; loaded reserve bombs must be unloaded first.
+  Larger rosters retain Synergy Burst. Validate with `tests/fusion.test.js` and the Docker
+  desktop/TV probe `scripts/fusion-probe.mjs`.
+
 - **Double-width two-player co-op board** (#13). Local 2-player Co-op Clear now plays one
   continuous 16/15 staggered field through a reusable grid profile (`GRID_PROFILES`), with
   launchers at 25%/75% and no centre seam or territories. The full board is always visible

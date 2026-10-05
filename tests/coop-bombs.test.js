@@ -52,16 +52,16 @@ test('empty reserve feedback changes no gameplay state; invalid gameplay states 
   assert.equal(room({mode:'endless'}).requestBombToggle('a'),false);
 });
 
-test('snapshots retain owned loaded bombs; queue refresh and Team Power operate on the stored bubble', () => {
+test('snapshots retain owned loaded bombs; queue refresh preserves bombs and Fusion refuses a loaded reserve', () => {
   const g=room(), p=g.players[0];p.cur={kind:'O',special:null};
   g.requestBombToggle('a');
   g.grid.clear();g.grid.set('0,0',{r:0,c:0,kind:'G',special:null});g.refreshQueues();
   assert.equal(p.cur.special,'bomb');assert.equal(p.bombStored.kind,'G');
-  g.teamPowerCharge=TEAM_POWER.max;assert.equal(g.activateTeamPower('a'),true);
-  assert.equal(p.cur.special,'bomb');assert.equal(p.bombStored.special,'rainbow');
+  g.teamPowerCharge=TEAM_POWER.max;assert.equal(g.activateTeamPower('a'),false);
+  assert.equal(p.cur.special,'bomb');assert.equal(p.bombStored.special,null);
   const wire=JSON.parse(JSON.stringify(g.snapshotFor('a'))).players[0];
-  assert.equal(wire.bombs,2);assert.equal(wire.bombLoaded,true);assert.equal(wire.bombStored.special,'rainbow');
-  g.requestBombToggle('a');assert.equal(p.cur.special,'rainbow');assert.equal(p.bombs,3);
+  assert.equal(wire.bombs,2);assert.equal(wire.bombLoaded,true);assert.equal(wire.bombStored.special,null);
+  g.requestBombToggle('a');assert.equal(p.cur.special,null);assert.equal(p.bombs,3);
 });
 
 test('clear bonus counts loaded unused bombs, banks the team total, and resets every round', () => {
