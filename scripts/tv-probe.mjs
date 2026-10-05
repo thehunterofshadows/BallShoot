@@ -57,7 +57,7 @@ for (const vp of VIEWPORTS) {
     g.settings.players = 2; g.settings.human = [true, true, false, false]; g.resetGame();
   });
   const game = page.locator('coop-bubbles');
-  await game.locator('.localPlay').click();
+  await game.locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
   await game.locator('.start').click();
   await page.waitForTimeout(900);
 
@@ -178,7 +178,7 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
   await page.evaluate(() => { const g = document.querySelector('coop-bubbles');
     g.settings.players = 2; g.settings.human = [true, true, false, false]; g.resetGame(); });
   const game = page.locator('coop-bubbles');
-  await game.locator('.localPlay').click();
+  await game.locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
   await game.locator('.start').click();
   await page.waitForTimeout(900);
   const play = await page.evaluate(() => {
@@ -233,7 +233,7 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
     g.settings.players = 2; g.settings.human = [true, true, false, false]; g.resetGame();
   });
   const game = page.locator('coop-bubbles');
-  await game.locator('.localPlay').click();
+  await game.locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
   await game.locator('.start').click();
   await page.waitForTimeout(900);
 
@@ -434,7 +434,7 @@ for (const s of shots.slice(1)) if (key(s.probe) !== ref) {
     g.settings.players = 2; g.settings.human = [true, true, false, false]; g.resetGame();
   });
   const game = page.locator('coop-bubbles');
-  await game.locator('.localPlay').click();
+  await game.locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
   await game.locator('.start').click();
   await page.waitForTimeout(900);
 

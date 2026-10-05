@@ -16,7 +16,7 @@ const server = createServer(async (req, res) => {
     const body = file === 'index.html' ? `<!doctype html><html><head>
       <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
       <style>html,body{margin:0;width:100%;height:100%;overflow:hidden}coop-bubbles{display:block;width:100%;height:100%}</style>
-      <script src="/coop-objects.js"></script><script src="/coop-campaigns.js"></script>
+      <script src="/coop-objects.js"></script><script src="/coop-campaigns.js"></script><script src="/coop-profiles.js"></script>
       <script src="/coop-bubbles.js"></script></head><body><coop-bubbles></coop-bubbles></body></html>`
       : await readFile(join(root, file));
     res.writeHead(200, { 'content-type': TYPES[extname(file)] || 'application/octet-stream' });

@@ -4,6 +4,7 @@ const http = require('node:http');
 const { WebSocketServer, WebSocket } = require('ws');
 const lobbies = require('./lobbies');
 const { Scores } = require('./scores');
+const { Profiles } = require('./profiles');
 
 /* The leaderboard is served over plain HTTP rather than the room socket so that Local
    offline play — which never opens a WebSocket — can read and post scores too. */
@@ -37,10 +38,45 @@ function scoreRoutes(scores) {
   };
 }
 
+/* Player profiles, plain HTTP for the same reason as the leaderboard.
+     GET    /profiles                list
+     POST   /profiles {name}         create (409 name_taken)
+     POST   /profiles/results {...}  one round's results; a repeated roundId is not re-applied
+     GET    /profiles/:id            stats, campaign progress, partners
+     PATCH  /profiles/:id {name}     rename (409 name_taken)
+     DELETE /profiles/:id            delete with all of that player's history */
+function profileRoutes(profiles) {
+  const json = (res, code, body) => { res.writeHead(code, { 'content-type':'application/json', 'cache-control':'no-store' }); res.end(JSON.stringify(body)); };
+  const clientAddress = req => String(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();
+  const status = code => ({ name_taken:409, not_found:404, rate_limited:429, bad_method:405, too_many:409 })[code] || 400;
+  const fault = (res, e) => json(res, status(e.code), { code: e.code || 'bad_request', message: e.message || 'Invalid request.' });
+  const readBody = (req, done) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 8192) req.destroy(); });
+    req.on('end', () => { let payload; try { payload = JSON.parse(body || '{}'); } catch (e) { return done(Object.assign(new Error('Invalid JSON.'), { code:'bad_request' })); } done(null, payload || {}); });
+  };
+  return (req, res) => {
+    const url = new URL(req.url, 'http://localhost'), parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'profiles' || parts.length > 2) return false;
+    const id = parts[1] ? decodeURIComponent(parts[1]) : null, address = clientAddress(req);
+    const write = (fn, code = 200) => readBody(req, (err, payload) => { if (err) return fault(res, err); try { json(res, code, fn(payload)); } catch (e) { fault(res, e); } });
+    try {
+      if (!id && req.method === 'GET') return json(res, 200, { profiles: profiles.list() }), true;
+      if (!id && req.method === 'POST') return write(p => ({ profile: profiles.create(p.name, address) }), 201), true;
+      if (id === 'results' && req.method === 'POST') return write(p => profiles.record(p, address)), true;
+      if (id && id !== 'results' && req.method === 'GET') return json(res, 200, profiles.detail(id)), true;
+      if (id && id !== 'results' && req.method === 'PATCH') return write(p => ({ profile: profiles.rename(id, p.name, address) })), true;
+      if (id && id !== 'results' && req.method === 'DELETE') return json(res, 200, profiles.remove(id)), true;
+      json(res, 405, { code:'bad_method', message:'Unsupported method.' });
+    } catch (e) { fault(res, e); }
+    return true;
+  };
+}
+
 function createServer() {
-  const scores = new Scores();
-  const routeScores = scoreRoutes(scores);
-  const server=http.createServer((req,res)=>{if(req.url==='/healthz'){res.writeHead(200,{'content-type':'text/plain'});res.end('ok\n');return;}if(routeScores(req,res))return;res.writeHead(404);res.end();});
+  const scores = new Scores(), profiles = new Profiles();
+  const routeScores = scoreRoutes(scores), routeProfiles = profileRoutes(profiles);
+  const server=http.createServer((req,res)=>{if(req.url==='/healthz'){res.writeHead(200,{'content-type':'text/plain'});res.end('ok\n');return;}if(routeScores(req,res)||routeProfiles(req,res))return;res.writeHead(404);res.end();});
   const wss=new WebSocketServer({server,path:'/ws',maxPayload:8192});
   wss.on('connection',(ws,req)=>{
     ws.alive=true;ws.on('pong',()=>{ws.alive=true;});
@@ -62,8 +98,8 @@ function createServer() {
   });
   const tick=setInterval(()=>lobbies.tick(1/60),1000/60), snapshots=setInterval(()=>lobbies.snapshots(),50), sweep=setInterval(()=>lobbies.sweep(),30_000);
   const heartbeat=setInterval(()=>{for(const ws of wss.clients){if(!ws.alive){ws.terminate();continue;}ws.alive=false;ws.ping();}},30_000);
-  server.on('close',()=>{clearInterval(tick);clearInterval(snapshots);clearInterval(sweep);clearInterval(heartbeat);lobbies.clear();scores.close();});
-  return {server,wss,scores};
+  server.on('close',()=>{clearInterval(tick);clearInterval(snapshots);clearInterval(sweep);clearInterval(heartbeat);lobbies.clear();scores.close();profiles.close();});
+  return {server,wss,scores,profiles};
 }
 
 if(require.main===module){const{server}=createServer();server.listen(Number(process.env.PORT)||8080,'0.0.0.0',()=>console.log('BallShoot game server listening on 8080'));}

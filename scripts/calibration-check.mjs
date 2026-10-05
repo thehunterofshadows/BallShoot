@@ -7,7 +7,7 @@ try {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('http://calibration.test/**',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}coop-bubbles{display:block;width:100%;height:100%}</style><body></body>'}));
   await page.goto('http://calibration.test/');
-  for(const path of ['coop-objects.js','coop-campaigns.js','coop-bubbles.js'])await page.addScriptTag({path});
+  for(const path of ['coop-objects.js','coop-campaigns.js','coop-profiles.js','coop-bubbles.js'])await page.addScriptTag({path});
   await page.evaluate(()=>{
     window.pads=[0,1].map(index=>({index,id:'Test pad '+index,mapping:'standard',connected:true,axes:[0.05,0.02],buttons:Array.from({length:16},()=>({pressed:false}))}));
     Object.defineProperty(navigator,'getGamepads',{value:()=>window.pads});

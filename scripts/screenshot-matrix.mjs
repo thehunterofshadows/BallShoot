@@ -67,7 +67,7 @@ for (const vp of VIEWPORTS) {
     /* Step through home -> tutorial -> play. The point of the matrix is the field, the
        HUD and the launcher at each shape, not the home card. */
     const game = page.locator('coop-bubbles');
-    await game.locator('.localPlay').click();
+    await game.locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
     await game.locator('.start').click();
     await page.waitForTimeout(900); // a few frames of real play
 

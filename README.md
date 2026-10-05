@@ -3,6 +3,25 @@
 A cooperative and competitive multiplayer bubble-shooter with shared combos,
 private battle boards, special bubbles, optional local bots, and live cross-device rooms.
 
+## Player profiles
+
+Before a local game starts, **Who's playing?** gives every human launcher its own panel:
+pick a saved player, make a **New Player**, or play as **Guest**. Each controller only
+moves the panel of the launcher it drives, so two players choose at the same time; the
+physical keyboard types into one panel at a time (Tab or a tap moves it, and that panel
+shows a ⌨ badge). New names can be typed or entered on the on-screen letter grid
+(Backspace, Clear, Cancel, Confirm). Names are unique without regard to case, at most 16
+characters.
+
+Profiles, lifetime stats, per-campaign level progress and co-op partner history live on
+the game server (`/profiles`, stored in `profiles.json` on the same volume as the
+leaderboard), so they follow players across devices and browser resets. Levels are never
+locked by progress. Each finished round is sent once with a unique round id; failed sends
+retry from a small on-device queue, and the server ignores a round id it has already
+applied. Guests are never saved. **Player Stats** on the main menu shows each player's
+totals and progress and lets you rename or delete (with confirmation) a player. Online
+rooms still use their per-room display name; profile tracking covers local play.
+
 ## Playing online
 
 Choose **Create online room**, enter a display name, and share the generated
@@ -178,11 +197,13 @@ loop at 60, 120 and 144 Hz and checks the gameplay clock, aim and shot travel ma
 - `server/battle.js` — private-board battle orchestration, attacks, and placements
 - `server/lobbies.js` — room membership, settings, reconnect, and host lifecycle
 - `server/scores.js` — leaderboard buckets, validation, and JSON-file persistence
+- `coop-profiles.js` — player-profile rules shared by browser and server (names, round results, stat rules, on-screen keyboard)
+- `server/profiles.js` — player profiles, lifetime/pair stats, level progress, idempotent round results, JSON-file persistence
 - `server/server.js` — HTTP health endpoint and WebSocket protocol adapter
 - `support.js` — generated browser runtime
 - `thumbnail.webp` — original preview image
 
-Nginx serves the browser app and proxies same-origin `/ws` and `/scores` requests to the
+Nginx serves the browser app and proxies same-origin `/ws`, `/scores` and `/profiles` requests to the
 `gameserver` service over their shared network namespace. Only Nginx has an
 address on the external `edge` network; the game server listens on loopback with
 no published ports.

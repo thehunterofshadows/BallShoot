@@ -1,24 +1,21 @@
-# Issue #13 — 2P Co-op double-width board
+# Issue #18 - Server-backed player profiles
 
-**Status:** ✅ Complete
+**Status:** 🔄 In progress
 
 ## Implementation Plan
 
-- [x] Read issue #13, repository instructions, and the grid, level, camera, layout, and theme code
-- [x] Add a reusable grid-profile (classic 11/10, coop2 16/15) and level-layout resolver in the mirrored levels block
-- [x] Author 12 purpose-built `layouts.coop2` levels with tuned drop pacing; centre classic rows for rounds without one
-- [x] Load the coop2 profile for local 2-player Co-op Clear (grid width, launchers at 25%/75%, objects)
-- [x] Make the view width follow the profile: fixed full-field camera, uniform desktop/TV fit, renderer/HUD/theme/pointer use the view width
-- [x] Add tests: 16/15 validation, cross-centre match/drop, cross-board shots, fixed camera, display fits, solo/Battle untouched
-- [x] Run Docker tests (`docker compose run --rm --no-deps test`) — 212/212 pass
-- [x] Rebuild Dev and capture screenshots at 1080p/4K/16:10/ultrawide (`scripts/coop2-probe.mjs`)
-- [x] Update CHANGELOG/README, review diff, commit, and push
-
-## Notes
-
-- The 16/15 board applies to local Co-op Clear with exactly 2 player slots on the Classic field. Solo, 3–4 players, Wide 4×, Battle, and online rooms keep the 11/10 board. The level data and resolver are mirrored on the server, so rooms could adopt `coop2` later.
-- Rounds 13–52 have no `coop2` layout yet. On the 2P board they use their classic rows, centred and paced ×1.3.
-- The two-socket launcher deck does not fit the wider board, so 2P uses the bottom tray with the live launchers. In TV mode the side columns are narrower, so the round panel wraps and grows downward instead of clipping.
-- Leaderboard buckets are still keyed by mode and round only, so 2P wide-board scores share a table with classic scores.
-- The playtest questions in the issue (couch readability, pressure feel) still need real two-person sessions.
-- Dev build: `coop-bubbles.js?v=31bd28ea040c` (2026-10-01 22:07 UTC).
+- [x] Review issue #18, AGENTS.md, server (scores/server.js), and local play flow in `coop-bubbles.js`
+- [x] Add shared `coop-profiles.js` rules (name validation, stat schema, round-result validation, pair keys, on-screen keyboard layout/navigation)
+- [x] Add `server/profiles.js` store (profiles, lifetime stats, campaign progress, pair stats, idempotent round IDs, atomic JSON persistence)
+- [x] Add `/profiles` HTTP routes in `server/server.js`, nginx proxy, Dockerfile/compose/index.html wiring for the shared module
+- [x] Track per-player round stats in local play (attributed score, popped, biggest pop, best chain, bombs, Fusion, time)
+- [x] Add per-player Player Select overlay (Existing / New / Guest) with independent pad cursors, on-screen keyboard, physical keyboard ownership
+- [x] Show profile names / Guest in launcher labels and TV cards
+- [x] Submit end-of-round results with retry queue and save warning; never for Guests
+- [x] Add main-menu Player Stats screen with stats, campaign progress, partners, rename, and confirmed delete
+- [x] Add tests for store, HTTP API, shared rules, and client wiring
+- [x] Add browser probe `scripts/profiles-probe.mjs` and route existing probes through Player Select as Guests
+- [x] Run Docker test suite (`docker compose run --rm --no-deps test`) — 268/268 pass
+- [x] Update CHANGELOG/README docs
+- [ ] 🔄 **Rebuild environment (`./rebuild.sh`) and report build stamp**
+- [ ] Review diff, commit, and push

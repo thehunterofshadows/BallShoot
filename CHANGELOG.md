@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Player profiles** (#18). Server-backed players with names, lifetime stats, per-campaign
+  level progress and co-op pair history (`server/profiles.js`, `/profiles`, rules shared in
+  `coop-profiles.js`). Before local play each human launcher independently chooses an
+  existing player, a New Player or Guest; controllers only steer their own launcher's panel,
+  and the keyboard types into one clearly marked panel at a time. Names are entered by
+  keyboard or an on-screen letter grid (Backspace, Clear, Cancel, Confirm) and are unique
+  case-insensitively, with "That name already exists. Choose a different name." on a clash.
+  Every finished round (level clear, loss, Endless or Battle end) reports per-player results
+  — attributed score, pops, biggest pop, best combo, bombs used/saved, Fusion Bursts, time —
+  with a round id; the server validates and caps each round, derives totals itself, and
+  applies a round id once, so queued retries never double-count. Co-op wins credit every
+  participating profile; Guests are never saved. Pair stats are order-independent. The main
+  menu gains **Player Stats** with summary tiles, campaign progress, partners, rename and
+  confirmed delete. Launchers and TV cards show player names or "Guest". Levels stay
+  unlocked. Validate with `tests/profiles.test.js` and `scripts/profiles-probe.mjs`.
+
 - **Fusion Burst** (#17). Two-human co-op Team Power loads one temporary electrical orb
   per launcher, preserving both normal queues. Fire within four seconds; shots already
   flying have until six seconds to land. Missed coordination, a disconnect, invalidated

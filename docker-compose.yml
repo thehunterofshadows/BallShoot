@@ -21,6 +21,8 @@ services:
     environment:
       # Leaderboard table. Unset or unwritable falls back to in-memory only.
       SCORES_PATH: /data/scores.json
+      # Player profiles, stats and progress. Same volume, so Dev and Prod stay separate.
+      PROFILES_PATH: /data/profiles.json
     volumes:
       - scores:/data
     healthcheck:
@@ -43,6 +45,7 @@ services:
       - ./coop-bubbles.js:/app/coop-bubbles.js:ro
       - ./coop-objects.js:/app/coop-objects.js:ro
       - ./coop-campaigns.js:/app/coop-campaigns.js:ro
+      - ./coop-profiles.js:/app/coop-profiles.js:ro
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
       - ./nginx.conf:/app/nginx.conf:ro
@@ -61,12 +64,14 @@ services:
         node --check /app/coop-bubbles.js
         node --check /app/coop-objects.js
         node --check /app/coop-campaigns.js
+        node --check /app/coop-profiles.js
         node --check /app/support.js
         node --check /app/server/game.js
         node --check /app/server/battle.js
         node --check /app/server/lobbies.js
         node --check /app/server/server.js
         node --check /app/server/scores.js
+        node --check /app/server/profiles.js
         npm test
     profiles:
       - test
@@ -84,6 +89,7 @@ services:
       - ./coop-bubbles.js:/app/coop-bubbles.js:ro
       - ./coop-objects.js:/app/coop-objects.js:ro
       - ./coop-campaigns.js:/app/coop-campaigns.js:ro
+      - ./coop-profiles.js:/app/coop-profiles.js:ro
       - ./support.js:/app/support.js:ro
       - ./index.html:/app/index.html:ro
       - ./assets:/app/assets:ro

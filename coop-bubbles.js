@@ -7,6 +7,8 @@ if (customElements.get('coop-bubbles')) return;
 // Loaded by the document before this component; local play and the server share rules.
 const CoopObjects = globalThis.CoopObjects;
 const CoopCampaigns = globalThis.CoopCampaigns;
+// Player-profile rules shared with the server; without them local play just runs as Guests.
+const CoopProfiles = globalThis.CoopProfiles || null;
 const { COOP2_LEVELS, CAMPAIGNS } = CoopCampaigns;
 
 /* Stamped by the image build (see Dockerfile). It is substituted before the cache-busting
@@ -1100,6 +1102,53 @@ const hurryTick = (p, dt, limit) => {
   return was <= warnAt && p.idle > warnAt ? 'warn' : null;
 };
 /* pace-rules:end */
+/* profiles-client:begin — what one local round reports for player profiles. Players earn
+   the points their own shots scored (a pop split by the bubbles each shot contributed, a
+   drop split between that batch's clearers); everything the team earns together (level,
+   time and bomb bonuses, rescues, team plays, Fusion beams) is shared evenly, so the shares
+   always add up to no more than the team score. Only profiles are reported: Guests and bots
+   still take their share of the split, but nothing is ever saved for them. */
+const newRoundRec = () => ({ score:0, shots:0, popped:0, biggestPop:0, bestChain:0, bombsUsed:0, fusions:0 });
+const newRoundId = () => {
+  try { if (globalThis.crypto && globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID(); } catch (_) {}
+  return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8);
+};
+const creditShots = (players, shots, pts, mult) => {
+  const total = shots.reduce((n, s) => n + s.bubbles.length, 0);
+  for (const s of shots) {
+    const r = players[s.shooter] && players[s.shooter].rec; if (!r) continue;
+    r.score += total ? pts * s.bubbles.length / total : 0;
+    r.popped += s.bubbles.length;
+    r.biggestPop = Math.max(r.biggestPop, s.bubbles.length);
+    r.bestChain = Math.max(r.bestChain, mult);
+  }
+};
+const creditPoints = (players, who, pts) => {
+  if (!who.length) return;
+  for (const i of who) { const r = players[i] && players[i].rec; if (r) r.score += pts / who.length; }
+};
+const ROUND_CAPS = { score:2e6, shots:2e4, popped:5e4, biggestPop:5e3, bestChain:16, bombsUsed:999, bombsLeft:999, fusions:999 };
+/* `players` is every launcher in the round, each { ident, rec, bombsLeft }. Null when
+   nobody in the round has a profile, so an all-Guest game never talks to the server. */
+const roundResult = o => {
+  const all = o.players || [], cap = (v, k) => Math.min(ROUND_CAPS[k], Math.max(0, Math.floor(Number(v) || 0)));
+  const team = Math.min(8e6, Math.max(0, Math.round(o.teamScore || 0)));
+  const own = all.map(p => Math.max(0, Math.floor(p.rec ? p.rec.score : 0)));
+  const credited = own.reduce((a, b) => a + b, 0), scale = credited > team ? team / credited : 1;
+  const share = all.length ? Math.floor(Math.max(0, team - credited) / all.length) : 0;
+  const players = [];
+  all.forEach((p, k) => {
+    if (!p.ident || p.ident.type !== 'profile') return;
+    const r = p.rec || newRoundRec();
+    players.push({ profileId: p.ident.id, score: cap(Math.floor(own[k] * scale) + share, 'score'), shots: cap(r.shots, 'shots'),
+      popped: cap(r.popped, 'popped'), biggestPop: cap(r.biggestPop, 'biggestPop'), bestChain: cap(r.bestChain, 'bestChain'),
+      bombsUsed: cap(r.bombsUsed, 'bombsUsed'), bombsLeft: cap(p.bombsLeft, 'bombsLeft'), fusions: cap(r.fusions, 'fusions') });
+  });
+  if (!players.length) return null;
+  return { roundId: o.id, mode: o.mode, campaign: o.campaign || 'original', level: Number.isInteger(o.level) && o.level >= 0 ? o.level : null,
+    won: !!o.won, secs: Math.min(6 * 3600, Math.max(0, Math.round(o.secs || 0))), teamScore: team, players };
+};
+/* profiles-client:end */
 // "1. Hello Bubbles" … plus Custom: the one list both level pickers are built from.
 const levelOptionsHTML = (campaign = 'original', custom = true) => campaignLevels(campaign).map((L, i) => `<option value="${i}">${i + 1}. ${L.name}</option>`).join('')
   + (custom && campaign !== 'coop2' ? '<option value="custom">Custom</option>' : '');
@@ -1424,6 +1473,8 @@ class CoopBubbles extends HTMLElement {
     if (q && q.has('perf')) this.perfToggle(true);
     this.warmAssets();
     this._raf = requestAnimationFrame(t => this.frame(t));
+    // Rounds that could not be saved last time go out again; the server ignores repeats.
+    if (CoopProfiles && this.roundQueue().length) this.flushRounds();
     try {
       const saved=JSON.parse(localStorage.getItem('bt_online_session')||'null');
       if(saved&&/^\d{3}$/.test(saved.code)&&saved.token){this.online=true;this._onlineCode=saved.code;this._onlineToken=saved.token;this.reconnectEl.style.display='grid';this.openOnlineSocket(true);}
@@ -1475,6 +1526,7 @@ class CoopBubbles extends HTMLElement {
     this._fullscreenUnbind && this._fullscreenUnbind();
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._toastTimer);
+    clearTimeout(this._roundRetry);
     if (this.ws) this.ws.close();
   }
 
@@ -1539,6 +1591,8 @@ class CoopBubbles extends HTMLElement {
     this.dispScore = carry ? carry.score : 0;
     this.batch = []; this.resolveAt = 0; this.shotCount = 0; this.specialFlip = 0; this.specialWho = 0;
     this.score = carry ? carry.score : 0;
+    // One profile round per level: its id makes a retried save idempotent on the server.
+    this._round = { id: newRoundId(), score0: this.score, sent: false };
     this.missMeter = 0; this.pressure = 0; this.danger = null; this.shake = 0;
     if (!carry) this.now = 0;
     this.levelStartT = this.now; // mirrors OnlineGame.reset: the clear clock only runs in play
@@ -1557,8 +1611,10 @@ class CoopBubbles extends HTMLElement {
     this.players = [];
     for (let i = 0; i < n; i++) {
       const x = this.WW * (i + 0.5) / n;
-      const old = keep[i];
+      // A bot never carries a player's identity, even if settings flipped that slot mid-session.
+      const old = keep[i], ident = this.online || !this.settings.human[i] ? null : (this.identities || [])[i] || null;
       this.players.push({ i, meta: META[i], x, angle: old ? old.angle : rnd(-0.3,0.3),
+        ident, name: ident ? this.identLabel(ident, i) : undefined, rec: newRoundRec(),
         cur: this.genBubble(), next: this.genBubble(), reload: 0,
         bombs:this.settings.mode === 'clear' && n >= 2 ? 3 : 0, bombLoaded:false, bombStored:null,
         bot: !this.settings.human[i], think: rnd(0.4,1.2), plan: null, held: {},
@@ -1702,6 +1758,7 @@ class CoopBubbles extends HTMLElement {
     const sx = p.x, sy = this.LAUNCH_Y - 44, sp = 1150;
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
+    if (p.rec) { p.rec.shots++; if (p.cur.special === 'bomb') p.rec.bombsUsed++; }
     const fusionShot = fusionRestore(this, p);
     if (!fusionShot && !bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
     p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now; p.idle = 0;
@@ -1910,6 +1967,7 @@ class CoopBubbles extends HTMLElement {
       const mult = this.chain.mult;
       const pts = this.popPoints(popN) * mult;
       this.score += pts; this.addPopup(this.centerOf(allPopped, this.pops), '+' + pts, '#17335c');
+      creditShots(this.players, shots, pts, mult);
       clearers.forEach(s => { const p = this.players[s]; if (p) { p.stats.pops++; p.stats.bubbles += popN; } });
       (teamOn ? new Set(team.assists.flatMap(a => a.setup)) : owners).forEach(o => { const p = this.players[o]; if (p) p.stats.assists++; });
       if (!teamOn && owners.size >= 1) this.callout(owners.size + clearers.length >= 3 ? 'TEAM POP!' : 'ASSIST!', '#a78bfa');
@@ -1930,7 +1988,7 @@ class CoopBubbles extends HTMLElement {
     // drops
     if (dropped.n > 0) {
       const pts = this.dropPoints(dropped.n, dropped.comps) * this.chain.mult;
-      this.score += pts;
+      this.score += pts; creditPoints(this.players, clearers, pts);
       clearers.forEach(s => { const p = this.players[s]; if (p) p.stats.drops += dropped.n; });
       this.addPopup({ x: dropped.x, y: dropped.y }, '+' + pts, '#ff8a3c');
       if (dropped.comps >= 2) this.callout('DOUBLE CUT!', '#35d3c8');
@@ -1974,6 +2032,7 @@ class CoopBubbles extends HTMLElement {
     const bombBonus = this.players.reduce((sum, p) => sum + unusedBombs(p) * 250, 0);
     this.score += bonus + timeBonus + bombBonus;
     if (from >= 0) this.recordProgress(from);
+    this.finishRound(true, from);
     if (next < 0) return this.endGame(true);
     this.state = 'levelup'; this.sfx('win');
     this._pendingLevel = next;
@@ -1994,7 +2053,7 @@ class CoopBubbles extends HTMLElement {
       + `${s.assists || 0} setups · ${s.rescues || 0} rescues · ${s.chains || 0} chain`;
     const rows = list.map(p => {
       const meta = p.meta || META[p.i] || META[0];
-      return { name: meta.name, accent: meta.accent, nums: nums(p.stats || {}) + ((this.state === 'levelup' || this.state === 'won') && this.settings.mode === 'clear' && list.length >= 2 ? ' · Bomb Bonus: ' + unusedBombs(p) + ' × 250 = ' + unusedBombs(p) * 250 : '') };
+      return { name: this.escapeHTML(!this.online && p.name || meta.name), accent: meta.accent, nums: nums(p.stats || {}) + ((this.state === 'levelup' || this.state === 'won') && this.settings.mode === 'clear' && list.length >= 2 ? ' · Bomb Bonus: ' + unusedBombs(p) + ' × 250 = ' + unusedBombs(p) * 250 : '') };
     });
     if (list.length < 2) return rows;
     const sum = {};
@@ -2244,7 +2303,7 @@ class CoopBubbles extends HTMLElement {
     }
     if (this.online) { this.sendOnline('team_power'); return; }
     this.teamPowerCharge = 0; this.teamPowerActive = power; this.teamPowerTimer = def.secs;
-    if (power === 'fusion') def.start(this, pair); else def.start(pair);
+    if (power === 'fusion') { def.start(this, pair); pair.forEach(q => { if (q.rec) q.rec.fusions++; }); } else def.start(pair);
     this.showTeamPowerActivated({ by: i, power, name: def.name, secs: def.secs, players: pair.map(p => p.i) });
   }
   // Local only; mirrors OnlineGame.chargeTeamPower.
@@ -2501,6 +2560,7 @@ class CoopBubbles extends HTMLElement {
   }
   endGame(won) {
     fusionCancel(this, false);
+    this.finishRound(won); // a final clear already reported from clearLevel; this is a no-op then
     this.state = won ? 'won' : 'lost';
     this.sfx(won ? 'win' : 'lose');
     this.beginOutro(() => this.showEnd(won));
@@ -2833,7 +2893,7 @@ class CoopBubbles extends HTMLElement {
     const duo = this.settings.mode === 'clear' && this.settings.players === 2
       && this.settings.human[0] && this.settings.human[1];
     if (duo && typeof navigator !== 'undefined' && navigator.getGamepads) this.openPadPick();
-    else { this.showTutorial(); this._tutBack = 'home'; }
+    else this.openProfilePick();
   }
   openPadPick() {
     this._padPickActive = true; this._padPickPending = new Map();
@@ -2845,7 +2905,8 @@ class CoopBubbles extends HTMLElement {
     this._padPickActive = false; this._padPickPending = new Map();
     if (skip) { this._padSlots = new Map(); this._padReservations = new Map(); }
     if (this.padPickEl) this.padPickEl.style.display = 'none';
-    this.showTutorial(); this._tutBack = 'home';
+    // Sides are settled; now each side says who is playing (identity is separate from the pad).
+    this.openProfilePick();
   }
   cancelPadPick() {
     this._padPickActive = false; this._padPickPending = new Map(); this._padSlots = new Map();
@@ -3037,6 +3098,7 @@ class CoopBubbles extends HTMLElement {
       if (this.settings.displayMode === 'auto') this.measure(); // a controller can make this the TV
       if (this._padPickActive) this.syncPadPick();
     }
+    if (changed && this._profilePickActive) this.ppRender(); // controller badges follow connects
     this._padPlayers = [...slots.values()].map(n => humans[n]).filter(i => i !== undefined);
     this.syncCalibrationVisibility();
     this.sampleSticks(pads, performance.now());
@@ -3056,6 +3118,12 @@ class CoopBubbles extends HTMLElement {
       if (this._perf && (h !== was.h || analog !== (was.analog || 0) || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
       let nav = was.nav, navT = was.navT;
       if (this._padPickActive) this.padPickInput(g, h, hit);
+      else if (this._profilePickActive) {
+        const dir = v ? 'v' + v : h ? 'h' + h : '', step = dir && (dir !== was.nav || now >= was.navT);
+        if (step) navT = now + (dir !== was.nav ? GAMEPAD.repeatFirst : GAMEPAD.repeat);
+        nav = dir;
+        if (n !== undefined) this.profilePadInput(n, step ? dir[0] : '', step ? +dir.slice(1) : 0, hit);
+      }
       else if (hit('start')) this.padStart();
       else if (hit('back')) this.toggleSide();
       else if (menu) {
@@ -3164,7 +3232,7 @@ class CoopBubbles extends HTMLElement {
     if (this.screenFitEl && this.screenFitEl.style.display !== 'none') return this.screenFitEl;
     if (this.calibrationOpen()) return this.calibrationEl;
     if (this.sideEl && this.sideEl.classList.contains('open') && this.sideEl.offsetParent !== null) return this.sideEl;
-    const cards = [this.homeEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
+    const cards = [this.homeEl, this.playerStatsEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
     for (let k = cards.length - 1; k >= 0; k--) {
       const el = cards[k]; if (el && el.style.display !== 'none' && getComputedStyle(el).display !== 'none') return el;
     }
@@ -3239,6 +3307,7 @@ class CoopBubbles extends HTMLElement {
     if (menu === this.sideEl) return 'Close';
     if (menu === this.pauseEl) return 'Resume';
     if (menu === this.tutEl) return this._tutBack === 'home' ? 'Back' : 'Play';
+    if (menu === this.playerStatsEl) return 'Back';
     if (menu === this.lobbyEl || menu === this.reconnectEl) return 'Leave…';
     return null;
   }
@@ -3248,6 +3317,7 @@ class CoopBubbles extends HTMLElement {
     if (menu === this.screenFitEl) { this.closeScreenFit(false); return; }
     if (menu === this.sideEl) { this.closeSide(); return; }
     if (menu === this.pauseEl) { if (this.state === 'paused') this.togglePause(); return; }
+    if (menu === this.playerStatsEl) { this.psBack(); return; }
     if (menu === this.tutEl) {
       if (this._tutBack === 'home' && !this.online) { this.tutEl.style.display = 'none'; this.homeEl.style.display = 'grid'; this.state = 'home'; }
       else this.shadowRoot.querySelector('.start').click();
@@ -3445,6 +3515,9 @@ class CoopBubbles extends HTMLElement {
     const kd = e => {
       if (/input|select|textarea/i.test(e.target.tagName)) return;
       this.ensureAudio();
+      // Player Select owns the keyboard while it is up; so does a Player Stats name entry.
+      if (this._profilePickActive) { this.ppKey(e); return; }
+      if (this._ps && this.playerStatsEl.style.display !== 'none' && this.psKey(e)) return;
       const k = e.key.toLowerCase();
       // The settings panel is a drawer over the board on narrow layouts; Escape is the way
       // out that does not require finding the gear again.
@@ -4202,7 +4275,7 @@ class CoopBubbles extends HTMLElement {
   // Outlined so the name reads on the tray art, its dark wells and the procedural plate alike.
   drawLauncherName(ctx, p, x, y) {
     ctx.font = '700 ' + Math.round(16 * this.tvTextScale()) + 'px Fredoka, sans-serif'; ctx.textAlign = 'center';
-    const text = p.meta.name + (p.bot ? ' \u00b7 bot' : '');
+    const text = (!this.online && p.name || p.meta.name) + (p.bot ? ' \u00b7 bot' : '');
     ctx.lineJoin = 'round'; ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(18,14,56,0.85)'; ctx.strokeText(text, x, y);
     ctx.fillStyle = '#fff'; ctx.fillText(text, x, y);
     if (this.tvActive && this.tvLay?.key === 'coop3') {
@@ -4409,6 +4482,9 @@ class CoopBubbles extends HTMLElement {
     this.levelColors = levelColors(this.levelRows());
     for (let i = 0; i < n; i++) this.battle.boards.push(this.makeBattleBoard(i, i !== 0));
     this.battle.human = this.battle.boards[0];
+    const ident = (this.identities || [])[0] || null;
+    if (ident) { this.battle.human.player.ident = ident; this.battle.human.name = this.identLabel(ident, 0); }
+    this._round = { id: newRoundId(), score0: 0, sent: false };
     this.flights = []; this.falling = []; this.pops = []; this.sparks = []; this.ripples = []; this.callouts = []; this.popups = []; this.sfxLog = [];
     this.batch = []; this.resolveAt = 0; this.danger = null; this.shake = 0; this.now = 0; this.dispScore = 0;
     this.chain = { mult: 1, last: -1, same: 0, players: new Set(), t: 0, trioAwarded: false };
@@ -4696,6 +4772,7 @@ class CoopBubbles extends HTMLElement {
     bt.targeting = null;
     this.state = winner && winner.i === bt.human.i ? 'won' : 'lost';
     this.sfx(this.state === 'won' ? 'win' : 'lose');
+    this.finishRound(this.state === 'won');
     this.showBattleEnd();
   }
   showBattleEnd() {
@@ -4880,6 +4957,441 @@ class CoopBubbles extends HTMLElement {
     this.tutEl.style.display = 'grid'; this.state = 'tutorial'; this._tutBack = null;
   }
 
+  /* ---------- player profiles ----------
+     Identity lives on the game server (/profiles); this device only caches the list for a
+     fast first paint and queues unsent round results. A launcher's identity is chosen per
+     player slot, separately from which controller drives it. */
+  identLabel(ident, i) {
+    if (!ident) return (META[i] || META[0]).name;
+    return ident.type === 'profile' ? ident.name : (META[i] || META[0]).name + ' · Guest';
+  }
+  async profileFetch(path, opts = {}) {
+    const res = await fetch(path, { cache: 'no-store', ...opts, headers: opts.body ? { 'content-type': 'application/json' } : undefined });
+    let data = null; try { data = await res.json(); } catch (_) {}
+    return { ok: res.ok, status: res.status, data: data || {} };
+  }
+  cachedProfiles() {
+    try { const v = JSON.parse(localStorage.getItem('bt_profiles_cache') || 'null'); return Array.isArray(v) ? v : []; } catch (_) { return []; }
+  }
+  setProfileList(list) {
+    this.profileList = (list || []).filter(p => p && p.id && p.name);
+    try { localStorage.setItem('bt_profiles_cache', JSON.stringify(this.profileList)); } catch (_) {}
+  }
+  mergeProfileSummaries(list) {
+    if (!Array.isArray(list) || !this.profileList) return;
+    const byId = new Map(list.map(p => [p.id, p]));
+    this.setProfileList(this.profileList.map(p => byId.get(p.id) || p));
+  }
+  async loadProfiles() {
+    this._profilesError = '';
+    try {
+      const r = await this.profileFetch('/profiles');
+      if (!r.ok) throw new Error('status');
+      this.setProfileList(r.data.profiles);
+    } catch (_) { this._profilesError = 'Player list unavailable — Guest still works.'; }
+    if (this._pp) this.ppRender();
+    if (this._ps && this._ps.view === 'list') this.psRender();
+  }
+
+  /* ---------- round results: queued, retried, never double-counted ---------- */
+  finishRound(won, level = this.levelIndex()) {
+    const rd = this._round; if (this.online || !rd || rd.sent) return;
+    rd.sent = true;
+    const bt = this.battle && this.settings.mode === 'battle' ? this.battle : null;
+    const list = bt ? [{ ident: bt.human.player.ident, bombsLeft: 0,
+        rec: { ...newRoundRec(), score: bt.human.score || 0, shots: bt.human.player.stats.shots || 0, popped: bt.human.player.stats.bubbles || 0 } }]
+      : (this.players || []).map(p => ({ ident: p.ident, rec: p.rec, bombsLeft: unusedBombs(p) }));
+    const result = roundResult({ id: rd.id, mode: this.settings.mode, campaign: this.settings.campaign || 'original',
+      level: this.settings.mode === 'clear' ? level : null, won,
+      secs: bt ? this.now : this.now - (this.levelStartT || 0), teamScore: bt ? bt.human.score : this.score - rd.score0, players: list });
+    if (!result) { this.setSaveNote(''); return; }
+    this.queueRound(result);
+  }
+  roundQueue() {
+    if (!this._roundQueue) {
+      try { const v = JSON.parse(localStorage.getItem('bt_round_queue') || '[]'); this._roundQueue = Array.isArray(v) ? v : []; } catch (_) { this._roundQueue = []; }
+    }
+    return this._roundQueue;
+  }
+  saveRoundQueue() { try { localStorage.setItem('bt_round_queue', JSON.stringify(this.roundQueue().slice(-50))); } catch (_) {} }
+  queueRound(result) {
+    this.roundQueue().push(result); this.saveRoundQueue();
+    this.setSaveNote('Saving progress for ' + this.roundNames(result) + '…');
+    this.flushRounds();
+  }
+  roundNames(result) {
+    const names = result.players.map(p => (this.profileList || []).find(q => q.id === p.profileId)?.name
+      || (this.identities || []).find(id => id && id.id === p.profileId)?.name || 'player');
+    return names.length > 1 ? names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1] : names[0];
+  }
+  /* One at a time, oldest first. The server answers a repeated roundId as a duplicate rather
+     than applying it twice, so resending after a lost response is always safe. */
+  async flushRounds() {
+    if (this._flushingRounds) return;
+    this._flushingRounds = true; clearTimeout(this._roundRetry);
+    const q = this.roundQueue(); let failed = false;
+    while (q.length) {
+      const r = q[0]; let res = null;
+      try { res = await this.profileFetch('/profiles/results', { method: 'POST', body: JSON.stringify(r) }); } catch (_) {}
+      const permanent = res && !res.ok && res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
+      if (!res || (!res.ok && !permanent)) { failed = true; break; }
+      q.shift(); this.saveRoundQueue();
+      if (res.ok) { this.mergeProfileSummaries(res.data.profiles); this.setSaveNote('✓ Progress saved for ' + this.roundNames(r)); }
+      else this.setSaveNote('⚠ The server could not accept this round’s stats.', true);
+    }
+    this._flushingRounds = false;
+    if (failed) {
+      this._roundRetries = (this._roundRetries || 0) + 1;
+      const wait = Math.min(60000, 2000 * 2 ** Math.min(5, this._roundRetries - 1));
+      this.setSaveNote('⚠ Couldn’t save player stats — retrying automatically.', true);
+      if (this._roundRetries === 1) this.padToast('Player stats not saved yet — retrying');
+      this._roundRetry = setTimeout(() => this.flushRounds(), wait);
+    } else this._roundRetries = 0;
+  }
+  setSaveNote(text, bad = false) {
+    const sh = this.shadowRoot; if (!sh) return;
+    sh.querySelectorAll('.saveNote').forEach(el => { el.textContent = text; el.classList.toggle('bad', !!bad); });
+  }
+
+  /* ---------- Player Select: one panel per human launcher ----------
+     Each panel keeps its own view and cursor. A controller only ever moves the panel of the
+     launcher it drives, so two players pick at once without sharing a pad. The physical
+     keyboard is one device, so it belongs to one panel at a time (Tab or a tap moves it)
+     and that panel says so. */
+  openProfilePick() {
+    const humans = this.settings.mode === 'battle' ? [0] : (this.players || []).filter(p => !p.bot).map(p => p.i);
+    if (!CoopProfiles || !humans.length) { this.identities = []; this.showTutorial(); this._tutBack = 'home'; return; }
+    let last = []; try { last = JSON.parse(localStorage.getItem('bt_last_profiles') || '[]') || []; } catch (_) {}
+    if (!this.profileList) this.profileList = this.cachedProfiles();
+    this._pp = { humans, kb: 0, status: '', panels: humans.map(i => ({ i, view: 'list', cursor: 0, key: 0, name: '', error: '', busy: false, choice: null, want: last[i] || null })) };
+    this.state = 'profile-pick'; this._profilePickActive = true;
+    this.profilePickEl.style.display = 'grid';
+    this.ppRender(); this.loadProfiles();
+  }
+  closeProfilePick() {
+    this._profilePickActive = false; this._pp = null;
+    if (this.profilePickEl) this.profilePickEl.style.display = 'none';
+  }
+  cancelProfilePick() {
+    this.closeProfilePick();
+    this.state = 'home'; this.homeEl.style.display = 'grid';
+  }
+  ppSideName(i) {
+    const n = this._pp ? this._pp.humans.length : 1;
+    return n === 2 && this.settings.players === 2 ? (i ? 'RIGHT' : 'LEFT') + ' · ' + META[i].name : META[i].name;
+  }
+  ppTaken(panel) { return new Set(this._pp.panels.filter(o => o !== panel && o.choice && o.choice.type === 'profile').map(o => o.choice.id)); }
+  ppItems(panel) {
+    if (panel.view === 'ready') return [{ act: 'start', label: 'Start ▶' }, { act: 'change', label: 'Change player' }];
+    if (panel.view === 'name') return CoopProfiles.KEY_CHARS.concat(CoopProfiles.KEY_ACTIONS).map((_, k) => ({ act: 'key', k }));
+    const taken = this.ppTaken(panel), items = (this.profileList || []).filter(p => !taken.has(p.id))
+      .map(p => ({ act: 'pick', id: p.id, label: p.name, sub: (p.levelsCompleted || 0) + ' levels · ' + (p.score || 0).toLocaleString() + ' pts' }));
+    items.push({ act: 'new', label: '+ New Player' }, { act: 'guest', label: 'Guest', sub: 'Plays fully · nothing is saved' });
+    if (this._profilesError) items.push({ act: 'retry', label: '↻ Retry player list' });
+    return items;
+  }
+  ppPadOwners() {
+    const out = new Map(), humans = this._padHumans || [];
+    for (const [pad, slot] of this._padSlots || []) { const i = humans[slot]; if (i !== undefined) out.set(i, pad); }
+    return out;
+  }
+  ppRender() {
+    const pp = this._pp; if (!pp || !this.profilePickEl) return;
+    const esc = v => this.escapeHTML(v), pads = this.ppPadOwners();
+    for (const panel of pp.panels) {
+      // A remembered pick puts the cursor on that player once the list arrives.
+      if (panel.want && panel.view === 'list') { const at = this.ppItems(panel).findIndex(it => it.id === panel.want); if (at >= 0) { panel.cursor = at; panel.want = null; } }
+    }
+    const html = pp.panels.map((panel, idx) => {
+      const meta = META[panel.i], items = this.ppItems(panel), kb = pp.kb === idx;
+      panel.cursor = clamp(panel.cursor, 0, Math.max(0, items.length - 1));
+      const owner = [pads.has(panel.i) ? '🎮 Controller ' + (pads.get(panel.i) + 1) : '', kb ? '⌨ Keyboard' : ''].filter(Boolean).join(' · ');
+      let body;
+      if (panel.view === 'name') {
+        const rows = CoopProfiles.keyRows().map(row => '<div class="ppKeyRow">' + row.map(k => {
+          const it = CoopProfiles.keyAt(k), label = it.char === ' ' ? 'Space' : it.char || { back: '⌫', clear: 'Clear', cancel: 'Cancel', ok: 'Confirm' }[it.action];
+          return `<button class="ppKey${it.action ? ' act ' + it.action : ''}${panel.key === k ? ' hot' : ''}" data-panel="${idx}" data-act="key" data-idx="${k}"${it.action === 'back' ? ' aria-label="Backspace"' : ''}>${esc(label)}</button>`;
+        }).join('') + '</div>').join('');
+        body = `<div class="ppTitle">New player name</div><div class="ppNameShow">${esc(panel.name) || '<span class="ppHint">Type or pick letters</span>'}<i class="ppCaret"></i></div>
+          <div class="ppKeys">${rows}</div>`;
+      } else if (panel.view === 'ready') {
+        const c = panel.choice, who = c.type === 'guest' ? 'Guest' : c.name;
+        body = `<div class="ppChosen${c.type === 'guest' ? ' guest' : ''}">✓ ${esc(who)}</div>` + items.map((it, k) =>
+          `<button class="ppItem${panel.cursor === k ? ' hot' : ''}${it.act === 'start' ? ' go' : ''}" data-panel="${idx}" data-act="${it.act}" data-idx="${k}">${esc(it.label)}</button>`).join('');
+      } else {
+        body = `<div class="ppList">` + items.map((it, k) =>
+          `<button class="ppItem${panel.cursor === k ? ' hot' : ''}${it.act === 'guest' ? ' guestItem' : ''}" data-panel="${idx}" data-act="${it.act}" data-idx="${k}"><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</button>`).join('') + `</div>`;
+      }
+      return `<section class="ppPanel${kb ? ' kb' : ''}${panel.view === 'ready' ? ' ready' : ''}" style="--accent:${meta.accent}" data-panel="${idx}">
+        <header><b>${esc(this.ppSideName(panel.i))}</b><span class="ppOwner">${esc(owner)}</span></header>
+        ${body}<div class="ppError" role="alert">${esc(panel.busy ? 'Saving…' : panel.error)}</div></section>`;
+    }).join('');
+    this.profilePickEl.querySelector('.ppPanels').innerHTML = html;
+    this.profilePickEl.querySelector('.ppPanels').style.setProperty('--ppN', String(pp.panels.length));
+    const waiting = pp.panels.filter(p => p.view !== 'ready').map(p => this.ppSideName(p.i));
+    this.profilePickEl.querySelector('.ppStatus').textContent = pp.status || (this._profilesError || '')
+      || (waiting.length ? 'Waiting for ' + waiting.join(' & ') + ' · ✚ move · A select · B back' : 'Everyone’s ready — press Start!');
+    this.profilePickEl.querySelector('.ppStart').disabled = !!waiting.length;
+  }
+  ppMove(idx, axis, d) {
+    const panel = this._pp && this._pp.panels[idx]; if (!panel || panel.busy) return;
+    if (panel.view === 'name') panel.key = CoopProfiles.keyMove(panel.key, axis === 'h' ? d : 0, axis === 'v' ? d : 0);
+    else if (axis === 'v') { const n = this.ppItems(panel).length; panel.cursor = (panel.cursor + d + n) % n; }
+    this.ppRender();
+  }
+  ppActivate(idx) {
+    const pp = this._pp, panel = pp && pp.panels[idx]; if (!panel || panel.busy) return;
+    pp.status = ''; panel.error = '';
+    if (panel.view === 'name') {
+      const it = CoopProfiles.keyAt(panel.key);
+      if (it.char !== undefined) this.ppType(idx, it.char);
+      else if (it.action === 'back') panel.name = [...panel.name].slice(0, -1).join('');
+      else if (it.action === 'clear') panel.name = '';
+      else if (it.action === 'cancel') { panel.view = 'list'; panel.name = ''; }
+      else if (it.action === 'ok') { this.ppCreate(idx); return; }
+      this.ppRender(); return;
+    }
+    const it = this.ppItems(panel)[panel.cursor]; if (!it) return;
+    if (it.act === 'pick') { panel.choice = { type: 'profile', id: it.id, name: it.label }; panel.view = 'ready'; panel.cursor = 0; }
+    else if (it.act === 'guest') { panel.choice = { type: 'guest' }; panel.view = 'ready'; panel.cursor = 0; }
+    else if (it.act === 'new') { panel.view = 'name'; panel.name = ''; panel.key = 0; pp.kb = idx; }
+    else if (it.act === 'retry') this.loadProfiles();
+    else if (it.act === 'change') { panel.choice = null; panel.view = 'list'; panel.cursor = 0; }
+    else if (it.act === 'start') { this.ppStart(); return; }
+    this.ppRender();
+  }
+  ppType(idx, ch) {
+    const panel = this._pp.panels[idx];
+    if ([...panel.name].length >= CoopProfiles.NAME_MAX) { panel.error = 'Names can be at most ' + CoopProfiles.NAME_MAX + ' characters.'; return; }
+    if (!panel.name && ch === ' ') return;
+    panel.name += ch;
+  }
+  ppBack(idx) {
+    const panel = this._pp && this._pp.panels[idx]; if (!panel || panel.busy) return;
+    panel.error = '';
+    if (panel.view === 'name') { if (panel.name) panel.name = [...panel.name].slice(0, -1).join(''); else panel.view = 'list'; }
+    else if (panel.view === 'ready') { panel.choice = null; panel.view = 'list'; panel.cursor = 0; }
+    this.ppRender();
+  }
+  /* The server decides uniqueness; the local check only answers faster when it already knows. */
+  async ppCreate(idx) {
+    const panel = this._pp.panels[idx];
+    let name;
+    try { name = CoopProfiles.cleanName(panel.name); } catch (e) { panel.error = e.message; this.ppRender(); return; }
+    const key = name.toLocaleLowerCase('en-US');
+    if ((this.profileList || []).some(p => p.name.toLocaleLowerCase('en-US') === key)) { panel.error = CoopProfiles.NAME_TAKEN; this.ppRender(); return; }
+    panel.busy = true; this.ppRender();
+    let r = null; try { r = await this.profileFetch('/profiles', { method: 'POST', body: JSON.stringify({ name }) }); } catch (_) {}
+    if (!this._pp || this._pp.panels[idx] !== panel) return;
+    panel.busy = false;
+    if (r && r.ok && r.data.profile) {
+      const prof = r.data.profile;
+      this.setProfileList([...(this.profileList || []).filter(p => p.id !== prof.id), prof].sort((a, b) => a.name.localeCompare(b.name)));
+      panel.choice = { type: 'profile', id: prof.id, name: prof.name }; panel.view = 'ready'; panel.cursor = 0; panel.name = '';
+    } else if (r && r.status === 409 && r.data.code === 'name_taken') { panel.error = CoopProfiles.NAME_TAKEN; this.loadProfiles(); }
+    else panel.error = r && r.data.message ? r.data.message : 'Couldn’t reach the server. Try again, or choose Guest.';
+    this.ppRender();
+  }
+  ppStart() {
+    const pp = this._pp; if (!pp) return;
+    const waiting = pp.panels.filter(p => p.view !== 'ready' || !p.choice);
+    if (waiting.length) { pp.status = 'Waiting for ' + waiting.map(p => this.ppSideName(p.i)).join(' & ') + ' to choose.'; this.ppRender(); return; }
+    const ids = pp.panels.filter(p => p.choice.type === 'profile').map(p => p.choice.id);
+    if (new Set(ids).size !== ids.length) { pp.status = 'Each saved player can only take one launcher.'; this.ppRender(); return; }
+    const identities = [], last = [];
+    for (const p of pp.panels) { identities[p.i] = { ...p.choice }; last[p.i] = p.choice.type === 'profile' ? p.choice.id : null; }
+    this.identities = identities;
+    try { localStorage.setItem('bt_last_profiles', JSON.stringify(last)); } catch (_) {}
+    this.closeProfilePick();
+    this.resetGame(); // the launchers pick up their names and a fresh round
+    this.showTutorial(); this._tutBack = 'home';
+  }
+  // Pads arrive with their own slot; only the panel that slot drives listens to them.
+  profilePadInput(n, axis, d, hit) {
+    const i = this.padHuman(n), idx = this._pp ? this._pp.panels.findIndex(p => p.i === i) : -1;
+    if (hit('start')) { this.ppStart(); return; }
+    if (idx < 0) return;
+    if (axis) this.ppMove(idx, axis, d);
+    if (hit('a')) this.ppActivate(idx);
+    if (hit('b')) this.ppBack(idx);
+  }
+  ppKey(e) {
+    const pp = this._pp, k = e.key; if (!pp) return;
+    const panel = pp.panels[pp.kb] || pp.panels[0];
+    if (k === 'Tab') { pp.kb = (pp.kb + (e.shiftKey ? -1 : 1) + pp.panels.length) % pp.panels.length; this.ppRender(); e.preventDefault(); return; }
+    if (panel.view === 'name' && !panel.busy) {
+      if (k === 'Enter') this.ppCreate(pp.kb);
+      else if (k === 'Escape') { panel.view = 'list'; panel.name = ''; panel.error = ''; this.ppRender(); }
+      else if (k === 'Backspace' || k === 'Delete') { panel.name = [...panel.name].slice(0, -1).join(''); panel.error = ''; this.ppRender(); }
+      else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { panel.error = ''; this.ppType(pp.kb, k); this.ppRender(); }
+      else if (k.startsWith('Arrow')) this.ppMove(pp.kb, k === 'ArrowLeft' || k === 'ArrowRight' ? 'h' : 'v', k === 'ArrowLeft' || k === 'ArrowUp' ? -1 : 1);
+      else return;
+      e.preventDefault(); return;
+    }
+    if (k === 'ArrowUp' || k === 'ArrowDown') this.ppMove(pp.kb, 'v', k === 'ArrowUp' ? -1 : 1);
+    else if (k === 'ArrowLeft' || k === 'ArrowRight') { pp.kb = (pp.kb + (k === 'ArrowLeft' ? -1 : 1) + pp.panels.length) % pp.panels.length; this.ppRender(); }
+    else if (k === 'Enter' || k === ' ') this.ppActivate(pp.kb);
+    else if (k === 'Escape' || k === 'Backspace') { if (panel.view === 'list') this.cancelProfilePick(); else this.ppBack(pp.kb); }
+    else return;
+    e.preventDefault();
+  }
+
+  /* ---------- Player Stats & profile management (main menu) ----------
+     One navigator, so it is an ordinary card: real buttons that pads, keyboard and touch
+     all drive through the shared menu focus. */
+  openPlayerStats() {
+    if (!CoopProfiles) return;
+    if (!this.profileList) this.profileList = this.cachedProfiles();
+    this._ps = { view: 'list', id: null, detail: null, name: '', error: '', busy: false, mode: 'create' };
+    this.homeEl.style.display = 'none'; this.playerStatsEl.style.display = 'grid'; this.state = 'home';
+    this.psRender(); this.loadProfiles();
+  }
+  closePlayerStats() {
+    this._ps = null; this.playerStatsEl.style.display = 'none'; this.homeEl.style.display = 'grid';
+  }
+  async psOpenDetail(id) {
+    const ps = this._ps; if (!ps) return;
+    ps.view = 'detail'; ps.id = id; ps.detail = null; ps.error = ''; this.psRender();
+    let r = null; try { r = await this.profileFetch('/profiles/' + encodeURIComponent(id)); } catch (_) {}
+    if (this._ps !== ps || ps.id !== id) return;
+    if (r && r.ok) ps.detail = r.data;
+    else if (r && r.status === 404) { ps.view = 'list'; ps.error = 'That player no longer exists.'; this.loadProfiles(); }
+    else ps.error = 'Couldn’t load this player. Check the connection and try again.';
+    this.psRender();
+  }
+  fmtSecs(s) { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? h + 'h ' + m + 'm' : m ? m + 'm ' + (s % 60) + 's' : s + 's'; }
+  psRender() {
+    const ps = this._ps, el = this.playerStatsEl; if (!ps || !el) return;
+    const esc = v => this.escapeHTML(v), sh = this.shadowRoot, focused = sh.activeElement && sh.activeElement.dataset ? sh.activeElement.dataset.psKey : null;
+    const btn = (key, label, cls = 'ghost', extra = '') => `<button class="btn ${cls}" data-ps="${key}" data-ps-key="${key}"${extra}>${label}</button>`;
+    let html = '';
+    if (ps.view === 'list') {
+      const list = this.profileList || [];
+      html = `<h1>Player Stats</h1><p class="sub">Choose a player to see their progress, or manage players.</p><div class="psList">`
+        + (list.length ? list.map(p => `<button class="btn ghost psPick" data-ps="open" data-id="${esc(p.id)}" data-ps-key="open:${esc(p.id)}"><b>${esc(p.name)}</b><small>${(p.levelsCompleted || 0)} levels · ${(p.score || 0).toLocaleString()} pts</small></button>`).join('')
+          : `<p class="hsNote">${this._profilesError ? esc(this._profilesError) : 'No saved players yet.'}</p>`)
+        + `</div>` + btn('new', '+ New Player') + btn('back', 'Back', 'primary', ' data-tv-default');
+    } else if (ps.view === 'detail') {
+      const d = ps.detail;
+      if (!d) html = `<h1>Player Stats</h1><p class="sub">${esc(ps.error || 'Loading…')}</p>` + btn('back', 'Back', 'primary', ' data-tv-default');
+      else {
+        const s = d.stats, camps = Object.entries(d.campaigns || {}), total = camps.reduce((n, [, c]) => n + c.total, 0);
+        const tile = (label, value) => `<div class="psTile"><span>${label}</span><b>${esc(value)}</b></div>`;
+        html = `<h1>${esc(d.profile.name)}</h1><p class="sub">Player since ${new Date(d.profile.createdAt).toLocaleDateString()}</p><div class="psTiles">`
+          + tile('Lifetime score', (s.score || 0).toLocaleString()) + tile('Levels completed', s.levelsCompleted + ' / ' + total)
+          + tile('Rounds played', s.rounds || 0) + tile('Rounds won', s.wins || 0) + tile('Best combo', '×' + (s.bestChain || 0))
+          + tile('Biggest pop', s.biggestPop || 0) + tile('Bubbles popped', (s.popped || 0).toLocaleString())
+          + tile('Bombs used / saved', (s.bombsUsed || 0) + ' / ' + (s.bombsSaved || 0)) + tile('Fusion Bursts', s.fusions || 0) + tile('Play time', this.fmtSecs(s.playSecs)) + `</div>`
+          + `<h3 class="psHead">Campaign progress</h3>` + camps.map(([, c]) => {
+            const dots = Array.from({ length: c.total }, (_, i) => `<i class="${c.levels[i] && c.levels[i].completed ? 'on' : ''}" title="Level ${i + 1}"></i>`).join('');
+            return `<div class="psCamp"><div><b>${esc(c.name)}</b> · ${c.completed} / ${c.total}${c.highest >= 0 ? ' · furthest: level ' + (c.highest + 1) : ''}</div><div class="psDots">${dots}</div></div>`;
+          }).join('')
+          + (d.partners && d.partners.length ? `<h3 class="psHead">Co-op partners</h3>` + d.partners.slice(0, 5).map(p =>
+            `<div class="statRow"><span class="who">${esc(p.name)}</span><span class="nums">${p.rounds} rounds · ${p.wins} won · ${p.levelsTogether} level${p.levelsTogether === 1 ? '' : 's'} together · best team ${(p.bestTeamScore || 0).toLocaleString()} · ${p.fusions} Fusion · ${this.fmtSecs(p.playSecs)}</span></div>`).join('') : '')
+          + `<div class="psActions">` + btn('rename', 'Rename') + btn('delete', 'Delete') + `</div>` + btn('back', 'Back', 'primary', ' data-tv-default');
+      }
+    } else if (ps.view === 'name') {
+      const rows = CoopProfiles.keyRows().map(row => '<div class="ppKeyRow">' + row.map(k => {
+        const it = CoopProfiles.keyAt(k), label = it.char === ' ' ? 'Space' : it.char || { back: '⌫', clear: 'Clear', cancel: 'Cancel', ok: 'Confirm' }[it.action];
+        return `<button class="ppKey${it.action ? ' act ' + it.action : ''}" data-ps="key" data-k="${k}" data-ps-key="key:${k}"${it.action === 'ok' ? ' data-tv-default' : ''}${it.action === 'back' ? ' aria-label="Backspace"' : ''}>${esc(label)}</button>`;
+      }).join('') + '</div>').join('');
+      html = `<h1>${ps.mode === 'rename' ? 'Rename player' : 'New player'}</h1><p class="sub">Type on a keyboard, or pick letters below.</p>
+        <div class="ppNameShow">${esc(ps.name) || '<span class="ppHint">Name</span>'}<i class="ppCaret"></i></div><div class="ppKeys">${rows}</div>`;
+    } else if (ps.view === 'confirm') {
+      const name = ps.detail ? ps.detail.profile.name : '';
+      html = `<h1>Delete player?</h1><p class="sub psWarn">Delete ${esc(name)}? This will permanently remove this player's saved progress and statistics.</p>`
+        + btn('confirmDelete', 'Delete ' + esc(name), 'danger') + btn('cancelDelete', 'Cancel', 'primary', ' data-tv-default');
+    }
+    html += `<div class="formError" role="alert">${esc(ps.busy ? 'Saving…' : ps.view === 'detail' && !ps.detail ? '' : ps.error)}</div>`;
+    el.querySelector('.psCard').innerHTML = html;
+    if (TV.controllerNavigation && (this.tvActive || this._padCount > 0)) {
+      const again = focused && el.querySelector(`[data-ps-key="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focused) : focused}"]`);
+      this.menuFocus(again || this.menuDefault(el));
+    }
+  }
+  psClick(t) {
+    const ps = this._ps; if (!ps || ps.busy) return;
+    const act = t.dataset.ps; ps.error = '';
+    if (act === 'back') return this.psBack();
+    if (act === 'open') return this.psOpenDetail(t.dataset.id);
+    if (act === 'new') { ps.view = 'name'; ps.mode = 'create'; ps.name = ''; }
+    else if (act === 'rename') { ps.view = 'name'; ps.mode = 'rename'; ps.name = ps.detail ? ps.detail.profile.name : ''; }
+    else if (act === 'delete') ps.view = 'confirm';
+    else if (act === 'cancelDelete') ps.view = 'detail';
+    else if (act === 'confirmDelete') return this.psDelete();
+    else if (act === 'key') {
+      const it = CoopProfiles.keyAt(Number(t.dataset.k));
+      if (it.char !== undefined) this.psType(it.char);
+      else if (it.action === 'back') ps.name = [...ps.name].slice(0, -1).join('');
+      else if (it.action === 'clear') ps.name = '';
+      else if (it.action === 'cancel') return this.psBack();
+      else if (it.action === 'ok') return this.psSaveName();
+    }
+    this.psRender();
+  }
+  psType(ch) {
+    const ps = this._ps;
+    if ([...ps.name].length >= CoopProfiles.NAME_MAX) { ps.error = 'Names can be at most ' + CoopProfiles.NAME_MAX + ' characters.'; return; }
+    if (!ps.name && ch === ' ') return;
+    ps.name += ch;
+  }
+  psBack() {
+    const ps = this._ps; if (!ps) return;
+    ps.error = '';
+    if (ps.view === 'list') { this.closePlayerStats(); return; }
+    if (ps.view === 'detail') { ps.view = 'list'; ps.detail = null; this.loadProfiles(); }
+    else if (ps.view === 'name') ps.view = ps.mode === 'rename' ? 'detail' : 'list';
+    else if (ps.view === 'confirm') ps.view = 'detail';
+    this.psRender();
+  }
+  async psSaveName() {
+    const ps = this._ps; let name;
+    try { name = CoopProfiles.cleanName(ps.name); } catch (e) { ps.error = e.message; this.psRender(); return; }
+    const rename = ps.mode === 'rename', id = ps.id;
+    ps.busy = true; this.psRender();
+    let r = null;
+    try { r = await this.profileFetch(rename ? '/profiles/' + encodeURIComponent(id) : '/profiles', { method: rename ? 'PATCH' : 'POST', body: JSON.stringify({ name }) }); } catch (_) {}
+    if (this._ps !== ps) return;
+    ps.busy = false;
+    if (r && r.ok && r.data.profile) {
+      const prof = r.data.profile;
+      this.setProfileList([...(this.profileList || []).filter(p => p.id !== prof.id), prof].sort((a, b) => a.name.localeCompare(b.name)));
+      for (const ident of this.identities || []) if (ident && ident.id === prof.id) ident.name = prof.name;
+      return this.psOpenDetail(prof.id);
+    }
+    ps.error = r && r.status === 409 && r.data.code === 'name_taken' ? CoopProfiles.NAME_TAKEN
+      : r && r.data.message ? r.data.message : 'Couldn’t reach the server. Try again.';
+    this.psRender();
+  }
+  async psDelete() {
+    const ps = this._ps, id = ps.id;
+    ps.busy = true; this.psRender();
+    let r = null; try { r = await this.profileFetch('/profiles/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (_) {}
+    if (this._ps !== ps) return;
+    ps.busy = false;
+    if (r && (r.ok || r.status === 404)) {
+      this.setProfileList((this.profileList || []).filter(p => p.id !== id));
+      // A deleted player must never collect stats from a launcher still holding their identity.
+      this.identities = (this.identities || []).map(ident => ident && ident.id === id ? { type: 'guest' } : ident);
+      ps.view = 'list'; ps.detail = null; ps.id = null; this.loadProfiles();
+    } else ps.error = 'Couldn’t delete right now. Try again.';
+    this.psRender();
+  }
+  psKey(e) {
+    const ps = this._ps, k = e.key; if (!ps) return false;
+    if (k === 'Escape') { this.psBack(); e.preventDefault(); return true; }
+    if (ps.view !== 'name' || ps.busy) return false;
+    if (k === 'Enter') {
+      // Enter on an on-screen key presses it; otherwise it confirms the name.
+      const cur = this.shadowRoot.activeElement;
+      if (cur && cur.dataset && cur.dataset.ps === 'key') return false;
+      this.psSaveName();
+    } else if (k === 'Backspace' || k === 'Delete') { ps.name = [...ps.name].slice(0, -1).join(''); ps.error = ''; this.psRender(); }
+    else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { ps.error = ''; this.psType(k); this.psRender(); }
+    else return false;
+    e.preventDefault(); return true;
+  }
+
   /* ---------- DOM / UI ---------- */
   buildDOM() {
     const sh = this.attachShadow({ mode: 'open' });
@@ -4967,6 +5479,40 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .padPickSide.hot{border-color:#ffc233;box-shadow:0 0 0 4px rgba(255,194,51,.2);transform:translateY(-2px)}
 .padPickSide.picked{border-color:#2b6fd4;background:#eaf2ff}.padPickSide.picked span{color:#2b6fd4}
 .padPickStatus{text-align:center;min-height:42px;color:#3d5f86;font-weight:600;margin:6px 0 2px}
+/* Player Select: one panel per human launcher, each with its own cursor (.hot) so two
+   controllers pick at once; .kb marks the panel the physical keyboard is typing into. */
+.ppCard{width:min(920px,96%)}.psCard{width:min(620px,94%)}
+.ppPanels{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px;margin:12px 0 6px}
+.ppPanel{border:3px solid #d7e6f5;border-top:8px solid var(--accent);border-radius:16px;padding:10px;background:#f8fbff;min-width:0}
+.ppPanel.kb{box-shadow:0 0 0 4px rgba(43,111,212,.25)}.ppPanel.ready{background:#eefaf2}
+.ppPanel header{display:flex;justify-content:space-between;gap:6px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap}
+.ppPanel header b{font-size:18px;color:#17335c}.ppOwner{font-size:12px;color:#5b7997;font-weight:600}
+.ppList{display:grid;gap:6px;max-height:300px;overflow-y:auto}
+.ppItem{display:flex;flex-direction:column;align-items:flex-start;width:100%;border:2px solid #d7e6f5;background:#fff;border-radius:12px;padding:8px 12px;font:inherit;color:#17335c;cursor:pointer;text-align:left}
+.ppItem+.ppItem{margin-top:6px}.ppList .ppItem+.ppItem{margin-top:0}
+.ppItem b{font-size:17px;overflow-wrap:anywhere}.ppItem small{color:#7593b5;font-size:12px}
+.ppItem.hot{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent);background:#fffdf3}
+.ppItem.guestItem b{color:#5b7997}.ppItem.go{background:#2b6fd4;color:#fff;border-color:#2b6fd4;align-items:center;font-weight:700}
+.ppChosen{font-size:22px;font-weight:700;color:#1f8a4c;margin:4px 0 10px;overflow-wrap:anywhere}.ppChosen.guest{color:#5b7997}
+.ppTitle{font-weight:700;color:#5b7997;font-size:13px;text-transform:uppercase;letter-spacing:.06em}
+.ppNameShow{font-size:26px;font-weight:700;min-height:1.5em;border-bottom:3px solid var(--accent,#2b6fd4);margin:4px 0 10px;padding:2px 4px;overflow-wrap:anywhere;color:#17335c}
+.ppHint{color:#a9b8c8;font-weight:500;font-size:18px}
+.ppCaret{display:inline-block;width:3px;height:1em;background:currentColor;margin-left:2px;vertical-align:-.1em;animation:ppCaret 1s steps(2) infinite}
+@keyframes ppCaret{50%{opacity:0}}
+.ppKeys{display:grid;gap:4px}.ppKeyRow{display:flex;gap:4px}
+.ppKey{flex:1 1 0;min-width:0;min-height:36px;border:2px solid #d7e6f5;border-radius:9px;background:#fff;font:700 16px Fredoka,sans-serif;color:#17335c;cursor:pointer;padding:2px;touch-action:manipulation}
+.ppKey.act{font-size:13px;background:#eef5fd}.ppKey.ok{background:#2b6fd4;color:#fff;border-color:#2b6fd4}
+.ppKey.hot{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent);position:relative;z-index:1}
+.ppError{min-height:18px;color:#d13a4c;font-size:13px;font-weight:600;margin-top:6px}
+.ppStatus{text-align:center;color:#3d5f86;font-weight:600;min-height:20px}
+.saveNote{font-size:12.5px;color:#1f8a4c;margin:4px 0;font-weight:600}.saveNote.bad{color:#c2213a}.saveNote:empty{display:none}
+.psList{display:grid;gap:6px;margin:8px 0;max-height:46vh;overflow-y:auto}
+.psPick{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0;text-align:left}.psPick small{color:#7593b5}
+.psTiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin:8px 0}
+.psTile{background:#f4f9ff;border-radius:12px;padding:8px 10px}.psTile span{display:block;font-size:12px;color:#7593b5}.psTile b{font-size:20px;color:#17335c;font-variant-numeric:tabular-nums}
+.psHead{margin:14px 0 6px;font-size:14px;color:#2b4a70}
+.psCamp{margin:6px 0;font-size:14px}.psDots{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}.psDots i{width:10px;height:10px;border-radius:3px;background:#dfe9f5}.psDots i.on{background:#3ecf72}
+.psActions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.btn.danger{background:#d13a4c;color:#fff}.psWarn{color:#7a2030}
 .overlay{position:absolute;inset:0;display:grid;place-items:center;border-radius:22px;background:rgba(23,51,92,.45);backdrop-filter:blur(3px);z-index:5}
 /* Cards are bounded by the board, which can be as narrow as ~300px on a cover screen, so
    they scale with --u and reflow off their own width via container queries rather than
@@ -4989,7 +5535,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 .gameCol{--chromeBtn:clamp(36px,calc(44px * var(--u,1)),56px);--chromeGap:clamp(6px,calc(10px * var(--u,1)),14px)}
 .fullscreenButton{left:var(--chromeGap)}.fullscreenButton[hidden]{display:none}.gear{right:var(--chromeGap);display:none;font-size:clamp(15px,calc(20px * var(--u,1)),25px)}.fullscreenButton .exitIcon{display:none}.fullscreenButton.isFullscreen .enterIcon{display:none}.fullscreenButton.isFullscreen .exitIcon{display:inline}
 .statRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f9ff;margin:6px 0;font-size:14px}
-.statRow .who{font-weight:700;width:34px}
+.statRow .who{font-weight:700;min-width:34px}
 .statRow.team{background:#e6f0ff;font-size:15px}.statRow.team .who{width:auto;min-width:34px}.statRow.team .nums{color:#17335c;font-weight:600}
 .statRow .nums{color:#5b7997;font-size:12.5px}
 .hiscore{margin:14px 0 4px;text-align:left}
@@ -5088,6 +5634,13 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
    reaches the screen at >= minMenuFontPx; low-contrast greys darken for the far seat. */
 .root.tvMode .card{--u:1;width:640px;max-width:none;max-height:calc((var(--tvSafeH) - var(--tvPromptH)) / var(--tvMenuScale));transform:scale(var(--tvMenuK));font-size:var(--tvM-body);line-height:1.3}
 .root.tvMode .lobbyCard{width:720px}
+/* Player Select is read from the sofa: wide enough for side-by-side panels, big keys. */
+.root.tvMode .ppCard{width:1180px}.root.tvMode .psCard{width:880px}
+.root.tvMode .card :is(.ppPanel header b,.ppItem b,.ppChosen){font-size:var(--tvM-button)}
+.root.tvMode .card :is(.ppOwner,.ppItem small,.ppError,.ppStatus,.ppTitle,.psTile span,.saveNote){font-size:var(--tvM-small)}
+.root.tvMode .card .ppKey{min-height:58px;font-size:var(--tvM-control)}.root.tvMode .card .ppKey.act{font-size:var(--tvM-small)}
+.root.tvMode .card .ppNameShow{font-size:var(--tvM-title)}.root.tvMode .card .psTile b{font-size:var(--tvM-button)}.root.tvMode .psTiles{grid-template-columns:repeat(5,1fr)}
+.root.tvMode .ppList{max-height:none}.root.tvMode .ppPanel{border-width:4px;border-top-width:12px}
 .root.tvMode .card h1{font-size:var(--tvM-title);line-height:1.1}
 .root.tvMode .card :is(.sub,p,label,h3,.row>span,.tut p,.luTime,.luReady,.formError,.hsPrompt,.hsNote,.hostTag,.statRow,.statRow .nums,.statRow.team,.hsRow,.hiscore h3,.lobbySettings label,.onlinePlayer){font-size:var(--tvM-body)}
 .root.tvMode .card :is(.sub,.luReady,.hsNote,.hostTag,.lobbySettings label){color:#3d5f86}
@@ -5215,7 +5768,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <label>Display name<input class="textInput playerName" maxlength="16" placeholder="Your name" autocomplete="nickname"></label>
       <div class="homeActions"><button class="btn primary createOnline">Create online room</button>
       <div class="joinFields"><button class="btn ghost joinOnline" style="margin:0">Join online room</button><input class="textInput roomInput" inputmode="numeric" maxlength="3" placeholder="123" aria-label="Room code" data-pad-chars="0123456789"></div>
-      <div class="localCampaignButtons"><button class="btn ghost localPlay" data-tv-default>Original 52</button><button class="btn primary localCoopPlay">Bubble Together 2 · 52 co-op levels</button></div></div><div class="formError"></div>
+      <div class="localCampaignButtons"><button class="btn ghost localPlay" data-tv-default>Original 52</button><button class="btn primary localCoopPlay">Bubble Together 2 · 52 co-op levels</button></div>
+      <button class="btn ghost playerStatsOpen">\ud83d\udcca Player Stats</button></div><div class="formError"></div>
       <div class="row displayRow"><span>Display</span><div class="seg dispSeg"><button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
       <button class="btn primary tvOnly tvFullscreen">\u26f6 Play fullscreen</button>
       <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
@@ -5226,6 +5780,12 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       <div class="padPickStatus">Waiting for controllers…</div>
       <button class="btn ghost padPickSkip">Continue with keyboard / touch</button><button class="btn ghost padPickBack">Back</button>
     </div></div>
+    <div class="overlay profilePick" style="display:none"><div class="card ppCard">
+      <h1>Who\u2019s playing?</h1><p class="sub">Each player picks a saved player, makes a new one, or plays as Guest. Tab moves the keyboard between players.</p>
+      <div class="ppPanels"></div><div class="ppStatus"></div>
+      <button class="btn primary ppStart">Start</button><button class="btn ghost ppBack">Back</button>
+    </div></div>
+    <div class="overlay playerStats" style="display:none"><div class="card psCard"></div></div>
     <div class="overlay lobby" style="display:none"><div class="card lobbyCard">
       <h1>Online lobby</h1><p class="sub" style="margin-bottom:4px">Room code</p><div class="roomCode"></div>
       <div class="onlinePlayers"></div>
@@ -5281,12 +5841,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     <div class="overlay levelUp" style="display:none"><div class="card">
       <h1 class="luTitle"></h1><p class="sub luSub"></p><p class="luTime"></p>
       <div class="luStats"></div>
+      <div class="saveNote" role="status"></div>
       <div class="luReady"></div>
       <button class="btn primary luNext">Continue</button>
     </div></div>
     <div class="overlay end" style="display:none"><div class="card">
       <h1 class="endTitle"></h1><p class="sub endSub"></p>
       <div class="endStats"></div>
+      <div class="saveNote" role="status"></div>
       <div class="hiscore" style="display:none">
         <h3 class="hsTitle">High scores</h3>
         <div class="hsEntry" style="display:none">
@@ -5333,6 +5895,8 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.tutEl = sh.querySelector('.tutorial');
     this.homeEl = sh.querySelector('.home');
     this.padPickEl = sh.querySelector('.padPick');
+    this.profilePickEl = sh.querySelector('.profilePick');
+    this.playerStatsEl = sh.querySelector('.playerStats');
     this.lobbyEl = sh.querySelector('.lobby');
     this.reconnectEl = sh.querySelector('.reconnect');
     this.pauseEl = sh.querySelector('.pause');
@@ -5349,6 +5913,18 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     sh.querySelector('.localCoopPlay').onclick = () => this.beginLocalPlay('coop2');
     sh.querySelector('.padPickSkip').onclick = () => this.finishPadPick(true);
     sh.querySelector('.padPickBack').onclick = () => this.cancelPadPick();
+    sh.querySelector('.playerStatsOpen').onclick = () => this.openPlayerStats();
+    sh.querySelector('.ppStart').onclick = () => this.ppStart();
+    sh.querySelector('.ppBack').onclick = () => this.cancelProfilePick();
+    // Touch / mouse picks for any panel; the keyboard follows whichever panel was touched.
+    sh.querySelector('.ppPanels').addEventListener('click', e => {
+      const t = e.target.closest('[data-act]'); if (!t || !this._pp) return;
+      const idx = Number(t.dataset.panel), panel = this._pp.panels[idx]; if (!panel) return;
+      this._pp.kb = idx;
+      if (t.dataset.act === 'key') panel.key = Number(t.dataset.idx); else panel.cursor = Number(t.dataset.idx);
+      this.ppActivate(idx);
+    });
+    this.playerStatsEl.addEventListener('click', e => { const t = e.target.closest('[data-ps]'); if (t) this.psClick(t); });
     sh.querySelector('.createOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('create'); };
     sh.querySelector('.joinOnline').onclick = () => { this.tvFullscreenNudge(); this.beginOnline('join'); };
     sh.querySelector('.roomInput').addEventListener('input', e => e.target.value=e.target.value.replace(/\D/g,'').slice(0,3));

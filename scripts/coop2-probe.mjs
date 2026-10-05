@@ -38,7 +38,7 @@ try {
     await page.waitForFunction(() => document.querySelector('coop-bubbles')?.settings?.players);
     await page.evaluate(() => { const g = document.querySelector('coop-bubbles');
       g.settings.players = 2; g.settings.human = [true, true, false, false]; g.settings.mode = 'clear'; g.settings.level = 1; g.resetGame(); });
-    await page.locator('coop-bubbles').locator('.localPlay').click();
+    await page.locator('coop-bubbles').locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
     await page.locator('coop-bubbles').locator('.start').click();
     await page.waitForTimeout(400);
     const box = () => page.evaluate(() => { const g = document.querySelector('coop-bubbles'), r = g.canvas.getBoundingClientRect();

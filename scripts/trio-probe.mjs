@@ -27,7 +27,7 @@ try {
       const g = document.querySelector('coop-bubbles');
       g.settings.players = count; g.settings.human = [true,true,count === 3,false]; g.resetGame();
     }, n);
-    await page.locator('coop-bubbles').locator('.localPlay').click();
+    await page.locator('coop-bubbles').locator('.localPlay').click(); await page.evaluate(() => { const g = document.querySelector('coop-bubbles'); if (g._padPickActive) g.finishPadPick(true); if (g._profilePickActive) { g._pp.panels.forEach(p => { p.choice = { type: 'guest' }; p.view = 'ready'; }); g.ppStart(); } }); // Player Select (#18): everyone as Guest
     await page.locator('coop-bubbles').locator('.start').click();
     await page.waitForTimeout(300);
     if (n === 3) { await mkdir(join(root, 'screenshots'), { recursive:true });
