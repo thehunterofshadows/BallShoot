@@ -222,7 +222,7 @@ test('hurry-up is off at 0, on battle boards and while a Team Power holds the cl
   assert.equal(battle.events.filter(e => e.kind === 'launch').length, 0);
   const held = new OnlineGame({ ...DEFAULT_SETTINGS, mode:'clear', level:0, hurry:8 }, duo, 3);
   held.teamPowerCharge = 100; held.activateTeamPower('a');
-  run(held, 7);
+  run(held, 3);
   assert.equal(held.players[0].idle || 0, 0, 'the idle clock does not run during the burst');
 });
 

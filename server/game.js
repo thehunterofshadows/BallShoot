@@ -843,9 +843,10 @@ const TEAM_POWER = {
   max: 100,
   charge: { assist: 15, chain: 10, rescue: 25, drop: 10, hugeDrop: 20 }, // per resolved event
   chargeWhileActive: false,
-  equipped: 'synergy',
+  equipped: 'fusion',
 };
 const POWERS = {
+  fusion: { name:'FUSION BURST', secs:6, holdPressure:true, holdRescue:true, start:fusionStart },
   synergy: {
     name: 'SYNERGY BURST', secs: 8,
     holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
@@ -871,6 +872,130 @@ const powerPair = (T, humans, players, by, state, charge, active) => {
   return humans.map(i => players[i]).filter(p => p && p.connected !== false);
 };
 const powerHolds = (active, what) => !!(active && POWERS[active] && POWERS[active][what]);
+const fusionLoose = g => {
+  const safe = new Set(), stack = [];
+  for (const [k,cell] of g.grid) if (cell.r === g.anchorRow) { safe.add(k); stack.push(cell); }
+  while (stack.length) {
+    const cell = stack.pop();
+    for (const [r,c] of g.neighbors(cell.r,cell.c)) {
+      const k = key(r,c), n = g.grid.get(k);
+      if (n && !safe.has(k)) { safe.add(k); stack.push(n); }
+    }
+  }
+  return [...g.grid.entries()].filter(([k]) => !safe.has(k)).map(([,cell]) => cell)
+    .sort((a,b) => a.r-b.r || a.c-b.c);
+
+};
+const fusionSettle = (g, cell) => {
+  const from = {r:cell.r,c:cell.c}, x = g.cellX(cell.r,cell.c);
+  let target = null, best = Infinity;
+  // Search upward only, choosing the closest lane then the highest surface. A finite
+  // legal board always has a ceiling/surface vacancy above a removed cell; earlier
+  // survivors settle first in row/column order. No dense or overlapping free positions.
+  for (let r=g.anchorRow;r<=from.r;r++) for(let c=0;c<g.colsIn(r);c++) {
+    if(!g.validCell(r,c))continue;
+    const distance=Math.abs(g.cellX(r,c)-x)+(r-g.anchorRow)*R*.2;
+    if(distance<best){best=distance;target={r,c};}
+  }
+  // Defensive fallback for malformed geometry: retain the original vacant cell.
+  Object.assign(cell,target || from);g.grid.set(key(cell.r,cell.c),cell);
+  return {from,to:{r:cell.r,c:cell.c},kind:cell.kind,special:cell.special,at:cell.at,placedBy:cell.placedBy};
+};
+const fusionMoveObjects = (g, moved) => {
+  const positions = new Map(moved.map(m => [key(m.from.r,m.from.c),[m.to.r,m.to.c]]));
+  for (const o of g.objects || []) for (const field of ['cells','barrier','spread'])
+    if(o[field])o[field]=o[field].map(([r,c]) => positions.get(key(r,c)) || [r,c]);
+};
+// Fusion owns only temporary shots. The saved normal bubble never enters a queue swap.
+const fusionNotify = (g, kind, data = {}) => g.emit ? g.emit(kind, data) : g.showFusionEvent(kind, data);
+function fusionStart(g, pair) {
+  g.fusion = { phase:'armed', started:g.now, fireBy:g.now + 4, landBy:g.now + 6,
+    players:pair.map(p => p.i), fired:[], endpoints:[] };
+  for (const p of pair) { p.fusionStored = p.cur; p.cur = { kind:'F', special:'fusion' }; }
+};
+const fusionRestore = (g, p) => {
+  if (!p.fusionStored) return false;
+  p.cur = p.fusionStored; p.fusionStored = null;
+  if (g.fusion && !g.fusion.fired.includes(p.i)) g.fusion.fired.push(p.i);
+  return true;
+};
+const fusionCancel = (g, refund = true) => {
+  if (!g.fusion || g.fusion.phase !== 'armed') return;
+  for (const p of g.players) if (p.fusionStored) { p.cur = p.fusionStored; p.fusionStored = null; }
+  g.flights = g.flights.filter(f => f.special !== 'fusion');
+  for (const [k,b] of g.grid) if (b.special === 'fusion') g.grid.delete(k);
+  // Normal shots may have attached to an endpoint. Reattach those survivors without
+  // granting points or changing their kinds when the temporary support disappears.
+  const loose = fusionLoose(g), moved = [];
+  for (const cell of loose) g.grid.delete(key(cell.r,cell.c));
+  for (const cell of loose) moved.push(fusionSettle(g,cell));
+  fusionMoveObjects(g,moved);
+  g.fusion = null; g.teamPowerActive = null; g.teamPowerTimer = 0;
+  if (refund) g.teamPowerCharge = TEAM_POWER.max;
+  g.updateLowest(); fusionNotify(g, 'fusion_cancel', { refund });
+  if (refund && !g.grid.size && g.settings.mode === 'clear' && g.state === 'play') g.clearLevel();
+};
+const fusionTick = g => {
+  const f = g.fusion; if (!f || f.phase !== 'armed') return;
+  const invalid = f.endpoints.some(e => g.grid.get(key(e.r,e.c))?.special !== 'fusion');
+  if (invalid || f.players.some(i => g.players[i]?.connected === false) ||
+      (g.now >= f.fireBy && f.fired.length < 2) || g.now >= f.landBy) fusionCancel(g);
+};
+const fusionLand = (g, shot) => {
+  const f = g.fusion;
+  if (!f || f.phase !== 'armed') return;
+  fusionTick(g); if (!g.fusion) return;
+  const cell = g.snapCell(shot.x,shot.y);
+  if (!cell) { fusionCancel(g); return; }
+  const b = { ...cell, kind:'F', special:'fusion', placedBy:shot.p, at:g.now };
+  g.grid.set(key(b.r,b.c),b); f.endpoints.push({ ...cell, player:shot.p }); g.updateLowest();
+  fusionNotify(g, 'fusion_endpoint', { ...cell, player:shot.p, count:f.endpoints.length });
+  if (f.endpoints.length === 2) fusionResolve(g);
+};
+const fusionResolve = g => {
+  const f = g.fusion, [a,b] = f.endpoints.map(e => ({ x:g.cellX(e.r,e.c), y:g.cellY(e.r) }));
+  const dx = b.x-a.x, dy = b.y-a.y, len2 = dx*dx+dy*dy;
+  const popped = [], moved = [], dropped = [];
+  for (const [k,cell] of g.grid) {
+    if (cell.special === 'fusion') { g.grid.delete(k); continue; }
+    const x = g.cellX(cell.r,cell.c), y = g.cellY(cell.r);
+    const t = len2 ? clamp(((x-a.x)*dx+(y-a.y)*dy)/len2,0,1) : 0;
+    // Only ordinary bubbles are cut; stones, stars, rainbow and object cells retain
+    // their rules/state. Corridor half-width is .35 radii, plus the bubble radius.
+    if (!cell.special && !CoopObjects.protectedCell(g,k) && Math.hypot(x-a.x-t*dx,y-a.y-t*dy) <= R*1.35) {
+      CoopObjects.onPop(g,k,f.players[1]); popped.push({ ...cell }); g.grid.delete(k);
+    }
+  }
+  const loose = fusionLoose(g);
+  for (const cell of loose) g.grid.delete(key(cell.r,cell.c));
+  for (const cell of loose) {
+    const from = { r:cell.r, c:cell.c }, x = g.cellX(cell.r,cell.c), y = g.cellY(cell.r);
+    // Extend the segment's height horizontally; for a vertical cut use its lower end.
+    const lineY = Math.abs(dx) < 1e-9 ? Math.max(a.y,b.y) : a.y + clamp((x-a.x)/dx,0,1)*dy;
+    if (y < lineY && !cell.special && !CoopObjects.protectedCell(g,key(cell.r,cell.c))) { dropped.push({ ...cell }); continue; }
+    moved.push(fusionSettle(g,cell));
+  }
+  fusionMoveObjects(g,moved);
+  f.phase = 'burst'; f.burstAt = g.now; f.a = a; f.b = b; f.moved = moved; f.popped = popped;
+  g.teamPowerTimer = 2.6;
+  // Linear beam points avoid the quadratic ordinary-pop windfall. Reattached cells
+  // earn no removal points; only actual above-cut drops receive their usual value.
+  let components=0;const pending=new Map(dropped.map(c=>[key(c.r,c.c),c]));
+  while(pending.size){components++;const stack=[pending.values().next().value];
+    while(stack.length){const c=stack.pop();if(!pending.delete(key(c.r,c.c)))continue;
+      for(const [r,col] of g.neighbors(c.r,c.c)){const n=pending.get(key(r,col));if(n)stack.push(n);}}}
+  const points = popped.length*10 + (dropped.length ? g.dropPoints(dropped.length,components) : 0);
+  g.score += points;
+  if (popped.length) {
+    for (const i of f.players) { g.registerClear(i); g.players[i].stats.pops++; }
+    g.players[f.players[1]].stats.bubbles += popped.length;
+    g.missMeter = Math.max(0,g.missMeter-1);
+  }
+  CoopObjects.removed(g); g.updateLowest();
+  if (g.danger && !g.anyDangerCells()) { g.danger = null; g.score += 500; }
+  fusionNotify(g, 'fusion_burst', { a,b,moved,popped,dropped,points,at:g.now });
+  if (!g.grid.size && g.state === 'play') g.clearLevel();
+};
 /* power-rules:end */
 /* pace-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so the ceiling, the clear clock and the idle timer run the same locally and
@@ -971,7 +1096,7 @@ class OnlineGame {
     this.passCd = 0;
     // The meter is the team's, so it carries into the next level; a running power does not.
     this.teamPowerCharge = carry ? (carry.teamPowerCharge || 0) : 0;
-    this.teamPowerActive = null; this.teamPowerTimer = 0;
+    this.teamPowerActive = null; this.teamPowerTimer = 0; this.fusion = null;
     if (!carry) { this.now = 0; this.events = []; this.eventId = 0; this.paused = false; }
     this.levelStartT = this.now; // the clear clock; `now` stands still while paused or between levels
     const prior = carry ? new Map(carry.players.map(p => [p.id, p])) : null;
@@ -1047,6 +1172,7 @@ class OnlineGame {
     return { kind: kinds[(this.random() * kinds.length) | 0], special: null };
   }
   refreshQueues() {
+    if (this.fusion?.phase === 'armed') return;
     const kinds = this.availKinds(), available = new Set(kinds);
     for (const p of this.players) for (const slot of ['cur','next','bombStored']) {
       const b = p[slot];
@@ -1083,7 +1209,7 @@ class OnlineGame {
   }
   hypoSize(r, c, kind) { return this.matchGroup(r, c, kind).size; }
 
-  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.heldT = 0; this.checkLevelGate(); }
+  setConnected(id, connected) { const p = this.players.find(q => q.id === id); if (p) { p.connected = connected; if (!connected) fusionCancel(this); if (!connected) { p.held = { l:false, r:false }; p.aimTarget = null; p.heldT = 0; this.checkLevelGate(); }
     else if (this.players.filter(q => !q.bot && q.connected).length >= 2) { this.objectAlone = 0; this.objectFallback = false; }
   } }
   objectWhere(o) { const [r,c] = o.cells[0]; return { x:this.cellX(r,c), y:this.cellY(r), r, c }; }
@@ -1124,9 +1250,10 @@ class OnlineGame {
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    if (!bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
+    const fusionShot = fusionRestore(this, p);
+    if (!fusionShot && !bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
     p.reload = this.settings.reload; p.stats.shots++; p.idle = 0;
-    CoopObjects.shot(this);
+    if (!fusionShot) CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a, auto: auto || undefined });
     return true;
@@ -1138,6 +1265,7 @@ class OnlineGame {
      already had, never a bubble the request carried, and the shared cooldown is what makes a
      second request in the same instant a no-op rather than a swap back. */
   requestBombToggle(id) {
+    if (this.fusion?.phase === 'armed') return false;
     const p = this.players.find(q => q.id === id);
     if (this.settings.mode !== 'clear' || this.players.length < 2 || this.state !== 'play' || this.paused || this.inputLocked) return false;
     const ok = bombToggle(p);
@@ -1145,6 +1273,7 @@ class OnlineGame {
     return ok;
   }
   requestPass(id, direction = 1) {
+    if (this.fusion?.phase === 'armed') return false;
     const p = this.players.find(q => q.id === id);
     if (!p || this.inputLocked) return false;
     const pair = passPair(this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state, this.passCd, direction);
@@ -1162,9 +1291,10 @@ class OnlineGame {
     const pair = powerPair(TEAM_POWER, this.teamHumans(), this.players, p.i, this.paused ? 'paused' : this.state,
       this.teamPowerCharge, this.teamPowerActive);
     if (!pair) return false;
-    const power = TEAM_POWER.equipped, def = POWERS[power];
+    const power = this.players.length > 2 ? 'synergy' : TEAM_POWER.equipped, def = POWERS[power];
+    if (power === 'fusion' && (this.teamHumans().length !== 2 || pair.length !== 2 || pair.some(p => p.bombLoaded || p.fusionStored))) return false;
     this.teamPowerCharge = 0; this.teamPowerActive = power; this.teamPowerTimer = def.secs;
-    def.start(pair);
+    if (power === 'fusion') def.start(this, pair); else def.start(pair);
     this.emit('team_power_activated', { by: p.i, power, name: def.name, secs: def.secs,
       players: pair.map(q => q.i), cur: pair.map(q => q.cur && { ...q.cur }) });
     return true;
@@ -1179,8 +1309,9 @@ class OnlineGame {
     if (this.teamPowerCharge >= TEAM_POWER.max) this.emit('team_power_ready', { charge: this.teamPowerCharge });
   }
   endTeamPower() {
+    if (this.fusion?.phase === 'armed') { fusionCancel(this); return; }
     const power = this.teamPowerActive; if (!power) return;
-    this.teamPowerActive = null; this.teamPowerTimer = 0;
+    this.teamPowerActive = null; this.teamPowerTimer = 0; this.fusion = null;
     this.emit('team_power_ended', { power });
   }
   emit(kind, data = {}) { this.events.push({ id: ++this.eventId, kind, data, at: this.now }); if (this.events.length > 128) this.events.shift(); }
@@ -1195,6 +1326,7 @@ class OnlineGame {
     }
     if (this.state !== 'play' || this.paused) return;
     dt = Math.min(0.05, dt); this.now += dt; this.tickId++;
+    fusionTick(this);
     CoopObjects.tick(this, dt);
     if (this.passCd > 0) this.passCd = Math.max(0, this.passCd - dt);
     if (this.teamPowerActive && (this.teamPowerTimer -= dt) <= 0) this.endTeamPower();
@@ -1233,7 +1365,7 @@ class OnlineGame {
   }
   stepFlights(dt) {
     for (let i = this.flights.length - 1; i >= 0; i--) {
-      const f = this.flights[i]; f.trail.push({x:f.x,y:f.y}); if (f.trail.length > 16) f.trail.shift();
+      const f = this.flights[i]; if (!f) continue; f.trail.push({x:f.x,y:f.y}); if (f.trail.length > 16) f.trail.shift();
       let dist = Math.hypot(f.vx,f.vy)*dt, landed = false;
       while (dist > 0 && !landed) {
         const step = Math.min(dist, R*.45); dist -= step; const m = step/Math.hypot(f.vx,f.vy);
@@ -1247,6 +1379,7 @@ class OnlineGame {
     }
   }
   land(f) {
+    if (f.special === 'fusion') { fusionLand(this, f); return; }
     const object = CoopObjects.hit(this, f.x, f.y);
     if (object) { CoopObjects.interact(this, object, f.p); return; }
     let cell = this.snapCell(f.x,f.y); if (!cell) return;
@@ -1275,7 +1408,7 @@ class OnlineGame {
     this._resolvingBatch = true;
     const landed=this.batch; this.batch=[]; this.resolveAt=0; const results=[];
     for (const b of landed) {
-      if (!this.grid.has(key(b.r,b.c))) { results.push({shooter:b.placedBy,at:b.fired,gone:true}); continue; }
+      if (this.grid.get(key(b.r,b.c)) !== b) { results.push({shooter:b.placedBy,at:b.fired,gone:true}); continue; }
       if (b.special==='bomb') {
         const bx=this.cellX(b.r,b.c), by=this.cellY(b.r), popped=new Set([key(b.r,b.c)]);
         this.grid.forEach((g,k)=>{ if(g.special!=='stone'&&g.special!=='triLock'&&Math.hypot(this.cellX(g.r,g.c)-bx,this.cellY(g.r)-by)<=R*4.3)popped.add(k); });
@@ -1334,6 +1467,7 @@ class OnlineGame {
      of a co-op room is that nobody is dropped into a fresh board still reading the last one.
      LEVEL_READY_SECS is the backstop: one player who walks away must not freeze the room. */
   clearLevel() {
+    fusionCancel(this, false);
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
     const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
     const bombBonus = this.players.reduce((sum, p) => sum + unusedBombs(p) * 250, 0);
@@ -1450,7 +1584,7 @@ class OnlineGame {
   }
   shotsPerDrop(){ return dropPace(this.levelDrop(),this.settings.pressureShots,this.levelColors,this.availKinds().length,this.battle ? 1 : this.players.filter(p => !p.bot && p.connected).length); }
   addRow(){const moved=new Map();this.grid.forEach(b=>{b.r++;moved.set(key(b.r,b.c),b);});this.grid=moved;this.parityFlip^=1;const a=this.anchorRow;for(let c=0;c<this.colsIn(a);c++)if(this.random()<.85)this.grid.set(key(a,c),{r:a,c,kind:KINDS[(this.random()*4)|0],special:null,placedBy:-1});this.updateLowest();this.refreshQueues();this.emit('ceiling');}
-  end(won){if(this.state!=='play')return;this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
+  end(won){if(this.state!=='play')return;fusionCancel(this,false);this.state=won?'won':'lost';this.emit(won?'win':'lose',{score:this.score});}
   setPaused(value){if(this.state==='play'){this.paused=!!value;this.emit(this.paused?'paused':'resumed');}}
 
   snapshot() {
@@ -1464,7 +1598,7 @@ class OnlineGame {
       events:this.events.slice(-32), eventId:this.eventId,
       passCd:this.passCd, passMax:PASS.cooldown,
       teamPowerOn:this.teamHumans().length>=2, teamPowerCharge:this.teamPowerCharge, teamPowerMax:TEAM_POWER.max,
-      teamPowerActive:this.teamPowerActive, teamPowerTimer:this.teamPowerTimer,
+      fusion:this.fusion, teamPowerActive:this.teamPowerActive, teamPowerTimer:this.teamPowerTimer,
       teamPowerSecs:this.teamPowerActive?POWERS[this.teamPowerActive].secs:0,
       levelSummary:this.levelSummary||null,
       levelReady:this.levelSummary?[...this.levelReadyIds]:null,
