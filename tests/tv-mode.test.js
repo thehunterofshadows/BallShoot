@@ -471,11 +471,11 @@ test('controllers keep their slot, and a disconnect releases holds and pauses lo
   g.pollGamepads();
   assert.equal(players[1].held.r, false, 'stick is not converted to a button');
   assert.equal(players[1].held.analog, 1);
-  pads[0].axes[0] = -1; pads[1].axes[0] = (1 + tv.GAMEPAD.dead) / 2;
+  pads[0].axes[0] = -1; pads[1].axes[0] = (1 + g.stickProfile(pads[1]).dead) / 2;
   g.pollGamepads();
   assert.equal(players[0].held.analog, -1, 'each stick drives its own player');
   assert.ok(Math.abs(players[1].held.analog - 0.5) < 1e-12, 'range normalized after deadzone');
-  pads[1].axes[0] = tv.GAMEPAD.dead / 2;
+  pads[1].axes[0] = g.stickProfile(pads[1]).dead / 2;
   g.pollGamepads();
   assert.equal(players[1].held.analog, 0, 'inside deadzone is idle');
   pads[1].buttons[tv.GAMEPAD.btn.right].pressed = true;
@@ -749,4 +749,51 @@ test('changing devicePixelRatio re-fits canvas backing store and cleans up on di
   // Firing after disconnect does nothing
   queryMap.get('(resolution: 2dppx)').fire();
   assert.equal(fitCalls, 2, 'no further fit calls after disconnect');
+});
+
+
+test('calibration profiles isolate identical pads, persist, and tolerate invalid storage', () => {
+  const saved = new Map(), storage = {getItem:k=>saved.get(k) ?? null,setItem:(k,v)=>saved.set(k,v)};
+  const C = loadComponent({localStorage:storage}), g = new C();
+  const pad = index => ({index,id:'Same model',mapping:'standard',axes:[0,0],buttons:[]});
+  const a=g.stickProfile(pad(0)), b=g.stickProfile(pad(1));
+  g.saveStick(a,0.08); g.saveStick(b,0.31);
+  assert.notEqual(a.key,b.key); assert.equal(a.dead,0.08); assert.equal(b.dead,0.31);
+  const next=new C(); assert.equal(next.stickProfile(pad(4)).dead,0.08);
+  assert.equal(next.stickProfile(pad(8)).dead,0.31);
+  saved.set(a.key,'1'); assert.equal(new C().stickProfile(pad(0)).dead,0.18);
+});
+
+test('auto calibration measures rest, applies margin, rejects motion and cancels when hidden', () => {
+  const C=loadComponent(), g=new C(), pad={index:0,id:'test',axes:[0.052,0],buttons:[]};
+  g.calibrationOpen=()=>true; const p=g.stickProfile(pad);
+  const start=()=>{p.sample={start:1000,last:0,count:0,max:0};};
+  start(); for(let t=1000;t<=3500;t+=20)g.sampleSticks([pad],t);
+  assert.equal(p.dead,0.08); assert.match(p.result,/Observed 5.2%/);
+  pad.axes=[0,0]; start(); for(let t=1000;t<=3500;t+=20)g.sampleSticks([pad],t);
+  assert.equal(p.dead,0.02,'no drift gets a small minimum');
+  pad.axes=[0.7,0]; start(); for(let t=1000;t<=3500;t+=20)g.sampleSticks([pad],t);
+  assert.equal(p.dead,0.02); assert.match(p.result,/retry/);
+  start(); g.calibrationOpen=()=>false;g.sampleSticks([pad],1000);assert.equal(p.sample,null);
+  g.sampleSticks([],1020);assert.equal(g._stickProfiles.size,0);
+});
+
+test('radial deadzone suppresses XY drift and renormalizes usable travel',()=>{
+  const block=component.match(/\/\* stick-calibration:begin[\s\S]*?\/\* stick-calibration:end \*\//)[0];
+  const analog=vm.runInNewContext(`const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)); ${block}; stickAnalog`);
+  for(const dead of [0.02,0.18,0.5]) {
+    assert.equal(analog(dead/2,dead/2,dead),0);
+    assert.ok(Math.abs(analog((1+dead)/2,0,dead)-0.5)<1e-12);
+    assert.equal(analog(1,0,dead),1); assert.equal(analog(-1,0,dead),-1);
+  }
+});
+
+test('between-round observation only suggests and never modifies calibration',()=>{
+  const C=loadComponent(),g=new C(),pad={index:0,id:'test',axes:[0.1,0],buttons:[]};
+  g.state='levelup';g.calibrationOpen=()=>false;const messages=[];g.padToast=t=>messages.push(t);
+  const p=g.stickProfile(pad);g.saveStick(p,0.04);
+  for(let t=0;t<3000;t+=20)g.sampleSticks([pad],t);
+  assert.equal(messages.length,1);assert.equal(p.dead,0.04);
+  p.warned=false;g.state='play';for(let t=3000;t<6000;t+=20)g.sampleSticks([pad],t);
+  assert.equal(messages.length,1);assert.equal(p.dead,0.04);
 });
