@@ -848,6 +848,27 @@ const teamPlay = (T, humans, shots, dropped, rescued) => {
   return out;
 };
 /* team-rules:end */
+/* bomb-reserve:begin — shared local/authority rules. Loaded bombs remain player-owned. */
+const unusedBombs = p => (p.bombs || 0) + (p.bombLoaded ? 1 : 0);
+const bombToggle = p => {
+  if (!p || !p.cur || p.reload > 0 || p.connected === false) return false;
+  if (p.bombLoaded) {
+    p.cur = p.bombStored; p.bombStored = null; p.bombLoaded = false; p.bombs++;
+  } else {
+    if (!(p.bombs > 0)) return false;
+    p.bombStored = p.cur; p.cur = { kind:p.cur.kind, special:'bomb' };
+    p.bombs--; p.bombLoaded = true;
+  }
+  p.idle = 0;
+  return true;
+};
+const bombRestoreAfterFire = p => {
+  if (!p.bombLoaded) return false;
+  p.cur = p.bombStored; p.bombStored = null; p.bombLoaded = false;
+  return true;
+};
+/* bomb-reserve:end */
+
 /* pass-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so a local pass and an online one are allowed at exactly the same moments.
 
@@ -867,7 +888,7 @@ const passPair = (humans, players, by, state, cd, direction = 1) => {
   if (live.length < 2 || !live.includes(by)) return null;
   const at = live.indexOf(by), to = live[(at + (direction < 0 ? -1 : 1) + live.length) % live.length];
   const pair = [players[by], players[to]];
-  if (pair.some(p => !p || p.connected === false || !p.cur)) return null;
+  if (pair.some(p => !p || p.connected === false || !p.cur || p.bombLoaded)) return null;
   return pair;
 };
 const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
@@ -895,7 +916,7 @@ const POWERS = {
     name: 'SYNERGY BURST', secs: 8,
     holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
     holdRescue: true,   // a running rescue countdown stops where it is
-    start: pair => { for (const p of pair) if (p.cur) p.cur = { kind: p.cur.kind, special: 'rainbow' }; },
+    start: pair => { for (const p of pair) { const slot = p.bombLoaded ? 'bombStored' : 'cur'; if (p[slot]) p[slot] = { kind:p[slot].kind, special:'rainbow' }; } },
   },
 };
 const powerCharge = (T, team, handoffs, active) => {
@@ -1237,7 +1258,7 @@ const spatialPick = (rects, at, dx, dy) => {
   }
   return best;
 };
-/* Standard-mapping gamepad buttons. In play: stick / d-pad aims, A or RT fires, LB passes left, RB or X passes right, Y fires Team Power, Start pauses, Back opens settings. In menus the same
+/* Standard-mapping gamepad buttons. In play: stick / d-pad aims, A or RT fires, LB passes left, RB or X passes right, Y fires Team Power, B toggles a reserve bomb, Start pauses, Back opens settings. In menus the same
    stick moves focus (left / right also steps a picker or slider), A presses, B backs out. */
 const GAMEPAD = {
   btn: { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, back: 8, start: 9, up: 12, down: 13, left: 14, right: 15 },
@@ -1413,6 +1434,7 @@ class CoopBubbles extends HTMLElement {
       const old = keep[i];
       this.players.push({ i, meta: META[i], x, angle: old ? old.angle : rnd(-0.3,0.3),
         cur: this.genBubble(), next: this.genBubble(), reload: 0,
+        bombs:this.settings.mode === 'clear' && n >= 2 ? 3 : 0, bombLoaded:false, bombStored:null,
         bot: !this.settings.human[i], think: rnd(0.4,1.2), plan: null, held: {},
         stats: (carry && old) ? old.stats : { shots:0, pops:0, bubbles:0, assists:0, drops:0, rescues:0, chains:0 } });
     }
@@ -1475,7 +1497,7 @@ class CoopBubbles extends HTMLElement {
   }
   refreshQueues() { // replace queued colors that vanished from the field
     const av = new Set(this.availKinds());
-    this.players.forEach(p => ['cur','next'].forEach(slot => {
+    this.players.forEach(p => ['cur','next','bombStored'].forEach(slot => {
       const b = p[slot];
       if (b && !b.special && !av.has(b.kind)) {
         b.kind = [...av][(Math.random() * av.size) | 0]; b.swapT = this.now; this.sfx('swap');
@@ -1553,7 +1575,7 @@ class CoopBubbles extends HTMLElement {
     const sx = p.x, sy = this.LAUNCH_Y - 44, sp = 1150;
     this.flights.push({ p: i, x: sx, y: sy, vx: Math.sin(a) * sp, vy: -Math.cos(a) * sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    p.cur = p.next; p.next = this.genBubble();
+    if (!bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
     p.reload = this.settings.reload; p.stats.shots++; p.recoilT = this.now; p.idle = 0;
     CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) { this.pressure++; this.dropWarnSfx(); }
@@ -1819,7 +1841,8 @@ class CoopBubbles extends HTMLElement {
   clearLevel() {
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
     const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
-    this.score += bonus + timeBonus;
+    const bombBonus = this.players.reduce((sum, p) => sum + unusedBombs(p) * 250, 0);
+    this.score += bonus + timeBonus + bombBonus;
     if (from >= 0) this.recordProgress(from);
     if (next < 0) return this.endGame(true);
     this.state = 'levelup'; this.sfx('win');
@@ -1841,13 +1864,13 @@ class CoopBubbles extends HTMLElement {
       + `${s.assists || 0} setups · ${s.rescues || 0} rescues · ${s.chains || 0} chain`;
     const rows = list.map(p => {
       const meta = p.meta || META[p.i] || META[0];
-      return { name: meta.name, accent: meta.accent, nums: nums(p.stats || {}) };
+      return { name: meta.name, accent: meta.accent, nums: nums(p.stats || {}) + ((this.state === 'levelup' || this.state === 'won') && this.settings.mode === 'clear' && list.length >= 2 ? ' · Bomb Bonus: ' + unusedBombs(p) + ' × 250 = ' + unusedBombs(p) * 250 : '') };
     });
     if (list.length < 2) return rows;
     const sum = {};
     for (const p of list) for (const [k, v] of Object.entries(p.stats || {})) sum[k] = (sum[k] || 0) + (Number(v) || 0);
     // The team line is the rows added up; it leads because the run was played together.
-    return [{ name: 'TEAM', accent: '#2b6fd4', team: true, nums: nums(sum) }, ...rows];
+    return [{ name: 'TEAM', accent: '#2b6fd4', team: true, nums: nums(sum) + ((this.state === 'levelup' || this.state === 'won') && this.settings.mode === 'clear' ? ' · Combined Bomb Bonus: ' + list.reduce((n,p) => n + unusedBombs(p) * 250, 0) : '') }, ...rows];
   }
   /* The level card. `ready` is only present online, where the next level does not start
      until every connected player has said so (or the room's timer runs out). */
@@ -2000,6 +2023,12 @@ class CoopBubbles extends HTMLElement {
     const p = this.firstHumanPlayer(); return p && h.includes(p.i) ? p.i : -1;
   }
   padPass(direction = 1) { const i = this.passPlayer(); if (i >= 0) this.requestPass(i, direction); }
+  requestBombToggle(i) {
+    if (this.settings.mode !== 'clear' || this.players.length < 2 || this.state !== 'play') return;
+    if (this.online) { this.sendOnline('bomb_toggle'); return; }
+    const p = this.players[i];
+    if (!bombToggle(p) && p && p.reload <= 0 && !unusedBombs(p)) { this.callout('OUT OF BOMBS', p.meta.accent); this.sfx('passNo'); }
+  }
   requestPass(i, direction = 1) {
     const h = this.teamHumans();
     if (h.length < 2 || !h.includes(i)) return; // no pass in this game at all: stay silent
@@ -2880,6 +2909,7 @@ class CoopBubbles extends HTMLElement {
     if (this.online) {
       if (n) return;
       if (turned) { this.setOnlineHeld('l', h < 0); this.setOnlineHeld('r', h > 0); }
+      if (hit('b')) this.requestBombToggle(this.activeP);
       if (fire) this.fire();
       if (passLeft || passRight) this.requestPass(this.activeP, passLeft ? -1 : 1);
       if (power) this.requestTeamPower(this.activeP);
@@ -2888,6 +2918,7 @@ class CoopBubbles extends HTMLElement {
     const i = this.padHuman(n), p = this.players[i]; if (!p || p.bot) return;
     applyAnalog(p);
     if (turned) { p.held.l = h < 0; p.held.r = h > 0; p.aimTarget = null; }
+    if (hit('b')) this.requestBombToggle(i);
     if (fire) { this.activeP = i; this.fire(i); }
     if (passLeft || passRight) this.requestPass(i, passLeft ? -1 : 1);
     if (power) this.requestTeamPower(i);
@@ -3232,6 +3263,7 @@ class CoopBubbles extends HTMLElement {
         if (['d','arrowright','l'].includes(k)) { this.setOnlineHeld('r', true); e.preventDefault(); }
         if (['w',' ','arrowup','enter','k'].includes(k)) { this.fire(); e.preventDefault(); }
         if (k === 'e' || k === 'r') { this.requestPass(this.activeP, k === 'r' ? -1 : 1); e.preventDefault(); }
+        if (k === 'b') { this.requestBombToggle(this.activeP); e.preventDefault(); }
         if (k === 'q') { this.requestTeamPower(this.activeP); e.preventDefault(); }
         return;
       }
@@ -3240,6 +3272,7 @@ class CoopBubbles extends HTMLElement {
       if (firemap[k] !== undefined) { const p = this.players[firemap[k]]; if (p && !p.bot) { this.fire(firemap[k]); e.preventDefault(); } }
       if (passmap[k] !== undefined) { const p = this.players[passmap[k]]; if (p && !p.bot) { this.requestPass(p.i, e.shiftKey ? -1 : 1); e.preventDefault(); } }
       // Team Power belongs to the team, so Q is shared by both local players.
+      if (k === 'b') { this.requestBombToggle(this.activeP); e.preventDefault(); }
       if (k === 'q') { const i = this.passPlayer(); if (i >= 0) { this.requestTeamPower(i); e.preventDefault(); } }
     };
     const ku = e => { const k=e.key.toLowerCase();
@@ -3860,6 +3893,11 @@ class CoopBubbles extends HTMLElement {
   }
 
   drawLauncher(ctx, p) {
+    if (this.settings.mode === 'clear' && this.players.length >= 2 && !this.battle) {
+      ctx.save(); ctx.textAlign = 'center'; ctx.font = 'bold 14px Fredoka, sans-serif'; ctx.fillStyle = p.meta.accent;
+      ctx.fillText('💣 ×' + (p.bombs || 0) + (p.bombLoaded ? ' +1 LOADED' : ' · B'), p.x, this.LAUNCH_Y + 64);
+      ctx.restore();
+    }
     if (this.drawLauncherSprite(ctx, p)) return;
     const x = p.x, y = this.LAUNCH_Y, meta = p.meta;
     const rk = p.recoilT !== undefined ? clamp((this.now - p.recoilT) / 0.18, 0, 1) : 1;
@@ -5466,7 +5504,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       'Miss meter ' + Math.floor(this.missMeter || 0) + ' / ' + this.missLimit(),
       'Shot pressure ' + (S.pressureShots ? S.pressureShots + ' shots' : 'off') + ' \u00b7 hurry-up ' + (S.hurry ? S.hurry + 's' : 'off'),
       'Reload ' + Number(S.reload).toFixed(2) + 's \u00b7 aim guide ' + (S.guide === 1 ? 'full' : S.guide === 0.5 ? 'short' : 'tiny'),
-      'Controllers ' + this.connectedPads().length + ' \u00b7 A fires \u00b7 LB/RB pass left/right \u00b7 Y power',
+      'Controllers ' + this.connectedPads().length + ' \u00b7 A fires \u00b7 LB/RB pass left/right \u00b7 Y power · B bomb',
     ].join('\n'));
     // Player cards: who, what is loaded, what is next, and one line of status.
     const limit = Number(S.hurry) || 0;
@@ -5474,7 +5512,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       const p = (this.players || [])[i];
       put(c.el, 'visibility', p ? 'visible' : 'hidden'); if (!p) return;
       put(c.who, 'text', p.name || (p.meta || META[i]).name);
-      put(c.tag, 'text', p.bot ? 'bot' : this.online && i === this.activeP ? 'you' : this.padOwner(i) ? 'controller' : '');
+      put(c.tag, 'text', this.settings.mode === 'clear' && this.players.length >= 2 ? '💣 ×' + (p.bombs || 0) + (p.bombLoaded ? ' +1 loaded' : ' · B bomb') : p.bot ? 'bot' : this.online && i === this.activeP ? 'you' : this.padOwner(i) ? 'controller' : '');
       const loading = this.passFx && (i === this.passFx.a || i === this.passFx.b) && (this.now - this.passFx.t) < PASS_FX;
       put(c.cur, 'css', this.tvBallStyle(loading ? null : p.cur));
       put(c.next, 'css', this.tvBallStyle(p.next));
@@ -5679,7 +5717,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.lobbyEl.style.display='none';this.reconnectEl.style.display='none';this.pauseEl.style.display=s.state==='paused'?'grid':'none';this.shadowRoot.querySelector('.onlineBar').style.display='flex';this.syncOnlineControls();
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
-  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  applyOnlineEvent(e){const d=e.data||{};if(e.kind==='bomb_empty'){if(d.player===this.activeP){this.callout('OUT OF BOMBS',META[d.player].accent);this.sfx('passNo');}}else if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)+(d.bombBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
   setOnlineAnalog(value){
     this._onlineHeld=this._onlineHeld||{l:false,r:false};
     if((this._onlineHeld.analog||0)===value)return;

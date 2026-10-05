@@ -187,7 +187,7 @@ test('a fast clear pays the full time bonus, sliding to nothing at two minutes',
   assert.equal(quick.state, 'levelup');
   assert.equal(quick.levelSummary.timeBonus, PACE.timeBonus);
   assert.equal(quick.levelSummary.secs, 10);
-  assert.equal(quick.score, quick.levelSummary.bonus + PACE.timeBonus, 'both bonuses are banked');
+  assert.equal(quick.score, quick.levelSummary.bonus + PACE.timeBonus + quick.levelSummary.bombBonus, 'all clear bonuses are banked');
   assert.equal(quick.events.find(e => e.kind === 'level_cleared').data.timeBonus, PACE.timeBonus);
 
   const slow = new OnlineGame({ ...DEFAULT_SETTINGS, mode:'clear', level:0 }, duo, 1);
