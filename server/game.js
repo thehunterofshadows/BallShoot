@@ -782,6 +782,27 @@ const teamPlay = (T, humans, shots, dropped, rescued) => {
   return out;
 };
 /* team-rules:end */
+/* bomb-reserve:begin — shared local/authority rules. Loaded bombs remain player-owned. */
+const unusedBombs = p => (p.bombs || 0) + (p.bombLoaded ? 1 : 0);
+const bombToggle = p => {
+  if (!p || !p.cur || p.reload > 0 || p.connected === false) return false;
+  if (p.bombLoaded) {
+    p.cur = p.bombStored; p.bombStored = null; p.bombLoaded = false; p.bombs++;
+  } else {
+    if (!(p.bombs > 0)) return false;
+    p.bombStored = p.cur; p.cur = { kind:p.cur.kind, special:'bomb' };
+    p.bombs--; p.bombLoaded = true;
+  }
+  p.idle = 0;
+  return true;
+};
+const bombRestoreAfterFire = p => {
+  if (!p.bombLoaded) return false;
+  p.cur = p.bombStored; p.bombStored = null; p.bombLoaded = false;
+  return true;
+};
+/* bomb-reserve:end */
+
 /* pass-rules:begin — mirrored verbatim in server/game.js and coop-bubbles.js (a test holds
    them equal), so a local pass and an online one are allowed at exactly the same moments.
 
@@ -801,7 +822,7 @@ const passPair = (humans, players, by, state, cd, direction = 1) => {
   if (live.length < 2 || !live.includes(by)) return null;
   const at = live.indexOf(by), to = live[(at + (direction < 0 ? -1 : 1) + live.length) % live.length];
   const pair = [players[by], players[to]];
-  if (pair.some(p => !p || p.connected === false || !p.cur)) return null;
+  if (pair.some(p => !p || p.connected === false || !p.cur || p.bombLoaded)) return null;
   return pair;
 };
 const passSwap = pair => { const [a, b] = pair, t = a.cur; a.cur = b.cur; b.cur = t; };
@@ -829,7 +850,7 @@ const POWERS = {
     name: 'SYNERGY BURST', secs: 8,
     holdPressure: true, // shots add no pressure or misses, and the ceiling stays put
     holdRescue: true,   // a running rescue countdown stops where it is
-    start: pair => { for (const p of pair) if (p.cur) p.cur = { kind: p.cur.kind, special: 'rainbow' }; },
+    start: pair => { for (const p of pair) { const slot = p.bombLoaded ? 'bombStored' : 'cur'; if (p[slot]) p[slot] = { kind:p[slot].kind, special:'rainbow' }; } },
   },
 };
 const powerCharge = (T, team, handoffs, active) => {
@@ -959,6 +980,7 @@ class OnlineGame {
       return {
         ...member, x: this.WW * (i + 0.5) / this.roster.length,
         angle: was ? was.angle : this.rnd(-0.3, 0.3), cur: null, next: null, reload: 0,
+        bombs: this.settings.mode === 'clear' && this.roster.length >= 2 ? 3 : 0, bombLoaded:false, bombStored:null,
         held: { l: false, r: false }, aimTarget: null, connected: was ? was.connected : true,
         stats: was ? was.stats : { shots: 0, pops: 0, bubbles: 0, assists: 0, drops: 0, rescues: 0, attacks: 0, chains: 0 },
       };
@@ -1026,7 +1048,7 @@ class OnlineGame {
   }
   refreshQueues() {
     const kinds = this.availKinds(), available = new Set(kinds);
-    for (const p of this.players) for (const slot of ['cur','next']) {
+    for (const p of this.players) for (const slot of ['cur','next','bombStored']) {
       const b = p[slot];
       if (b && !b.special && !available.has(b.kind)) b.kind = kinds[(this.random() * kinds.length) | 0];
     }
@@ -1102,7 +1124,8 @@ class OnlineGame {
     const a = clamp(p.angle, -1.22, 1.22), sp = 1150;
     this.flights.push({ p: p.i, x: p.x, y: this.LAUNCH_Y - 44, vx: Math.sin(a)*sp, vy: -Math.cos(a)*sp,
       kind: p.cur.kind, special: p.cur.special, trail: [], bounceCd: 0, at: this.now });
-    p.cur = p.next; p.next = this.genBubble(); p.reload = this.settings.reload; p.stats.shots++; p.idle = 0;
+    if (!bombRestoreAfterFire(p)) { p.cur = p.next; p.next = this.genBubble(); }
+    p.reload = this.settings.reload; p.stats.shots++; p.idle = 0;
     CoopObjects.shot(this);
     if (!powerHolds(this.teamPowerActive, 'holdPressure')) this.pressure++;
     this.emit('launch', { player: p.i, x: p.x, angle: a, auto: auto || undefined });
@@ -1114,6 +1137,13 @@ class OnlineGame {
   /* The client only asks. What each launcher ends up holding is whatever this authority
      already had, never a bubble the request carried, and the shared cooldown is what makes a
      second request in the same instant a no-op rather than a swap back. */
+  requestBombToggle(id) {
+    const p = this.players.find(q => q.id === id);
+    if (this.settings.mode !== 'clear' || this.players.length < 2 || this.state !== 'play' || this.paused || this.inputLocked) return false;
+    const ok = bombToggle(p);
+    if (!ok && p && p.connected && p.reload <= 0 && !unusedBombs(p)) this.emit('bomb_empty', {player:p.i});
+    return ok;
+  }
   requestPass(id, direction = 1) {
     const p = this.players.find(q => q.id === id);
     if (!p || this.inputLocked) return false;
@@ -1306,15 +1336,16 @@ class OnlineGame {
   clearLevel() {
     const from = this.levelIndex(), next = this.nextLevelIndex(), bonus = this.levelBonus();
     const secs = Math.max(0, this.now - this.levelStartT), timeBonus = clearTimeBonus(secs);
-    this.score += bonus + timeBonus;
-    if (next < 0) { this.emit('level_cleared', { level: from, bonus, timeBonus, secs, final: true }); return this.end(true); }
-    this.emit('level_cleared', { level: from, next, bonus, timeBonus, secs, final: false });
+    const bombBonus = this.players.reduce((sum, p) => sum + unusedBombs(p) * 250, 0);
+    this.score += bonus + timeBonus + bombBonus;
+    if (next < 0) { this.emit('level_cleared', { level: from, bonus, timeBonus, bombBonus, secs, final: true }); return this.end(true); }
+    this.emit('level_cleared', { level: from, next, bonus, timeBonus, bombBonus, secs, final: false });
     this.state = 'levelup';
     this.levelReadyIds = new Set();
     this.levelTimer = LEVEL_READY_SECS;
     this.levelSummary = {
-      from, next, bonus, timeBonus, secs, score: this.score,
-      players: this.players.map(p => ({ i: p.i, stats: { ...p.stats } })),
+      from, next, bonus, timeBonus, bombBonus, secs, score: this.score,
+      players: this.players.map(p => ({ i: p.i, bombs:p.bombs, bombLoaded:p.bombLoaded, stats: { ...p.stats } })),
     };
   }
   /* Anyone still connected can hold the gate; a disconnect releases it, so the check runs
