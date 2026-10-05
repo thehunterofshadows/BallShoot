@@ -1245,6 +1245,19 @@ const GAMEPAD = {
 };
 /* tv-display:end */
 
+/* stick-calibration:begin
+   Radial filtering precedes speed mapping; horizontal projection preserves direction.
+   Browser IDs identify models, not serial numbers. Duplicate models use connection-order
+   profiles and remain independent in-session; their physical identity cannot be recovered. */
+const STICK_DEFAULT = 0.18;
+const stickValue = v => Number.isFinite(v) ? clamp(v, -1, 1) : 0;
+const stickAnalog = (x, y, dead) => {
+  const magnitude = Math.hypot(x, y);
+  return magnitude <= dead ? 0 : x / magnitude * clamp((magnitude - dead) / (1 - dead), 0, 1);
+};
+const stickRecommendation = maximum => Math.min(0.5, Math.max(0.02, Math.ceil((maximum + 0.02) * 100) / 100));
+/* stick-calibration:end */
+
 class CoopBubbles extends HTMLElement {
   connectedCallback() {
     if (this._init) return; this._init = true;
@@ -2344,6 +2357,7 @@ class CoopBubbles extends HTMLElement {
     const t1 = perf ? performance.now() : 0;
     if (battle) this.battleRender(); else this.render();
     const t2 = perf ? performance.now() : 0;
+    this.syncCalibration();
     this.syncMenuFocus();
     this.syncTvHud();
     if (!battle) { this.syncPassButton(); this.syncPowerButton(); }
@@ -2637,6 +2651,100 @@ class CoopBubbles extends HTMLElement {
      Pad n drives the nth human launcher, the same stream a key pair would; online it is this
      device's launcher. Held directions are written only when the stick changes, so a pad
      and a keyboard can share a player without the pad stomping the keys every frame. */
+  calibrationOpen() {
+    return !!(this.calibrationEl?.open && this.sideEl?.classList.contains('open'));
+  }
+  stickProfile(g) {
+    const profiles = this._stickProfiles || (this._stickProfiles = new Map());
+    let p = profiles.get(g.index);
+    if (p && p.id === g.id) return p;
+    const base = JSON.stringify([g.id || '', g.mapping || '', g.axes.length, g.buttons.length]);
+    const used = new Set([...profiles.values()].filter(p => p.base === base).map(p => p.ordinal));
+    let ordinal = 0; while (used.has(ordinal)) ordinal++;
+    const key = 'bt_stick_v1:' + base + ':' + ordinal;
+    let dead = STICK_DEFAULT;
+    try { const saved = g.id ? JSON.parse(localStorage.getItem(key)) : null;
+      if (typeof saved === 'number' && Number.isFinite(saved) && saved >= 0.02 && saved <= 0.5) dead = saved;
+    } catch (_) {}
+    p = { id:g.id, base, ordinal, key, dead, x:0, y:0, result:'' };
+    profiles.set(g.index, p); return p;
+  }
+  saveStick(p, value) {
+    p.dead = clamp(value, 0.02, 0.5); p.rest = null;
+    try { if (p.id) localStorage.setItem(p.key, JSON.stringify(p.dead)); } catch (_) {}
+  }
+  sampleSticks(pads, now) {
+    const profiles = this._stickProfiles || (this._stickProfiles = new Map());
+    for (const index of profiles.keys()) if (!pads.some(g => g.index === index)) profiles.delete(index);
+    for (const g of pads) {
+      const p = this.stickProfile(g);
+      p.x = stickValue(g.axes[0]); p.y = stickValue(g.axes[1]);
+      const magnitude = Math.hypot(p.x, p.y);
+      if (p.sample) {
+        if (!this.calibrationOpen() || document.hidden) { p.sample = null; p.result = 'Calibration cancelled. Keep this screen visible.'; }
+        else {
+          const sample = p.sample;
+          // Give the activating button a second to release before measuring rest.
+          if (now >= sample.start) {
+            if (now - sample.last > 300 && sample.count) sample.invalid = true;
+            sample.last = now; sample.count++; sample.max = Math.max(sample.max, magnitude);
+            if (g.buttons.some(b => b.pressed)) sample.invalid = true;
+          }
+          if (now >= sample.start + 2500) {
+            p.sample = null;
+            if (sample.invalid || sample.count < 20 || sample.max > 0.45) p.result = 'Movement or interrupted sampling detected. Release the stick and retry.';
+            else { const before = p.dead, next = stickRecommendation(sample.max); this.saveStick(p, next);
+              p.result = `Observed ${(sample.max*100).toFixed(1)}% drift. Applied ${Math.round(before*100)}% → ${Math.round(next*100)}%. Adjust below if needed.`;
+            }
+          }
+        }
+      }
+      // Optional suggestion only: stable, small displacement with no buttons for 2.5s.
+      // Movement cannot reliably be classified as drift by the browser, so never apply it.
+      if (this.state === 'levelup' && !this.calibrationOpen() && !g.buttons.some(b => b.pressed) && magnitude > p.dead + 0.03 && magnitude < 0.25) {
+        if (!p.rest || Math.hypot(p.x-p.rest.x,p.y-p.rest.y) > 0.01) p.rest = { x:p.x,y:p.y,start:now };
+        else if (now-p.rest.start > 2500 && !p.warned) { p.warned = true; this.padToast('Possible controller drift — recalibrate in Settings → Controller Calibration?'); }
+      } else p.rest = null;
+    }
+  }
+  syncCalibration() {
+    if (!this.calibrationOpen()) return;
+    const host = this.calibrationEl.querySelector('.stickCards');
+    const profiles = this._stickProfiles || new Map();
+    const signature = JSON.stringify([...profiles].map(([i,p]) => [i,p.key,this._padSlots?.get(i)]));
+    if (host.dataset.signature !== signature) {
+      host.dataset.signature = signature;
+      host.innerHTML = profiles.size ? [...profiles].map(([i,p]) => {
+        const slot = this._padSlots?.get(i);
+        return `<section data-stick="${i}"><h3>${slot === undefined ? 'Unassigned' : 'Player ' + (slot+1)} · Controller ${i+1}</h3>
+        <p>${this.escapeHTML(p.id || 'Unknown controller')}</p>
+        <svg viewBox="-110 -110 220 220" width="180" height="180" role="img" aria-label="Live aiming stick and deadzone" style="display:block;max-width:100%">
+        <circle r="100" fill="#edf5ff" stroke="#53759c"/><path d="M-100 0H100M0-100V100" stroke="#adc3dc"/>
+        <circle class="stickZone" fill="#a8d9b7" fill-opacity=".6" stroke="#33814d"/><circle class="stickDot" r="5"/></svg>
+        <output class="stickReading"></output><label style="display:block">Deadzone <output class="stickPercent"></output>
+        <input aria-label="Controller ${i+1} deadzone" class="stickRange" type="range" min="2" max="50" step="1" style="width:100%"></label>
+        <button class="btn ghost stickAuto">Auto Calibrate</button><p class="stickResult" role="status"></p></section>`;
+      }).join('') : '<p>No controllers detected. Connect a controller and press a button.</p>';
+      host.querySelectorAll('[data-stick]').forEach(card => {
+        const p = profiles.get(+card.dataset.stick), slider = card.querySelector('input');
+        slider.value = Math.round(p.dead*100);
+        slider.oninput = () => { p.sample = null; this.saveStick(p, Number(slider.value)/100); p.result = 'Manual deadzone saved.'; this.syncCalibration(); };
+        card.querySelector('button').onclick = () => { p.sample = {start:performance.now()+1000,last:0,count:0,max:0}; p.result = ''; };
+      });
+    }
+    host.querySelectorAll('[data-stick]').forEach(card => {
+      const p = profiles.get(+card.dataset.stick), magnitude = Math.hypot(p.x,p.y);
+      const status = Math.abs(magnitude-p.dead) <= 0.01 ? 'Touching edge' : magnitude < p.dead ? 'Safely inside' : 'Outside — may cause drift';
+      card.querySelector('.stickZone').setAttribute('r',p.dead*100);
+      const dot = card.querySelector('.stickDot'); dot.setAttribute('cx',p.x*100); dot.setAttribute('cy',p.y*100);
+      dot.setAttribute('fill',status === 'Safely inside' ? '#237b43' : status === 'Touching edge' ? '#986500' : '#c33232');
+      card.querySelector('.stickReading').textContent = `X ${p.x.toFixed(3)} · Y ${p.y.toFixed(3)} · ${(magnitude*100).toFixed(1)}% · ${status}`;
+      card.querySelector('.stickPercent').textContent = Math.round(p.dead*100)+'%';
+      card.querySelector('input').value = Math.round(p.dead*100);
+      card.querySelector('button').disabled = !!p.sample;
+      card.querySelector('.stickResult').textContent = p.sample ? `Leave the stick untouched… ${Math.max(0,(p.sample.start+2500-performance.now())/1000).toFixed(1)}s` : p.result;
+    });
+  }
   connectedPads() {
     if (typeof navigator === 'undefined' || !navigator.getGamepads) return [];
     try { return [...navigator.getGamepads()].filter(g => g && g.connected); } catch (_) { return []; }
@@ -2676,17 +2784,19 @@ class CoopBubbles extends HTMLElement {
       if (this._padPickActive) this.syncPadPick();
     }
     this._padPlayers = [...slots.values()].map(n => humans[n]).filter(i => i !== undefined);
+    this.sampleSticks(pads, performance.now());
     if (!pads.length) return;
     const menu = this._padPickActive ? null : this.menuRoot();
     pads.forEach(g => {
       const n = slots.get(g.index), was = prev.get(g.index) || { b: [], h: 0, nav: '', navT: 0 };
       const b = g.buttons.map(x => !!(x && x.pressed));
       const down = k => b[GAMEPAD.btn[k]], hit = k => down(k) && !was.b[GAMEPAD.btn[k]];
-      const ax = g.axes[0] || 0, ay = g.axes[1] || 0;
+      const ax = stickValue(g.axes[0]), ay = stickValue(g.axes[1]);
       const digital = down('left') ? -1 : down('right') ? 1 : 0;
-      const analog = digital ? 0 : Math.sign(ax) * Math.max(0, Math.min(1, (Math.abs(ax) - GAMEPAD.dead) / (1 - GAMEPAD.dead)));
-      const h = down('left') || ax < -GAMEPAD.dead ? -1 : down('right') || ax > GAMEPAD.dead ? 1 : 0;
-      const v = down('up') || ay < -GAMEPAD.dead ? -1 : down('down') || ay > GAMEPAD.dead ? 1 : 0;
+      const analog = digital ? 0 : stickAnalog(ax, ay, this.stickProfile(g).dead);
+      const navigatingCalibration = this.calibrationOpen();
+      const h = down('left') || (!navigatingCalibration && ax < -GAMEPAD.dead) ? -1 : down('right') || (!navigatingCalibration && ax > GAMEPAD.dead) ? 1 : 0;
+      const v = down('up') || (!navigatingCalibration && ay < -GAMEPAD.dead) ? -1 : down('down') || (!navigatingCalibration && ay > GAMEPAD.dead) ? 1 : 0;
       const now = performance.now() / 1000;
       if (this._perf && (h !== was.h || analog !== (was.analog || 0) || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
       let nav = was.nav, navT = was.navT;
@@ -5649,6 +5759,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <div class="row"><span>Display</span><div class="seg dispSeg">
   <button data-d="auto">Auto</button><button data-d="desktop">Desktop</button><button data-d="tv">TV</button></div></div>
 <div style="color:#9db8d4;font-size:12px;margin-top:-2px">TV: a 16:9 couch layout with a big HUD and controller menus · auto picks it for a big widescreen driven by a gamepad · saved on this device</div>
+<details class="calibration"><summary>Controller Calibration / Stick Deadzone</summary><p>Left aiming stick · use the D-pad to navigate here. Auto Calibrate gives you one second to release controls, then measures for 2.5 seconds.</p><p>Saved on this browser per controller model. Identical controllers use connection order; check assignments after reconnecting.</p><div class="stickCards"></div></details>
 <button class="btn ghost tvOnly sfOpen">Screen Fit\u2026</button>
 <div class="roomOwned">
 <div class="row"><span>Aim guide</span><div class="seg glSeg">
@@ -5661,6 +5772,14 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <button class="btn ghost howBtn">How to play</button>
 <h3>Controls</h3>
 <ul class="ctrlList">${META.slice(0,4).map((m, i) => `<li${i ? '' : ' class="ctrlP1"'}><b style="color:${m.accent}">${m.name}</b> \u2014 <span class="ctrlText">${m.ctrl}</span></li>`).join('')}</ul>`;
+    this.calibrationEl = el.querySelector('.calibration');
+    this.calibrationEl.ontoggle = () => {
+      if (this.calibrationEl.open) {
+        if (!this.online && this.state === 'play') this.togglePause();
+        if (this.online) { this.setOnlineAnalog(0); this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
+      }
+      this.syncCalibration();
+    };
     const segWire = (sel, get, set) => el.querySelectorAll(sel + ' button').forEach(b => {
       b.onclick = () => { set(b); syncAll(); };
     });
