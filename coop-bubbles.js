@@ -946,7 +946,7 @@ const clearTimeBonus = secs => Math.round(PACE.timeBonus *
 // One human launcher's idle clock: 'warn' as it crosses into the last hurryWarn seconds,
 // 'fire' once it runs out (and every tick after, until a shot actually leaves), else null.
 const hurryTick = (p, dt, limit) => {
-  if (!(limit > 0) || (p.held && (p.held.l || p.held.r)) || p.aimTarget != null) { p.idle = 0; return null; }
+  if (!(limit > 0) || (p.held && (p.held.l || p.held.r || p.held.analog)) || p.aimTarget != null) { p.idle = 0; return null; }
   const was = p.idle || 0, warnAt = Math.max(0, limit - PACE.hurryWarn);
   p.idle = was + dt;
   if (p.idle >= limit) return 'fire';
@@ -1026,6 +1026,14 @@ const AIM_RAMP_T = 0.40; // seconds to ease from the fine rate up to the full se
 const AIM_MODES = ['halves', 'point'];
 const aimTick = (p, dt, aimSpeed) => {
   if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); p.heldT = 0; p.heldDir = 0; return; }
+  // Analog magnitude is already deadzone-normalized at the input boundary.
+  const analog = Number.isFinite(p.held?.analog) ? clamp(p.held.analog, -1, 1) : 0;
+  if (analog) {
+    p.heldT = 0; p.heldDir = 0;
+    const base = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4;
+    if (dt > 0) p.angle = clamp(p.angle + analog * base * dt, -AIM_MAX, AIM_MAX);
+    return;
+  }
   const dir = (p.held && p.held.l ? -1 : 0) + (p.held && p.held.r ? 1 : 0);
   if (!(dt > 0) || !dir) { p.heldT = 0; p.heldDir = 0; return; }
   // Turning back is a new press: without this the correction at the end of a sweep would
@@ -2384,7 +2392,7 @@ class CoopBubbles extends HTMLElement {
     p.held = this._onlineHeld || { l:false, r:false };
     p.aimTarget = this._onlineAimWant ?? null; // predict from the finger, not the last packet
     aimTick(p, dt, this.settings.aimSpeed);
-    if (p.serverAngle === undefined || p.held.l || p.held.r || p.aimTarget != null) return;
+    if (p.serverAngle === undefined || p.held.l || p.held.r || p.held.analog || p.aimTarget != null) return;
     const gap = p.serverAngle - p.angle;
     if (Math.abs(gap) > 0.35) p.angle = p.serverAngle;
     else p.angle = clamp(p.angle + clamp(gap, -3 * dt, 3 * dt), -AIM_MAX, AIM_MAX);
@@ -2437,7 +2445,7 @@ class CoopBubbles extends HTMLElement {
       p.reload = Math.max(0, p.reload - dt);
       if (p.bot) this.botUpdate(p, dt);
       else {
-        if (p.held.l || p.held.r || p.aimTarget != null) this.activeP = p.i;
+        if (p.held.l || p.held.r || p.held.analog || p.aimTarget != null) this.activeP = p.i;
         aimTick(p, rdt, this.settings.aimSpeed);
       }
     }
@@ -2675,10 +2683,12 @@ class CoopBubbles extends HTMLElement {
       const b = g.buttons.map(x => !!(x && x.pressed));
       const down = k => b[GAMEPAD.btn[k]], hit = k => down(k) && !was.b[GAMEPAD.btn[k]];
       const ax = g.axes[0] || 0, ay = g.axes[1] || 0;
+      const digital = down('left') ? -1 : down('right') ? 1 : 0;
+      const analog = digital ? 0 : Math.sign(ax) * Math.max(0, Math.min(1, (Math.abs(ax) - GAMEPAD.dead) / (1 - GAMEPAD.dead)));
       const h = down('left') || ax < -GAMEPAD.dead ? -1 : down('right') || ax > GAMEPAD.dead ? 1 : 0;
       const v = down('up') || ay < -GAMEPAD.dead ? -1 : down('down') || ay > GAMEPAD.dead ? 1 : 0;
       const now = performance.now() / 1000;
-      if (this._perf && (h !== was.h || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
+      if (this._perf && (h !== was.h || analog !== (was.analog || 0) || b.some((x, k) => x !== !!was.b[k]))) this.perfInput(g.timestamp || now * 1000);
       let nav = was.nav, navT = was.navT;
       if (this._padPickActive) this.padPickInput(g, h, hit);
       else if (hit('start')) this.padStart();
@@ -2698,8 +2708,8 @@ class CoopBubbles extends HTMLElement {
         }
         if (hit('a')) this.menuActivate(menu);
         if (hit('b')) this.menuBack();
-      } else if (n !== undefined) this.padPlay(n, h, h !== was.h, hit);
-      prev.set(g.index, { b, h, nav, navT });
+      } else if (n !== undefined) this.padPlay(n, digital, digital !== (was.digital || 0), hit, analog, h, h !== was.h);
+      prev.set(g.index, { b, h, digital, analog, nav, navT });
     });
     if (this._padPickActive && new Set(slots.values()).size >= 2) this.finishPadPick(false);
   }
@@ -2714,7 +2724,7 @@ class CoopBubbles extends HTMLElement {
     const bt = this.battle && this.settings.mode === 'battle' ? this.battle : null;
     const p = bt ? (slot ? null : bt.human && bt.human.player) : (this.players || [])[i];
     if (p) { p.held = { l: false, r: false }; p.aimTarget = null; }
-    if (this.online && !slot) { this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
+    if (this.online && !slot) { this.setOnlineAnalog(0); this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
     if (!this.online && this.state === 'play') {
       this.togglePause();
       const sub = this.shadowRoot.querySelector('.pauseSub');
@@ -2731,7 +2741,11 @@ class CoopBubbles extends HTMLElement {
     clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => el.classList.remove('on'), 3200);
   }
-  padPlay(n, h, turned, hit) {
+  padPlay(n, h, turned, hit, analog = 0, navH = h, navTurned = turned) {
+    const applyAnalog = p => {
+      if ((p.held.analog || 0) !== analog) { p.held.analog = analog; p.aimTarget = null; }
+    };
+    if (this.online && !n) this.setOnlineAnalog(analog);
     const fire = hit('a') || hit('rt'), passLeft = hit('lb'), passRight = hit('rb') || hit('x'), power = hit('y');
     if (this.battle && this.settings.mode === 'battle') {
       if (n) return;
@@ -2739,15 +2753,16 @@ class CoopBubbles extends HTMLElement {
       // Picking a rival: left / right walks the living boards, A dumps the junk.
       if (tg && bt.human && tg.by === bt.human.i) {
         const alive = bt.boards.filter(x => x.alive && x.i !== tg.by);
-        if (turned && h && alive.length) {
+        if (navTurned && navH && alive.length) {
           const at = alive.findIndex(x => x.i === tg.hover);
-          tg.hover = alive[(at + h + alive.length) % alive.length].i;
+          tg.hover = alive[(at + navH + alive.length) % alive.length].i;
         }
         if (fire) this.chooseBattleTarget(bt.boards[tg.hover] || alive[0]);
         return;
       }
       if (this.online) { if (turned) { this.setOnlineHeld('l', h < 0); this.setOnlineHeld('r', h > 0); } if (fire) this.fire(); return; }
       const hp = bt.human && bt.human.player; if (!hp) return;
+      applyAnalog(hp);
       if (turned) { hp.held.l = h < 0; hp.held.r = h > 0; hp.aimTarget = null; }
       if (fire) this.battleFire();
       return;
@@ -2761,6 +2776,7 @@ class CoopBubbles extends HTMLElement {
       return;
     }
     const i = this.padHuman(n), p = this.players[i]; if (!p || p.bot) return;
+    applyAnalog(p);
     if (turned) { p.held.l = h < 0; p.held.r = h > 0; p.aimTarget = null; }
     if (fire) { this.activeP = i; this.fire(i); }
     if (passLeft || passRight) this.requestPass(i, passLeft ? -1 : 1);
@@ -5554,6 +5570,11 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     if((s.state==='won'||s.state==='lost')&&oldState!==s.state){this.showBattleEnd();const button=this.shadowRoot.querySelector('.again');button.textContent=this.isOnlineHost()?'Return to lobby':'Waiting for host';button.disabled=!this.isOnlineHost();}
   }
   applyOnlineEvent(e){const d=e.data||{};if(e.kind==='launch'){const p=this.players[d.player];if(p)p.recoilT=this.now;this.sfx('launch');this.dropWarnSfx();}else if(e.kind==='hurry'){this.showHurry(d.player);}else if(e.kind==='bounce')this.sfx('bounce');else if(e.kind==='attach'){this.ripples.push({x:this.cellX(d.r,d.c),y:this.cellY(d.r),t:this.now});this.sfx('attach');}else if(e.kind==='pop'){for(const b of d.bubbles||[])this.pops.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),kind:b.kind,special:b.special,t:this.now,parts:[]});this.sfx((d.bubbles||[]).length>=6?'bigpop':'pop');}else if(e.kind==='drop'){for(const b of d.bubbles||[])this.falling.push({x:this.cellX(b.r,b.c),y:this.cellY(b.r),vx:0,vy:100,kind:b.kind,special:b.special,spin:0,a:0});this.sfx('drop');}else if(e.kind==='warn'){this.callout('DANGER! CLEAR THE LINE!','#ff5b6b');this.sfx('warn');}else if(e.kind==='rescue'){if(!(d.team&&TEAM.feedback))this.callout('TEAM RESCUE! +500','#3ecf72');this.sfx('rescue');}else if(e.kind==='team_play'){this.showTeamPlay(d,{x:d.x,y:d.y});}else if(e.kind==='pass'){this.showPass(d);}else if(e.kind==='team_power_charge'){this.showTeamPowerCharge(d);}else if(e.kind==='team_power_ready'){this.showTeamPowerReady();}else if(e.kind==='team_power_activated'){this.showTeamPowerActivated(d);}else if(e.kind==='team_power_ended'){this.showTeamPowerEnded();}else if(e.kind==='tri_lock'){this.showTriLock(d);}else if(['object_state','object_complete','object_spread','object_warning','object_fallback'].includes(e.kind)){this.showObjectEvent(e.kind,d);}else if(e.kind==='trio_chain'){this.showTrioChain(d.by);}else if(e.kind==='team_chain'){this.chainFx={pulseT:this.now,handoffT:d.handoff?this.now:(this.chainFx?.handoffT??-9),by:d.by};if(d.mult>=2&&!d.trio&&TEAM.feedback)this.teamChainCallout(d.by,d.from??-1,d.mult);}else if(e.kind==='ceiling'){this.callout('CEILING DROPS!','#ff5b6b');this.sfx('ceiling');}else if(e.kind==='attack_ready'){this.callout('BIG CLEAR! PICK A TARGET!','#ff8a3c');this.sfx('attackReady');}else if(e.kind==='attack_sent'){this.sfx('target');}else if(e.kind==='garbage'){const from=this.battle?.boards.find(b=>b.id===d.fromId);this.callout((from?.name||'A RIVAL')+' DUMPED '+d.amount+'!','#ff5b6b');this.sfx('junk');}else if(e.kind==='field_refilled'){this.callout('FIELD CLEAR! +1000','#3ecf72');}else if(e.kind==='level_cleared'){this.callout(d.final?'FINAL LEVEL CLEARED!':'LEVEL CLEARED! +'+((d.bonus||0)+(d.timeBonus||0)),'#3ecf72');this.sfx('win');}else if(e.kind==='eliminated')this.sfx('lose');else if(e.kind==='win')this.sfx('win');else if(e.kind==='lose')this.sfx('lose');}
+  setOnlineAnalog(value){
+    this._onlineHeld=this._onlineHeld||{l:false,r:false};
+    if((this._onlineHeld.analog||0)===value)return;
+    this._onlineHeld.analog=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();
+  }
   setOnlineHeld(dir,value){this._onlineHeld=this._onlineHeld||{l:false,r:false};if(this._onlineHeld[dir]===value)return;this._onlineHeld[dir]=value;this._onlineAim=null;this._onlineAimWant=null;this.sendOnlineInput();}
   /* Point-to-aim ships an absolute angle rather than a direction, so it is a stream rather
      than two edges. The finger writes the wanted angle here and flushOnlineAim sends it at

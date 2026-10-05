@@ -715,6 +715,14 @@ const AIM_SLOW_T = 0.16; // seconds held at the fine rate, so a tap stays a nudg
 const AIM_RAMP_T = 0.40; // seconds to ease from the fine rate up to the full setting
 const aimTick = (p, dt, aimSpeed) => {
   if (p.aimTarget != null) { p.angle = clamp(p.aimTarget, -AIM_MAX, AIM_MAX); p.heldT = 0; p.heldDir = 0; return; }
+  // Analog magnitude is already deadzone-normalized at the input boundary.
+  const analog = Number.isFinite(p.held?.analog) ? clamp(p.held.analog, -1, 1) : 0;
+  if (analog) {
+    p.heldT = 0; p.heldDir = 0;
+    const base = Number(aimSpeed) > 0 ? Number(aimSpeed) : 2.4;
+    if (dt > 0) p.angle = clamp(p.angle + analog * base * dt, -AIM_MAX, AIM_MAX);
+    return;
+  }
   const dir = (p.held && p.held.l ? -1 : 0) + (p.held && p.held.r ? 1 : 0);
   if (!(dt > 0) || !dir) { p.heldT = 0; p.heldDir = 0; return; }
   // Turning back is a new press: without this the correction at the end of a sweep would
@@ -872,7 +880,7 @@ const clearTimeBonus = secs => Math.round(PACE.timeBonus *
 // One human launcher's idle clock: 'warn' as it crosses into the last hurryWarn seconds,
 // 'fire' once it runs out (and every tick after, until a shot actually leaves), else null.
 const hurryTick = (p, dt, limit) => {
-  if (!(limit > 0) || (p.held && (p.held.l || p.held.r)) || p.aimTarget != null) { p.idle = 0; return null; }
+  if (!(limit > 0) || (p.held && (p.held.l || p.held.r || p.held.analog)) || p.aimTarget != null) { p.idle = 0; return null; }
   const was = p.idle || 0, warnAt = Math.max(0, limit - PACE.hurryWarn);
   p.idle = was + dt;
   if (p.idle >= limit) return 'fire';
@@ -1082,10 +1090,11 @@ class OnlineGame {
   input(id, held, aim) {
     const p = this.players.find(q => q.id === id);
     if (!p || !p.connected || this.state !== 'play') return;
-    p.held = { l: !!(held && held.l), r: !!(held && held.r) };
+    p.held = { l: !!(held && held.l), r: !!(held && held.r),
+      analog: Number.isFinite(held?.analog) ? clamp(held.analog, -1, 1) : 0 };
     p.aimTarget = Number.isFinite(aim) ? clamp(Number(aim), -AIM_MAX, AIM_MAX) : null;
     // A tap can start and end between two ticks, so aiming resets the hurry clock here too.
-    if (p.held.l || p.held.r || p.aimTarget != null) p.idle = 0;
+    if (p.held.l || p.held.r || p.held.analog || p.aimTarget != null) p.idle = 0;
   }
   fire(id, auto = false) {
     const p = this.players.find(q => q.id === id);

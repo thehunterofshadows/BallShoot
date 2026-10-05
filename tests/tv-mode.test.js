@@ -469,7 +469,19 @@ test('controllers keep their slot, and a disconnect releases holds and pauses lo
   // Pad 2 holds right, then pad 1 drops out: pad 2 keeps driving P2.
   pads = [pad(0), Object.assign(pad(1), { axes: [1, 0] })];
   g.pollGamepads();
-  assert.equal(players[1].held.r, true);
+  assert.equal(players[1].held.r, false, 'stick is not converted to a button');
+  assert.equal(players[1].held.analog, 1);
+  pads[0].axes[0] = -1; pads[1].axes[0] = (1 + tv.GAMEPAD.dead) / 2;
+  g.pollGamepads();
+  assert.equal(players[0].held.analog, -1, 'each stick drives its own player');
+  assert.ok(Math.abs(players[1].held.analog - 0.5) < 1e-12, 'range normalized after deadzone');
+  pads[1].axes[0] = tv.GAMEPAD.dead / 2;
+  g.pollGamepads();
+  assert.equal(players[1].held.analog, 0, 'inside deadzone is idle');
+  pads[1].buttons[tv.GAMEPAD.btn.right].pressed = true;
+  g.pollGamepads();
+  assert.equal(players[1].held.r, true, 'D-pad remains digital');
+  assert.equal(players[1].held.analog, 0);
   pads = [Object.assign(pad(1), { axes: [1, 0] })];
   g.pollGamepads();
   assert.equal(g._padSlots.get(1), 1, 'slot kept across the other pad leaving');
