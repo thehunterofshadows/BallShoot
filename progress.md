@@ -1,6 +1,6 @@
 # Issue #18 - Server-backed player profiles
 
-**Status:** 🔄 In progress
+**Status:** ✅ Complete
 
 ## Implementation Plan
 
@@ -17,5 +17,11 @@
 - [x] Add browser probe `scripts/profiles-probe.mjs` and route existing probes through Player Select as Guests
 - [x] Run Docker test suite (`docker compose run --rm --no-deps test`) — 268/268 pass
 - [x] Update CHANGELOG/README docs
-- [ ] 🔄 **Rebuild environment (`./rebuild.sh`) and report build stamp**
-- [ ] Review diff, commit, and push
+- [x] Rebuild environment (`./rebuild.sh`) and report build stamp — `2026-10-05 16:40 UTC`, `coop-bubbles.js?v=fa49dae0cc74`
+- [x] Review diff, commit, and push
+
+## Notes
+
+- Profiles cover local play (Co-op Clear, Endless, local Battle). Online rooms keep their per-room display name; attributing server-authoritative online rounds to profiles is a follow-up.
+- Local rounds are simulated in the browser, so the server bounds and validates each round's deltas (caps, shares ≤ team score, idempotent round id) and derives all totals itself; it cannot prove a local round was played honestly.
+- Pre-existing probe failures, reproduced on the base commit and unrelated to this change: `tv-probe` field-aspect checks (2P now uses the 16/15 board), `touch-controls-probe` point-to-aim checks, and `theme-probe` deck check.
