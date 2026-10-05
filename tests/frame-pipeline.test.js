@@ -169,3 +169,32 @@ test('a cleared board plays out its final drop before the card shows', () => {
   assert.match(frameBody, /this\.tickOutro\(\)/);
   assert.match(component, /present\(\(\)=>this\.showLevelCard/, 'online level card is gated too');
 });
+
+for (const [name, tick] of [['browser', aimTick], ['server', require('../server/game').aimTick]]) {
+  test(`${name}: analog speed is immediate, constant and reverses without acceleration`, () => {
+    for (const magnitude of [0.05, 0.5, 1]) {
+      const p = { angle: 0, held: { analog: magnitude }, heldT: 10, heldDir: -1 };
+      for (let i = 0; i < 100; i++) {
+        p.angle = 0;
+        tick(p, 0.01, 2.4);
+        assert.ok(Math.abs(p.angle - magnitude * 0.024) < 1e-12);
+        assert.equal(p.heldT, 0);
+      }
+      p.angle = 0; p.held.analog = -magnitude;
+      tick(p, 0.01, 2.4);
+      assert.ok(Math.abs(p.angle + magnitude * 0.024) < 1e-12);
+    }
+  });
+  test(`${name}: independent sticks and digital ramp retain their own speeds`, () => {
+    const a = { angle: 0, held: { analog: 0.2 } };
+    const b = { angle: 0, held: { analog: -0.8 } };
+    tick(a, 0.1, 2.4); tick(b, 0.1, 2.4);
+    assert.ok(Math.abs(a.angle - 0.048) < 1e-12);
+    assert.ok(Math.abs(b.angle + 0.192) < 1e-12);
+    const digital = { angle: 0, held: { r: true }, heldT: 0, heldDir: 0 };
+    tick(digital, 0.01, 2.4);
+    assert.ok(Math.abs(digital.angle - 0.006) < 1e-12);
+    for (let i = 0; i < 60; i++) { digital.angle = 0; tick(digital, 0.01, 2.4); }
+    assert.ok(Math.abs(digital.angle - 0.024) < 1e-12);
+  });
+}
