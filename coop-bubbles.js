@@ -2897,7 +2897,16 @@ class CoopBubbles extends HTMLElement {
      device's launcher. Held directions are written only when the stick changes, so a pad
      and a keyboard can share a player without the pad stomping the keys every frame. */
   calibrationOpen() {
-    return !!(this.calibrationEl?.open && this.sideEl?.classList.contains('open'));
+    return !!(this.calibrationEl?.open && this.sideEl &&
+      (this.sideEl.classList.contains('open') || this.rootEl?.classList.contains('wideLayout')));
+  }
+  syncCalibrationVisibility() {
+    const visible = this.calibrationOpen();
+    if (visible && !this._calibrationVisible) {
+      if (!this.online && this.state === 'play') this.togglePause();
+      if (this.online) { this.setOnlineAnalog(0); this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
+    }
+    this._calibrationVisible = visible;
   }
   stickProfile(g) {
     const profiles = this._stickProfiles || (this._stickProfiles = new Map());
@@ -3029,6 +3038,7 @@ class CoopBubbles extends HTMLElement {
       if (this._padPickActive) this.syncPadPick();
     }
     this._padPlayers = [...slots.values()].map(n => humans[n]).filter(i => i !== undefined);
+    this.syncCalibrationVisibility();
     this.sampleSticks(pads, performance.now());
     if (!pads.length) return;
     const menu = this._padPickActive ? null : this.menuRoot();
@@ -3146,12 +3156,13 @@ class CoopBubbles extends HTMLElement {
     if (this.state === 'play' || this.state === 'paused') { this.togglePause(); return; }
     const menu = this.menuRoot(); if (menu) this.menuActivate(menu);
   }
-  toggleSide() { if (this.sideEl.classList.contains('open')) this.closeSide(); else this.sideEl.classList.add('open'); }
+  toggleSide() { if (this.sideEl.classList.contains('open')) this.closeSide(); else this.sideEl.classList.add('open'); this.syncCalibrationVisibility(); }
   /* The surface a controller is navigating: Screen Fit or the settings drawer if open,
      otherwise the top-most visible card. Null during active play. */
   menuRoot() {
     if (this.tvActive && this.rootEl?.classList.contains('tvTooSmall') && this.tvSmallEl) return this.tvSmallEl;
     if (this.screenFitEl && this.screenFitEl.style.display !== 'none') return this.screenFitEl;
+    if (this.calibrationOpen()) return this.calibrationEl;
     if (this.sideEl && this.sideEl.classList.contains('open') && this.sideEl.offsetParent !== null) return this.sideEl;
     const cards = [this.homeEl, this.lobbyEl, this.reconnectEl, this.tutEl, this.pauseEl, this.levelUpEl, this.endEl];
     for (let k = cards.length - 1; k >= 0; k--) {
@@ -5348,7 +5359,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
       if (this._runStartLevel !== undefined) { this.settings.level = this._runStartLevel; this.settings.campaign=this._runStartCampaign||this.settings.campaign||'original'; this._syncSettings?.(); }
       this.state = 'play'; this.resetGame(); } };
     sh.querySelector('.luNext').onclick = () => this.readyForNextLevel();
-    sh.querySelector('.gear').onclick = () => this.sideEl.classList.toggle('open');
+    sh.querySelector('.gear').onclick = () => this.toggleSide();
     sh.querySelector('.tvSmallDesktop').onclick = () => this.setDisplayMode('desktop');
     const fullscreenButton = sh.querySelector('.fullscreenButton');
     this.fullscreenButtonEl = fullscreenButton;
@@ -6040,10 +6051,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
 <ul class="ctrlList">${META.slice(0,4).map((m, i) => `<li${i ? '' : ' class="ctrlP1"'}><b style="color:${m.accent}">${m.name}</b> \u2014 <span class="ctrlText">${m.ctrl}</span></li>`).join('')}</ul>`;
     this.calibrationEl = el.querySelector('.calibration');
     this.calibrationEl.ontoggle = () => {
-      if (this.calibrationEl.open) {
-        if (!this.online && this.state === 'play') this.togglePause();
-        if (this.online) { this.setOnlineAnalog(0); this.setOnlineHeld('l', false); this.setOnlineHeld('r', false); }
-      }
+      this.syncCalibrationVisibility();
       this.syncCalibration();
     };
     const segWire = (sel, get, set) => el.querySelectorAll(sel + ' button').forEach(b => {
@@ -6155,7 +6163,7 @@ input[type=range]{width:130px;accent-color:#2b6fd4}
     this.syncSideScope();
     syncAll();
   }
-  closeSide() { this.sideEl && this.sideEl.classList.remove('open'); }
+  closeSide() { this.sideEl && this.sideEl.classList.remove('open'); this.syncCalibrationVisibility(); }
   /* In a room the host owns the match: mode, level, tuning, aim speed, tint, FIRE size and
      even sound all arrive with every snapshot and overwrite whatever this device set. Showing
      those controls online would be a lie — moving one changes nothing that survives the next
